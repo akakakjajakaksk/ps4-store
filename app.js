@@ -9,8 +9,8 @@ function setView(v){view=v;qs('#catalog').className=(v==='files'||v==='downloads
 window.onload=function(){var i,b=qsa('#nav button');for(i=0;i<b.length;i++)b[i].onclick=function(){var j,all=qsa('#nav button');for(j=0;j<all.length;j++)all[j].className='';this.className='active';setView(this.getAttribute('data-view'))};b=qsa('#cats button');for(i=0;i<b.length;i++)b[i].onclick=function(){var j,all=qsa('#cats button');for(j=0;j<all.length;j++)all[j].className='';this.className='on';cat=this.getAttribute('data-cat');render()};qs('#search').onkeyup=render;qs('#addFile').onclick=function(){qs('#upload').className='modal'};b=qsa('[data-close]');for(i=0;i<b.length;i++)b[i].onclick=function(){qs('#'+this.getAttribute('data-close')).className='modal hidden'};qs('#fileForm').onsubmit=function(e){e.preventDefault();var x=own();x.push({name:qs('#fname').value,url:qs('#furl').value,type:qs('#ftype').value,version:qs('#fversion').value,description:qs('#fdesc').value});localStorage.setItem('orbis-files',JSON.stringify(x));this.reset();qs('#upload').className='modal hidden';renderOwn();return false};fetch('apps.json').then(function(r){return r.json()}).then(function(x){apps=x;render()}).catch(function(){render()});setupMusic()}
 var musicStarted=false,currentTrack=0,audioUnlocked=false;
 var tracks=[
- {name:'♫ FIGHT! — Aests',src:'YTDown.com_YouTube_Media_Hfw8L_0Mh78_FIGHT_009_128k.mp3',start:24},
- {name:'♫ ACENDAOFAROL — Hoodtrap version',src:'YTDown.com_YouTube_Media_qxDmHmhYxB4_ACENDAOFAROL-Hoodtrap-version_009_128k.mp3',start:0}
+ {name:'♫ FIGHT! — Aests',src:'fight-ps4.mp3',start:24},
+ {name:'♫ ACENDAOFAROL — Hoodtrap version',src:'acendaofarol-ps4.mp3',start:0}
 ];
 function setMusicState(t){var s=qs('#musicState');if(s)s.innerHTML=t}
 function loadTrack(n){var a=qs('#storeAudio');currentTrack=n;musicStarted=false;qs('#trackName').innerHTML=tracks[n].name;setMusicState('carregando áudio...');a.src=tracks[n].src;a.load()}
