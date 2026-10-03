@@ -21,21 +21,14 @@ jobs:
           path: openorbis
           submodules: recursive
 
-      - name: Install OpenOrbis toolchain
+      - name: Inspect current OpenOrbis build files
         run: |
           cd openorbis
-          chmod +x scripts/*.sh || true
-          ./scripts/000-install-dependencies-ubuntu.sh
-          ./scripts/001-download-llvm.sh
-          ./scripts/002-build-toolchain.sh
-          ./scripts/003-build-libraries.sh
+          echo "--- root ---"
+          ls -la
+          echo "--- scripts/build files ---"
+          find . -maxdepth 3 -type f \( -name "*.sh" -o -name "Makefile" -o -name "CMakeLists.txt" \) | sort
 
-      - name: Build Orbis Store
-        env:
-          OO_PS4_TOOLCHAIN: ${{ github.workspace }}/openorbis
-        run: |
-          cd native
-          make
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
