@@ -1,0 +1,8 @@
+[
+  {
+    "name": "Exemplo Homebrew",
+    "type": "PKG",
+    "description": "Substitua esta entrada por um pacote homebrew ou arquivo próprio.",
+    "url": "https://example.com/homebrew.pkg"
+  }
+]
