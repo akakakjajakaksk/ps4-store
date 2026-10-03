@@ -14,21 +14,26 @@ jobs:
       - name: Checkout Orbis Store
         uses: actions/checkout@v4
 
-      - name: Checkout current OpenOrbis toolchain
-        uses: actions/checkout@v4
-        with:
-          repository: OpenOrbis/OpenOrbis-PS4-Toolchain
-          path: openorbis
-          submodules: recursive
-
-      - name: Inspect current OpenOrbis build files
+      - name: Download official OpenOrbis toolchain v0.5.4
         run: |
-          cd openorbis
-          echo "--- root ---"
-          ls -la
-          echo "--- scripts/build files ---"
-          find . -maxdepth 3 -type f \( -name "*.sh" -o -name "Makefile" -o -name "CMakeLists.txt" \) | sort
+          curl -L --fail --retry 3 -o /tmp/openorbis.tar.gz \
+            https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz
+          mkdir -p "$GITHUB_WORKSPACE/openorbis"
+          tar -xzf /tmp/openorbis.tar.gz -C "$GITHUB_WORKSPACE/openorbis" --strip-components=1
+          chmod +x "$GITHUB_WORKSPACE/openorbis/bin/linux/"* || true
+          find "$GITHUB_WORKSPACE/openorbis/bin/linux" -maxdepth 1 -type f -printf "%f\n" | sort
 
+      - name: Prepare package assets
+        run: |
+          mkdir -p native/sce_sys
+          cp "$GITHUB_WORKSPACE/openorbis/bin/data/icon0.png" native/sce_sys/icon0.png
+
+      - name: Build Orbis Store
+        env:
+          OO_PS4_TOOLCHAIN: ${{ github.workspace }}/openorbis
+        run: |
+          cd native
+          make
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
