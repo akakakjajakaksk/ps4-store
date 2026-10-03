@@ -1,8 +1,7 @@
 [
-  {
-    "name": "Exemplo Homebrew",
-    "type": "PKG",
-    "description": "Substitua esta entrada por um pacote homebrew ou arquivo próprio.",
-    "url": "https://example.com/homebrew.pkg"
-  }
+{"id":"hb-demo-game","name":"Homebrew Game Demo","category":"Jogos","type":"PKG","description":"Entrada demonstrativa para um jogo homebrew autorizado.","version":"1.2.0","size":"84 MB","developer":"Community Dev","firmware":"Consulte o desenvolvedor","sha256":"Adicione o hash oficial aqui","downloads":1280,"added":"2026-10-03","url":"https://example.com/homebrew-game.pkg"},
+{"id":"hb-demo-tool","name":"System Info Demo","category":"Utilitários","type":"ELF","description":"Exemplo de utilitário para exibir informações do sistema.","version":"0.9.1","size":"5 MB","developer":"Homebrew Community","firmware":"Consulte o desenvolvedor","sha256":"Adicione o hash oficial aqui","downloads":830,"added":"2026-10-02","url":"https://example.com/system-info.elf"},
+{"id":"hb-demo-emu","name":"Emulator Demo","category":"Emuladores","type":"PKG","description":"Placeholder para emuladores homebrew distribuídos legalmente.","version":"2.0","size":"42 MB","developer":"Open Source Dev","firmware":"Consulte o desenvolvedor","sha256":"Adicione o hash oficial aqui","downloads":2200,"added":"2026-09-28","url":"https://example.com/emulator.pkg"},
+{"id":"hb-demo-theme","name":"Midnight Theme","category":"Temas","type":"PKG","description":"Tema demonstrativo com visual azul escuro.","version":"1.0","size":"12 MB","developer":"Theme Creator","firmware":"Consulte o desenvolvedor","sha256":"Adicione o hash oficial aqui","downloads":610,"added":"2026-09-20","url":"https://example.com/theme.pkg"},
+{"id":"hb-demo-dev","name":"Developer Sample","category":"Desenvolvimento","type":"BIN","description":"Arquivo demonstrativo para projetos próprios de desenvolvimento.","version":"0.1","size":"1 MB","developer":"Example Dev","firmware":"Consulte o desenvolvedor","sha256":"Adicione o hash oficial aqui","downloads":190,"added":"2026-09-12","url":"https://example.com/sample.bin"}
 ]
