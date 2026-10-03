@@ -1,16 +1,12 @@
-<!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PS4 Homebrew Store</title><link rel="stylesheet" href="style.css">
-</head>
-<body>
-<header><div><h1>PS4 <span>STORE</span></h1><p>Homebrew e arquivos autorizados</p></div><button id="addBtn">+ Adicionar URL</button></header>
-<main>
-<section class="tools"><input id="search" placeholder="Pesquisar no catálogo..."><select id="filter"><option value="all">Todos</option><option value="PKG">PKG</option><option value="ELF">ELF</option><option value="BIN">BIN</option></select></section>
-<div id="notice">Use apenas homebrew, backups próprios e arquivos que você tenha autorização para distribuir.</div>
-<section id="grid" class="grid"></section>
-</main>
-<div id="modal" class="modal hidden"><form id="form"><h2>Adicionar arquivo por URL</h2><input id="name" required placeholder="Nome"><input id="url" required type="url" placeholder="https://servidor/arquivo.pkg"><select id="type"><option>PKG</option><option>ELF</option><option>BIN</option></select><textarea id="desc" placeholder="Descrição"></textarea><div class="actions"><button type="button" id="cancel">Cancelar</button><button type="submit">Adicionar</button></div><small>O item fica salvo neste navegador. Para publicar para todos, edite apps.json.</small></form></div>
-<script src="app.js"></script>
-</body></html>
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orbis Homebrew Store</title><link rel="stylesheet" href="style.css"></head><body>
+<div class="shell"><aside><div class="brand"><b>ORBIS</b><span>STORE</span></div><nav id="nav"><button class="active" data-view="home">⌂ Início</button><button data-view="new">✦ Novidades</button><button data-view="popular">▥ Mais baixados</button><button data-view="favorites">★ Favoritos</button><button data-view="files">▣ Meus arquivos</button><button data-view="downloads">⇩ Downloads</button></nav><div class="sidefoot">HOME BREW<br><small>community edition</small></div></aside>
+<main><header><div><div class="eyebrow">PS4 HOMEBREW LIBRARY</div><h1 id="title">Descubra algo novo</h1></div><div class="headtools"><input id="search" placeholder="Pesquisar apps..."><button id="uploadBtn">＋ Meus arquivos</button></div></header>
+<section class="hero"><div><span class="pill">DESTAQUE</span><h2>Seu hub de homebrew</h2><p>Jogos, emuladores, utilitários, temas e ferramentas da comunidade em uma interface feita para a TV.</p><button id="explore">Explorar catálogo</button></div><div class="orb">◯<i>△</i><em>□</em><strong>×</strong></div></section>
+<div class="cats" id="cats"><button class="on" data-cat="all">Todos</button><button data-cat="Jogos">🎮 Jogos</button><button data-cat="Emuladores">🕹 Emuladores</button><button data-cat="Utilitários">🛠 Utilitários</button><button data-cat="Temas">🎨 Temas</button><button data-cat="Desenvolvimento">⌘ Desenvolvimento</button></div>
+<section><div class="sectionhead"><h2 id="sectionTitle">Catálogo</h2><span id="count"></span></div><div id="grid" class="grid"></div></section>
+<section id="downloadsPanel" class="panel hidden"><div class="sectionhead"><h2>Fila de downloads</h2></div><div id="queue"></div></section>
+<section id="filesPanel" class="panel hidden"><div class="sectionhead"><h2>Meus arquivos</h2><button id="addFile">＋ Adicionar URL</button></div><p class="muted">Links próprios ficam salvos somente neste navegador.</p><div id="myFiles" class="grid"></div></section>
+</main></div>
+<div id="details" class="modal hidden"><div class="dialog wide"><button class="x" data-close="details">×</button><div id="detailBody"></div></div></div>
+<div id="upload" class="modal hidden"><form id="fileForm" class="dialog"><button type="button" class="x" data-close="upload">×</button><span class="pill">ARQUIVO PRÓPRIO</span><h2>Adicionar por URL</h2><input id="fname" required placeholder="Nome"><input id="furl" required type="url" placeholder="https://.../arquivo.pkg"><div class="row"><select id="ftype"><option>PKG</option><option>ELF</option><option>BIN</option></select><input id="fversion" placeholder="Versão"></div><textarea id="fdesc" placeholder="Descrição"></textarea><button class="primary">Salvar em Meus arquivos</button><small>Use apenas arquivos que você tenha direito de usar e distribuir.</small></form></div>
+<script src="app.js"></script></body></html>
