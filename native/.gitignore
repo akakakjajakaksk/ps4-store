@@ -1,0 +1,5 @@
+build/
+eboot.bin
+pkg.gp4
+sce_sys/param.sfo
+IV0000-BREW00001_00-ORBISSTORE000001.pkg
