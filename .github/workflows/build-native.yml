@@ -29,6 +29,11 @@ jobs:
 
       - name: Prepare package assets
         run: |
+          mkdir -p native/sce_sys/about
+          RIGHT_SPRX="$(find "$OO_PS4_TOOLCHAIN" -type f -path "*/sce_sys/about/right.sprx" -o -name right.sprx | head -n 1)"
+          test -n "$RIGHT_SPRX"
+          cp "$RIGHT_SPRX" native/sce_sys/about/right.sprx
+          ls -lh native/sce_sys/about/right.sprx
           mkdir -p native/sce_sys
           python3 - <<'PY'
           import struct, zlib
