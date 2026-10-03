@@ -14,11 +14,10 @@ jobs:
       - name: Checkout Orbis Store
         uses: actions/checkout@v4
 
-      - name: Build with official OpenOrbis toolchain
-        uses: OpenOrbis/toolchain-action@main
-        with:
-          version: latest
-          command: cd native; make
+      - name: Build with OpenOrbis Docker toolchain
+        run: |
+          docker pull openorbisofficial/toolchain:latest
+          docker run --rm -w /workspace/native -v "$GITHUB_WORKSPACE:/workspace" openorbisofficial/toolchain:latest make
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
