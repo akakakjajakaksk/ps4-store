@@ -1,0 +1,55 @@
+name: Test Official OpenOrbis Hello World
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout OpenOrbis source
+        uses: actions/checkout@v4
+        with:
+          repository: OpenOrbis/OpenOrbis-PS4-Toolchain
+          path: oo-source
+
+      - name: Download official OpenOrbis v0.5.4 toolchain
+        run: |
+          curl -L --fail --retry 3 -o /tmp/openorbis.tar.gz \
+            https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz
+          mkdir -p "$GITHUB_WORKSPACE/toolchain"
+          tar -xzf /tmp/openorbis.tar.gz -C "$GITHUB_WORKSPACE/toolchain"
+          ROOT="$(dirname "$(dirname "$(dirname "$(find "$GITHUB_WORKSPACE/toolchain" -type f -name PkgTool.Core -path "*/bin/linux/*" -print -quit)")")")"
+          echo "OO_PS4_TOOLCHAIN=$ROOT" >> "$GITHUB_ENV"
+          chmod +x "$ROOT/bin/linux/"*
+
+      - name: Install linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
+
+      - name: Build official hello world files
+        run: |
+          cd oo-source/samples/hello_world
+          make pkg.gp4
+
+      - name: Package official hello world
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/oo-source/samples/hello_world \
+            -e DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
+            ubuntu:20.04 bash -lc '
+              apt-get update &&
+              DEBIAN_FRONTEND=noninteractive apt-get install -y libssl1.1 &&
+              chmod +x "/workspace/toolchain/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" &&
+              "/workspace/toolchain/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" pkg_build pkg.gp4 .
+            '
+          ls -lh oo-source/samples/hello_world/*.pkg
+
+      - name: Upload official hello world PKG
+        uses: actions/upload-artifact@v4
+        with:
+          name: openorbis-official-hello-world
+          path: oo-source/samples/hello_world/*.pkg
+          if-no-files-found: error
