@@ -1,9 +1,9 @@
 TITLE := Orbis Store
-VERSION := 0.40
+VERSION := 01.00
 TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
-LIBS := -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad -lSceSysmodule -lSDL2
+LIBS := -lc -lkernel -lc++
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
