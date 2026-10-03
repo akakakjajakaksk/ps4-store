@@ -14,20 +14,11 @@ jobs:
       - name: Checkout Orbis Store
         uses: actions/checkout@v4
 
-      - name: Install host build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld make git
-
-      - name: Get OpenOrbis toolchain
-        run: |
-          git clone --depth 1 https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain.git "$GITHUB_WORKSPACE/openorbis"
-
-      - name: Build Native PKG
-        working-directory: native
-        env:
-          OO_PS4_TOOLCHAIN: ${{ github.workspace }}/openorbis
-        run: make
+      - name: Build with official OpenOrbis toolchain
+        uses: OpenOrbis/toolchain-action@main
+        with:
+          version: latest
+          command: cd native; make
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
