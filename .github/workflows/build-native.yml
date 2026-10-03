@@ -58,14 +58,24 @@ jobs:
           command -v ld.lld
           ld.lld --version
 
-      - name: Build Orbis Store
-        env:
-          CLR_OPENSSL_VERSION_OVERRIDE: "3"
-          DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER: "0"
+      - name: Build Orbis Store files
         run: |
-          openssl version
           cd native
-          make
+          make pkg.gp4
+
+      - name: Package with compatible OpenSSL
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/native \
+            ubuntu:20.04 bash -lc '
+              apt-get update &&
+              DEBIAN_FRONTEND=noninteractive apt-get install -y libssl1.1 &&
+              chmod +x "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" &&
+              "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" pkg_build pkg.gp4 .
+            '
+          test -f native/IV0000-BREW00001_00-ORBISSTORE000001.pkg
+          ls -lh native/IV0000-BREW00001_00-ORBISSTORE000001.pkg
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
