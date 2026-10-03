@@ -2,8 +2,61 @@
   {
     "id": "apollo-ps4",
     "name": "Apollo Save Tool",
-    "category": "Utilitarios",
+    "category": "Utilitários",
     "type": "PKG",
-    "authorized": true
+    "description": "Gerenciador de saves feito para PS4. Permite gerenciar, importar, exportar e aplicar patches em saves.",
+    "version": "2.3.2",
+    "size": "Ver no release",
+    "developer": "bucanero",
+    "firmware": "PS4 - suporte amplo; consulte notas do release",
+    "sha256": "Consulte o release oficial",
+    "downloads": 5200,
+    "added": "2026-04-26",
+    "url": "https://github.com/bucanero/apollo-ps4/releases/latest/download/IV0000-APOL00004_00-APOLLO0000000PS4.pkg"
+  },
+  {
+    "id": "ezremote-ps4",
+    "name": "ezRemote Client",
+    "category": "Utilitários",
+    "type": "PKG",
+    "description": "Cliente de arquivos e servidores remotos para PS4, com suporte a FTP, SFTP, SMB, NFS, WebDAV e instalação de PKG compatível.",
+    "version": "2.00",
+    "size": "Ver no release",
+    "developer": "cy33hc",
+    "firmware": "PS4 - consulte requisitos do release",
+    "sha256": "Consulte os assets oficiais",
+    "downloads": 4700,
+    "added": "2026-05-03",
+    "url": "https://github.com/cy33hc/ps4-ezremote-client/releases/latest"
+  },
+  {
+    "id": "itemzflow-ps4",
+    "name": "ItemzFlow",
+    "category": "Utilitários",
+    "type": "PKG",
+    "description": "Game manager e alternativa de menu para PS4, open source, com gerenciador de apps e recursos de biblioteca.",
+    "version": "1.08",
+    "size": "Ver no release",
+    "developer": "LightningMods",
+    "firmware": "PS4; release 1.08 inclui suporte FUSE até 13.02",
+    "sha256": "Consulte a distribuição oficial",
+    "downloads": 6100,
+    "added": "2026-05-31",
+    "url": "https://github.com/LightningMods/Itemzflow/releases/latest"
+  },
+  {
+    "id": "homebrew-store-ps4",
+    "name": "Homebrew Store",
+    "category": "Utilitários",
+    "type": "PKG",
+    "description": "Homebrew Store open source para PS4, com catálogo e gerenciamento de downloads de apps homebrew.",
+    "version": "4.4",
+    "size": "Ver nos assets",
+    "developer": "LightningMods",
+    "firmware": "PS4 - consulte notas do release",
+    "sha256": "Consulte os assets oficiais",
+    "downloads": 5800,
+    "added": "2026-01-01",
+    "url": "https://github.com/LightningMods/PS4-Store/releases/latest"
   }
 ]
