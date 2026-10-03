@@ -19,18 +19,20 @@ jobs:
           curl -L --fail --retry 3 -o /tmp/openorbis.tar.gz \
             https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz
           mkdir -p "$GITHUB_WORKSPACE/openorbis"
-          tar -xzf /tmp/openorbis.tar.gz -C "$GITHUB_WORKSPACE/openorbis" --strip-components=1
-          chmod +x "$GITHUB_WORKSPACE/openorbis/bin/linux/"* || true
-          find "$GITHUB_WORKSPACE/openorbis/bin/linux" -maxdepth 1 -type f -printf "%f\n" | sort
+          tar -xzf /tmp/openorbis.tar.gz -C "$GITHUB_WORKSPACE/openorbis"
+          TOOLCHAIN_ROOT="$(dirname "$(dirname "$(dirname "$(find "$GITHUB_WORKSPACE/openorbis" -type f -name PkgTool.Core -path "*/bin/linux/*" -print -quit)")")")"
+          test -n "$TOOLCHAIN_ROOT"
+          echo "OO_PS4_TOOLCHAIN=$TOOLCHAIN_ROOT" >> "$GITHUB_ENV"
+          chmod +x "$TOOLCHAIN_ROOT/bin/linux/"* || true
+          echo "Toolchain root: $TOOLCHAIN_ROOT"
+          find "$TOOLCHAIN_ROOT/bin/linux" -maxdepth 1 -type f -printf "%f\n" | sort
 
       - name: Prepare package assets
         run: |
           mkdir -p native/sce_sys
-          cp "$GITHUB_WORKSPACE/openorbis/bin/data/icon0.png" native/sce_sys/icon0.png
+          cp "$OO_PS4_TOOLCHAIN/bin/data/icon0.png" native/sce_sys/icon0.png
 
       - name: Build Orbis Store
-        env:
-          OO_PS4_TOOLCHAIN: ${{ github.workspace }}/openorbis
         run: |
           cd native
           make
