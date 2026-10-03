@@ -17,7 +17,7 @@ jobs:
       - name: Build with OpenOrbis Docker toolchain
         run: |
           docker pull openorbisofficial/toolchain:latest
-          docker run --rm --user 0 -w /workspace/native -v "$GITHUB_WORKSPACE:/workspace" openorbisofficial/toolchain:latest make
+          docker run --rm --user 0 -w /workspace/native -v "$GITHUB_WORKSPACE:/workspace" openorbisofficial/toolchain:latest bash -lc 'echo "OO_PS4_TOOLCHAIN=$OO_PS4_TOOLCHAIN"; echo "--- tools ---"; find /lib/OpenOrbisSDK /usr/local/bin /usr/bin -maxdepth 4 \( -iname "create-fself*" -o -iname "PkgTool.Core*" -o -iname "create-gp4*" \) 2>/dev/null | sort; echo "--- build ---"; make'
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
