@@ -53,7 +53,7 @@ sce_sys/param.sfo: Makefile
 
 eboot.bin: $(OBJS)
 	$(LD) $(OBJS) -o $(INTDIR)/orbis-store.elf $(LDFLAGS)
-	$(TOOLCHAIN)/bin/$(CDIR)/create-eboot -in=$(INTDIR)/orbis-store.elf -out=eboot.bin
+	$(TOOLCHAIN)/bin/$(CDIR)/create-fself -in=$(INTDIR)/orbis-store.elf -out=$(INTDIR)/orbis-store.oelf --eboot eboot.bin --paid 0x3800000000000011
 
 $(INTDIR)/%.o: $(PROJDIR)/%.cpp
 	mkdir -p $(INTDIR)
