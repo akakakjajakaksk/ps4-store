@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PS4 Homebrew Store</title><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><div><h1>PS4 <span>STORE</span></h1><p>Homebrew e arquivos autorizados</p></div><button id="addBtn">+ Adicionar URL</button></header>
+<main>
+<section class="tools"><input id="search" placeholder="Pesquisar no catálogo..."><select id="filter"><option value="all">Todos</option><option value="PKG">PKG</option><option value="ELF">ELF</option><option value="BIN">BIN</option></select></section>
+<div id="notice">Use apenas homebrew, backups próprios e arquivos que você tenha autorização para distribuir.</div>
+<section id="grid" class="grid"></section>
+</main>
+<div id="modal" class="modal hidden"><form id="form"><h2>Adicionar arquivo por URL</h2><input id="name" required placeholder="Nome"><input id="url" required type="url" placeholder="https://servidor/arquivo.pkg"><select id="type"><option>PKG</option><option>ELF</option><option>BIN</option></select><textarea id="desc" placeholder="Descrição"></textarea><div class="actions"><button type="button" id="cancel">Cancelar</button><button type="submit">Adicionar</button></div><small>O item fica salvo neste navegador. Para publicar para todos, edite apps.json.</small></form></div>
+<script src="app.js"></script>
+</body></html>
