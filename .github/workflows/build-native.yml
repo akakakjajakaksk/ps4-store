@@ -59,7 +59,11 @@ jobs:
           ld.lld --version
 
       - name: Build Orbis Store
+        env:
+          CLR_OPENSSL_VERSION_OVERRIDE: "3"
+          DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER: "0"
         run: |
+          openssl version
           cd native
           make
 
