@@ -30,7 +30,26 @@ jobs:
       - name: Prepare package assets
         run: |
           mkdir -p native/sce_sys
-          cp "$OO_PS4_TOOLCHAIN/bin/data/icon0.png" native/sce_sys/icon0.png
+          python3 - <<'PY'
+          import struct, zlib
+          w = h = 512
+          raw = bytearray()
+          for y in range(h):
+              raw.append(0)
+              for x in range(w):
+                  r = 10 + (x * 15 // w)
+                  g = 35 + (y * 45 // h)
+                  b = 95 + ((x + y) * 90 // (w + h))
+                  raw += bytes((r, g, b))
+          def chunk(t, d):
+              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t+d) & 0xffffffff)
+          png = b"\\x89PNG\\r\\n\\x1a\\n"
+          png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+          png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+          png += chunk(b"IEND", b"")
+          open("native/sce_sys/icon0.png", "wb").write(png)
+          PY
+          file native/sce_sys/icon0.png
 
       - name: Build Orbis Store
         run: |
