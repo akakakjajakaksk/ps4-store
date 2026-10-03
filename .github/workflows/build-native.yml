@@ -51,6 +51,13 @@ jobs:
           PY
           file native/sce_sys/icon0.png
 
+      - name: Install LLVM linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
+          command -v ld.lld
+          ld.lld --version
+
       - name: Build Orbis Store
         run: |
           cd native
