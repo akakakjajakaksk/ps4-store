@@ -68,6 +68,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace/native \
+            -e DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
             ubuntu:20.04 bash -lc '
               apt-get update &&
               DEBIAN_FRONTEND=noninteractive apt-get install -y libssl1.1 &&
