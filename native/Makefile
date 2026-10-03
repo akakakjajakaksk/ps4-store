@@ -9,8 +9,8 @@ TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
 INTDIR := build
 
-CPPFILES := $(wildcard $(PROJDIR)/*.cpp)
-OBJS := $(patsubst $(PROJDIR)/%.cpp,$(INTDIR)/%.o,$(CPPFILES))
+CPPFILES := boot_test.cpp
+OBJS := $(INTDIR)/boot_test.o
 
 CXXFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1
 LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
@@ -53,7 +53,7 @@ eboot.bin: $(OBJS)
 	$(LD) $(OBJS) -o $(INTDIR)/orbis-store.elf $(LDFLAGS)
 	$(TOOLCHAIN)/bin/$(CDIR)/create-fself -in=$(INTDIR)/orbis-store.elf -out=$(INTDIR)/orbis-store.oelf --eboot eboot.bin --paid 0x3800000000000011
 
-$(INTDIR)/%.o: $(PROJDIR)/%.cpp
+$(INTDIR)/boot_test.o: boot_test.cpp
 	mkdir -p $(INTDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
