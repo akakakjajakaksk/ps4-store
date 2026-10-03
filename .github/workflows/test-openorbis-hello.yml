@@ -28,6 +28,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld
 
+      - name: Prepare official hello world package asset
+        run: |
+          mkdir -p oo-source/samples/hello_world/sce_sys/about
+          RIGHT_SPRX="$(find "$OO_PS4_TOOLCHAIN" -type f -name right.sprx -print -quit)"
+          test -n "$RIGHT_SPRX"
+          cp "$RIGHT_SPRX" oo-source/samples/hello_world/sce_sys/about/right.sprx
+          ls -lh oo-source/samples/hello_world/sce_sys/about/right.sprx
+
       - name: Build official hello world files
         run: |
           cd oo-source/samples/hello_world
