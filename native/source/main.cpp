@@ -1,106 +1,60 @@
+#include <SDL2/SDL.h>
 #include <stdio.h>
-#include <unistd.h>
-#include <orbis/Pad.h>
-#include <orbis/Sysmodule.h>
 
-struct App {
-    const char* name;
-    const char* category;
-    const char* version;
-    const char* developer;
+struct App { const char* name; const char* category; const char* version; };
+static App apps[]={
+ {"Apollo Save Tool","UTILITARIOS","2.3.2"},
+ {"ezRemote Client","UTILITARIOS","2.00"},
+ {"ItemzFlow","UTILITARIOS","1.08"},
+ {"Homebrew Store","UTILITARIOS","4.4"}
 };
+static const int APP_COUNT=sizeof(apps)/sizeof(apps[0]);
+static int selected=0;
 
-static App catalog[] = {
-    {"Apollo Save Tool", "Utilitarios", "2.3.2", "bucanero"},
-    {"ezRemote Client", "Utilitarios", "2.00", "cy33hc"},
-    {"ItemzFlow", "Utilitarios", "1.08", "LightningMods"},
-    {"Homebrew Store", "Utilitarios", "4.4", "LightningMods"}
-};
-static const int APP_COUNT = sizeof(catalog) / sizeof(catalog[0]);
-
-enum Screen { HOME, CATALOG, DETAILS, DOWNLOADS, SETTINGS };
-static Screen screen = HOME;
-static int selected = 0;
-
-static void clear_screen() { printf("\033[2J\033[H"); }
-
-static void draw_header(const char* title) {
-    clear_screen();
-    printf("=============================================\n");
-    printf("       ORBIS STORE NATIVE 0.2 - PS4          \n");
-    printf("=============================================\n");
-    printf("%s\n\n", title);
+static void rect(SDL_Renderer* r,int x,int y,int w,int h,Uint8 rr,Uint8 g,Uint8 b,Uint8 a){
+ SDL_Rect q={x,y,w,h}; SDL_SetRenderDrawColor(r,rr,g,b,a); SDL_RenderFillRect(r,&q);
 }
-
-static void draw_home() {
-    draw_header("HOME");
-    const char* items[]={"DESTAQUES","CATALOGO","DOWNLOADS","CONFIGURACOES"};
-    for(int i=0;i<4;i++) printf("%s %s\n", selected==i?">":" ", items[i]);
-    printf("\nX selecionar | setas navegar\n");
+static void draw(SDL_Renderer* r){
+ SDL_SetRenderDrawColor(r,3,18,48,255); SDL_RenderClear(r);
+ rect(r,0,0,1920,92,4,31,72,255);
+ rect(r,0,92,1920,300,5,67,135,255);
+ rect(r,85,132,8,210,88,195,255,255);
+ for(int i=0;i<APP_COUNT;i++){
+   int x=90+i*330,y=455,w=285,h=330;
+   if(i==selected){rect(r,x-8,y-8,w+16,h+16,120,210,255,255);}
+   rect(r,x,y,w,h,9,43,86,255);
+   rect(r,x,y,w,190,(Uint8)(20+i*16),(Uint8)(95+i*10),(Uint8)(165+i*8),255);
+   rect(r,x+20,y+225,w-40,14,220,235,248,255);
+   rect(r,x+20,y+258,(w-40)*2/3,9,110,145,180,255);
+ }
+ rect(r,90,860,1740,2,52,102,153,255);
+ SDL_RenderPresent(r);
 }
-
-static void draw_catalog() {
-    draw_header("CATALOGO HOMEBREW");
-    for(int i=0;i<APP_COUNT;i++)
-        printf("%s %-22s  v%s\n", selected==i?">":" ", catalog[i].name, catalog[i].version);
-    printf("\nX detalhes | O voltar\n");
-}
-
-static void draw_details() {
-    App &a=catalog[selected];
-    draw_header("DETALHES");
-    printf("%s\n\nCategoria: %s\nVersao: %s\nDev: %s\n",a.name,a.category,a.version,a.developer);
-    printf("\n[ INSTALAR - EM DESENVOLVIMENTO ]\n");
-    printf("\nO voltar\n");
-}
-
-static void draw_simple(const char* title,const char* text) {
-    draw_header(title); printf("%s\n\nO voltar\n",text);
-}
-
-static void redraw() {
-    if(screen==HOME) draw_home();
-    else if(screen==CATALOG) draw_catalog();
-    else if(screen==DETAILS) draw_details();
-    else if(screen==DOWNLOADS) draw_simple("DOWNLOADS","Nenhum download nativo iniciado.");
-    else draw_simple("CONFIGURACOES","Orbis Store Native 0.2");
-}
-
-int main() {
-    sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
-    int pad=scePadOpen(0,ORBIS_PAD_PORT_TYPE_STANDARD,0,NULL);
-    unsigned int oldButtons=0;
-    redraw();
-
-    while(1) {
-        OrbisPadData data;
-        if(pad>=0 && scePadReadState(pad,&data)==0) {
-            unsigned int now=data.buttons, pressed=now & ~oldButtons;
-            int max=(screen==HOME?4:(screen==CATALOG?APP_COUNT:1));
-
-            if((pressed & ORBIS_PAD_BUTTON_UP) && (screen==HOME || screen==CATALOG)) {
-                selected=(selected+max-1)%max; redraw();
-            }
-            if((pressed & ORBIS_PAD_BUTTON_DOWN) && (screen==HOME || screen==CATALOG)) {
-                selected=(selected+1)%max; redraw();
-            }
-            if(pressed & ORBIS_PAD_BUTTON_CROSS) {
-                if(screen==HOME) {
-                    if(selected==1){screen=CATALOG;selected=0;}
-                    else if(selected==2){screen=DOWNLOADS;selected=0;}
-                    else if(selected==3){screen=SETTINGS;selected=0;}
-                    else {screen=CATALOG;selected=0;}
-                } else if(screen==CATALOG) screen=DETAILS;
-                redraw();
-            }
-            if(pressed & ORBIS_PAD_BUTTON_CIRCLE) {
-                if(screen==DETAILS){screen=CATALOG;}
-                else if(screen!=HOME){screen=HOME;selected=0;}
-                redraw();
-            }
-            oldButtons=now;
-        }
-        usleep(16000);
-    }
-    return 0;
+int main(){
+ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_GAMECONTROLLER)!=0) return 1;
+ SDL_Window* win=SDL_CreateWindow("Orbis Store Native 0.3",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,1920,1080,SDL_WINDOW_FULLSCREEN);
+ if(!win) return 2;
+ SDL_Renderer* r=SDL_CreateRenderer(win,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
+ if(!r) return 3;
+ SDL_GameController* pad=NULL;
+ for(int i=0;i<SDL_NumJoysticks();i++) if(SDL_IsGameController(i)){pad=SDL_GameControllerOpen(i);break;}
+ int run=1; draw(r);
+ while(run){
+   SDL_Event e;
+   while(SDL_PollEvent(&e)){
+     if(e.type==SDL_QUIT) run=0;
+     if(e.type==SDL_CONTROLLERBUTTONDOWN){
+       if(e.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_LEFT){selected=(selected+APP_COUNT-1)%APP_COUNT;draw(r);}
+       if(e.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){selected=(selected+1)%APP_COUNT;draw(r);}
+       if(e.cbutton.button==SDL_CONTROLLER_BUTTON_B) run=0;
+     }
+     if(e.type==SDL_KEYDOWN){
+       if(e.key.keysym.sym==SDLK_LEFT){selected=(selected+APP_COUNT-1)%APP_COUNT;draw(r);}
+       if(e.key.keysym.sym==SDLK_RIGHT){selected=(selected+1)%APP_COUNT;draw(r);}
+     }
+   }
+   SDL_Delay(8);
+ }
+ if(pad) SDL_GameControllerClose(pad);
+ SDL_DestroyRenderer(r); SDL_DestroyWindow(win); SDL_Quit(); return 0;
 }
