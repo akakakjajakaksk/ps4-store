@@ -1,29 +1,69 @@
-TARGET := orbis-store
 TITLE := Orbis Store
+VERSION := 0.40
 TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
-APP_VERSION := 01.00
 
-SOURCES := source/main.cpp
-OBJS := $(SOURCES:.cpp=.o)
+LIBS := -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad -lSceSysmodule -lSDL2
 
-CXX := clang++
-CXXFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -I$(OO_PS4_TOOLCHAIN)/include
-LDFLAGS := -fuse-ld=lld -nostdlib -m elf_x86_64 -pie --script $(OO_PS4_TOOLCHAIN)/link.x
-LIBS := -L$(OO_PS4_TOOLCHAIN)/lib -lc -lkernel -lScePad -lSDL2
+TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
+PROJDIR := source
+COMMONDIR := $(TOOLCHAIN)/samples/_common
+INTDIR := build
 
-all: eboot.bin
+CPPFILES := $(wildcard $(PROJDIR)/*.cpp)
+COMMONFILES := $(wildcard $(COMMONDIR)/*.cpp)
+OBJS := $(patsubst $(PROJDIR)/%.cpp,$(INTDIR)/%.o,$(CPPFILES)) $(patsubst $(COMMONDIR)/%.cpp,$(INTDIR)/common_%.o,$(COMMONFILES))
 
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+CXXFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1
+LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
 
-$(TARGET).elf: $(OBJS)
-	$(CXX) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+ CXX := clang++
+ LD := ld.lld
+ CDIR := linux
+endif
+ifeq ($(UNAME_S),Darwin)
+ CXX := /usr/local/opt/llvm/bin/clang++
+ LD := /usr/local/opt/llvm/bin/ld.lld
+ CDIR := macos
+endif
 
-eboot.bin: $(TARGET).elf
-	$(OO_PS4_TOOLCHAIN)/bin/linux/create-fself -in=$(TARGET).elf -out=eboot.bin
+all: $(CONTENT_ID).pkg
+
+$(CONTENT_ID).pkg: pkg.gp4
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core pkg_build $< .
+
+pkg.gp4: eboot.bin sce_sys/param.sfo sce_sys/icon0.png
+	$(TOOLCHAIN)/bin/$(CDIR)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$^"
+
+sce_sys/param.sfo: Makefile
+	mkdir -p sce_sys
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_new $@
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ APP_TYPE --type Integer --maxsize 4 --value 1
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ APP_VER --type Utf8 --maxsize 8 --value '$(VERSION)'
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ ATTRIBUTE --type Integer --maxsize 4 --value 0
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ CATEGORY --type Utf8 --maxsize 4 --value 'gd'
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ CONTENT_ID --type Utf8 --maxsize 48 --value '$(CONTENT_ID)'
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ DOWNLOAD_DATA_SIZE --type Integer --maxsize 4 --value 0
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ SYSTEM_VER --type Integer --maxsize 4 --value 0
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ TITLE --type Utf8 --maxsize 128 --value '$(TITLE)'
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ TITLE_ID --type Utf8 --maxsize 12 --value '$(TITLE_ID)'
+	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '$(VERSION)'
+
+eboot.bin: $(OBJS)
+	$(LD) $(OBJS) -o $(INTDIR)/orbis-store.elf $(LDFLAGS)
+	$(TOOLCHAIN)/bin/$(CDIR)/create-fself -in=$(INTDIR)/orbis-store.elf -out=$(INTDIR)/orbis-store.oelf --eboot eboot.bin --paid 0x3800000000000011
+
+$(INTDIR)/%.o: $(PROJDIR)/%.cpp
+	mkdir -p $(INTDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $<
+
+$(INTDIR)/common_%.o: $(COMMONDIR)/%.cpp
+	mkdir -p $(INTDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(TARGET).elf eboot.bin
+	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo $(CONTENT_ID).pkg
 
 .PHONY: all clean
