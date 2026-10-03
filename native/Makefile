@@ -10,7 +10,7 @@ OBJS := $(SOURCES:.cpp=.o)
 CXX := clang++
 CXXFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -I$(OO_PS4_TOOLCHAIN)/include
 LDFLAGS := -fuse-ld=lld -nostdlib -m elf_x86_64 -pie --script $(OO_PS4_TOOLCHAIN)/link.x
-LIBS := -L$(OO_PS4_TOOLCHAIN)/lib -lc -lkernel -lScePad
+LIBS := -L$(OO_PS4_TOOLCHAIN)/lib -lc -lkernel -lScePad -lSDL2
 
 all: eboot.bin
 
