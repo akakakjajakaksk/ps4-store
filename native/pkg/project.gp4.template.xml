@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Template de referencia. Valide/regrave no LibOrbisPkg/PkgEditor antes do primeiro pacote. -->
+<orbis-store-package>
+  <title>Orbis Store</title>
+  <title-id>BREW00001</title-id>
+  <content-id>IV0000-BREW00001_00-ORBISSTORE000001</content-id>
+  <app-version>01.00</app-version>
+  <required-files>
+    <file>eboot.bin</file>
+    <file>sce_sys/param.sfo</file>
+    <file>sce_sys/icon0.png</file>
+  </required-files>
+</orbis-store-package>
