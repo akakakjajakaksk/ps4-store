@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - "native/**"
+      - "peppy-icon0-1.png"
       - ".github/workflows/build-native.yml"
 
 jobs:
@@ -45,25 +46,21 @@ jobs:
           cp "$RIGHT_SPRX" native/sce_sys/about/right.sprx
           ls -lh native/sce_sys/about/right.sprx
           mkdir -p native/sce_sys
+          cp peppy-icon0-1.png native/sce_sys/icon0.png
           python3 - <<'PY'
-          import struct, zlib
-          w = h = 512
-          raw = bytearray()
-          for y in range(h):
-              raw.append(0)
-              for x in range(w):
-                  r = 10 + (x * 15 // w)
-                  g = 35 + (y * 45 // h)
-                  b = 95 + ((x + y) * 90 // (w + h))
-                  raw += bytes((r, g, b))
-          def chunk(t, d):
-              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t+d) & 0xffffffff)
-          png = b"\\x89PNG\\r\\n\\x1a\\n"
-          png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-          png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-          png += chunk(b"IEND", b"")
-          open("native/sce_sys/icon0.png", "wb").write(png)
+          from pathlib import Path
+          import struct
+
+          data = Path("native/sce_sys/icon0.png").read_bytes()
+          if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+              raise SystemExit("PEPPY icon must be a valid PNG")
+          header = struct.unpack(">IIBBBBB", data[16:29])
+          if header != (512, 512, 8, 2, 0, 0, 0):
+              raise SystemExit(f"PEPPY icon must be 512x512, RGB, 8-bit, noninterlaced; got {header}")
+          print("PEPPY icon verified: 512x512 RGB PNG")
           PY
+          cmp peppy-icon0-1.png native/sce_sys/icon0.png
+          sha256sum peppy-icon0-1.png native/sce_sys/icon0.png
           file native/sce_sys/icon0.png
 
       - name: Install LLVM linker
