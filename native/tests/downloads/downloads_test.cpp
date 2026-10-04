@@ -117,7 +117,7 @@ int main(){
  const uint32_t threadErrors[]={0x80020022,0x80020016,0x8002000c};
  for(int fault=25;fault<=27;++fault){reset(fault);assert(!startDownload(spec));diag=downloadSnapshot();assert(diag.state==FAILED&&diag.errorCode==DOWNLOAD_ERROR_THREAD&&diag.stage==DOWNLOAD_STAGE_THREAD&&(uint32_t)diag.nativeCode==threadErrors[fault-25]&&moduleLoads==0&&!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));}
  spec.filename="../sample.pkg";assert(!startDownload(spec));assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC);
- FILE* log=fopen((std::string(testDirectory())+"/download.log").c_str(),"rb");assert(log);char logged[8192]={0};fread(logged,1,sizeof(logged)-1,log);__real_fclose(log);assert(!strstr(logged,"https://")&&!strstr(logged,"token="));
+ FILE* log=fopen((std::string(testDirectory())+"/download.log").c_str(),"rb");assert(log);char logged[8192]={0};size_t loggedBytes=fread(logged,1,sizeof(logged)-1,log);assert(loggedBytes>0&&!ferror(log));assert(__real_fclose(log)==0);assert(!strstr(logged,"https://")&&!strstr(logged,"token="));
  unlink(outputPath().c_str());unlink((std::string(testDirectory())+"/download.log").c_str());rmdir(testDirectory());
  puts("All digest, URL, redirect, length, I/O failure, cleanup, TLS, and cancellation tests passed.");
 }
