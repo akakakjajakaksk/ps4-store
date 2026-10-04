@@ -564,8 +564,12 @@ static void httpFallbackTests() {
     assert(!bgftInitCalls && !serverStartCalls);
     failedHttp(USER_INVALID, INSTALL_ERROR_USER, INSTALL_STAGE_USER, EINVAL);
     assert(!bgftInitCalls && !serverStartCalls);
-    failedHttp(HTTP_PATH_REPLACED, INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, EINVAL);
-    assert(!bgftInitCalls && !serverStartCalls);
+    // HTTP mode serves the already-open validated descriptor, so replacing the
+    // sandbox path after validation must not affect installation.
+    value = runHttp(HTTP_PATH_REPLACED);
+    assert(value.state == INSTALL_DONE && value.errorCode == 0);
+    assert(httpRegisterCalls == 1 && serverStartCalls == 1);
+    serverClosedAfterStop();
     failedHttp(APP_EXISTS, INSTALL_ERROR_ALREADY_INSTALLED, INSTALL_STAGE_EXISTS, 0);
     assert(!foregroundUserCalls && !bgftInitCalls && !serverStartCalls && !registerCalls);
     failedHttp(SELF_APP, INSTALL_ERROR_SELF, INSTALL_STAGE_TITLE, 0);
