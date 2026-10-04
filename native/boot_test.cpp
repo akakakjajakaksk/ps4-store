@@ -3,6 +3,7 @@
 #include <orbis/VideoOut.h>
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
+#include <orbis/UserService.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -106,9 +107,17 @@ int main(void){
  if(rc<0)for(;;)sceKernelUsleep(1000000);
  sceVideoOutSetFlipRate(video,0);
 
+ int32_t userModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_USER_SERVICE);
+ int32_t userId=-1,userRc=userModule;
+ if(userModule>=0){
+  OrbisUserServiceInitializeParams usp;
+  usp.priority=ORBIS_KERNEL_PRIO_FIFO_LOWEST;
+  userRc=sceUserServiceInitialize(&usp);
+  if(userRc==0) userRc=sceUserServiceGetInitialUser(&userId);
+ }
  int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
  int32_t padInit=(padModule>=0)?scePadInit():padModule;
- int32_t pad=(padInit==0)?scePadOpen(ORBIS_VIDEO_USER_MAIN,0,0,0):-1;
+ int32_t pad=(padInit==0 && userRc==0)?scePadOpen(userId,0,0,0):-1;
 
  int selected=0,front=0;uint32_t prev=0;int64_t frame=1;
  drawStore(fb[front],selected,(pad>=0)?1:0);
