@@ -27,6 +27,7 @@ int32_t sceHttpCreateTemplate(int32_t,const char*,int32_t,int32_t);
 int32_t sceHttpsEnableOption(int32_t,uint32_t);
 void sceHttpSetAutoRedirect();
 void sceHttpSetRecvTimeOut();
+void sceHttpSetResponseHeaderMaxSize();
 void sceHttpsGetSslError();
 int32_t sceHttpSetResolveTimeOut(int32_t,uint32_t);
 int32_t sceHttpSetConnectTimeOut(int32_t,uint32_t);

@@ -19,6 +19,8 @@ extern "C" int32_t peppyHttpSetAutoRedirect(int32_t, int32_t)
     __asm__("sceHttpSetAutoRedirect");
 extern "C" int32_t peppyHttpSetRecvTimeOut(int32_t, uint32_t)
     __asm__("sceHttpSetRecvTimeOut");
+extern "C" int32_t peppyHttpSetResponseHeaderMaxSize(int32_t, size_t)
+    __asm__("sceHttpSetResponseHeaderMaxSize");
 extern "C" int32_t peppyHttpsGetSslError(int32_t, int32_t*, uint32_t*)
     __asm__("sceHttpsGetSslError");
 extern "C" int32_t peppySslTerm(int32_t) __asm__("sceSslTerm");
@@ -34,6 +36,7 @@ extern "C" int32_t* peppyNetErrnoLoc() __asm__("sceNetErrnoLoc");
 namespace {
 const size_t URL_CAP = 4096;
 const size_t NAME_CAP = 96;
+const size_t RESPONSE_HEADER_CAP = 64 * 1024;
 const uint64_t MAX_PACKAGE_BYTES = 4ULL * 1024 * 1024 * 1024;
 const uint32_t TLS_CHECKS = 0x01 | 0x04 | 0x08 | 0x10 | 0x20 | 0x80;
 const int MAX_REDIRECTS = 5;
@@ -138,7 +141,7 @@ bool safeUrl(const char* url, size_t* originLength = 0) {
 
 bool redirectUrl(const char* current, const char* headers, size_t headerLength,
                  char* output) {
-    if (!headers || !headerLength || headerLength > 32768) return false;
+    if (!headers || !headerLength || headerLength > RESPONSE_HEADER_CAP) return false;
     const char* location = 0;
     size_t locationLength = 0;
     size_t pos = 0;
@@ -258,8 +261,9 @@ int transferError(int request, int where, int32_t native) {
     __atomic_store_n(&g_sslDetails, detail, __ATOMIC_RELEASE);
     int32_t net = 0;
     if (sceHttpGetLastErrno(request, &net) < 0) net = networkErrno();
-    return fail(sslRc == 0 && (error || detail) ? DOWNLOAD_ERROR_TLS : DOWNLOAD_ERROR_NETWORK,
-                where, native, net);
+    int category = (uint32_t)native == 0x80431073U ? DOWNLOAD_ERROR_RESPONSE_HEADERS :
+                   sslRc == 0 && (error || detail) ? DOWNLOAD_ERROR_TLS : DOWNLOAD_ERROR_NETWORK;
+    return fail(category, where, native, net);
 }
 
 int ensureModule(OrbisSysModuleInternal module, int where) {
@@ -359,6 +363,12 @@ int runTransfer() {
     handles.tmpl = sceHttpCreateTemplate(handles.http, "PeppyStore/1.0", ORBIS_HTTP_VERSION_1_1, 0);
     if (handles.tmpl < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_TEMPLATE, handles.tmpl);
     int32_t rc;
+    // GitHub security and signed-release redirect headers exceed libSceHttp's
+    // small default. Configure a finite cap before connections inherit it;
+    // the redirect parser enforces the same cap independently.
+    stage(DOWNLOAD_STAGE_HEADER_LIMIT);
+    rc = peppyHttpSetResponseHeaderMaxSize(handles.tmpl, RESPONSE_HEADER_CAP);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_HEADER_LIMIT, rc);
     stage(DOWNLOAD_STAGE_TLS_OPTIONS);
     rc = sceHttpsEnableOption(handles.tmpl, TLS_CHECKS);
     if (rc < 0) return fail(DOWNLOAD_ERROR_TLS, DOWNLOAD_STAGE_TLS_OPTIONS, rc);
@@ -411,6 +421,8 @@ int runTransfer() {
         stage(DOWNLOAD_STAGE_HEADERS);
         rc = sceHttpGetAllResponseHeaders(handles.req, &responseHeaders, &responseHeaderLength);
         if (rc < 0) return fail(DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, rc);
+        if (responseHeaderLength > RESPONSE_HEADER_CAP)
+            return fail(DOWNLOAD_ERROR_RESPONSE_HEADERS, DOWNLOAD_STAGE_HEADERS, rc);
         if (!redirectUrl(current, responseHeaders, responseHeaderLength, next))
             return fail(DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, 0);
         handles.closeRequest();
@@ -590,6 +602,6 @@ const char* downloadStageName(int value) {
         "Criar requisição", "Cabeçalho HTTP", "Envio HTTPS", "Resposta HTTP",
         "Destino HTTPS", "Tamanho do arquivo", "Abrir arquivo", "Receber arquivo",
         "Validar PKG", "Validar SHA-256", "Gravar arquivo", "Finalizar gravação",
-        "Fechar arquivo", "Salvar PKG", "Limpar parcial", "Concluído", "Iniciar tarefa", "Dados do download"};
+        "Fechar arquivo", "Salvar PKG", "Limpar parcial", "Concluído", "Iniciar tarefa", "Dados do download", "Limite de cabeçalhos"};
     return value >= 0 && (size_t)value < sizeof(names)/sizeof(names[0]) ? names[value] : "Download";
 }

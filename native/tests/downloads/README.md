@@ -16,4 +16,6 @@ Coverage includes four SHA-256 NIST vectors, fragmented PKG magic, normal and re
 
 The transfer writes a numeric diagnostic log at `/data/peppy-store/downloads/download.log` on a PS4 (inside the unique test directory on the host). Tests check that the log contains no URLs or signed tokens.
 
+The console regression `0x80431073` (`TOO_LARGE_RESPONSE_HEADER`) is modeled with the native 5,000-byte default: an 8 KiB response fails with that default, then a redirected download succeeds after the template sets 64 KiB and the connection inherits it. Additional checks reject responses above 64 KiB, retain the original error and dedicated category, validate parser boundaries, and release all handles when configuring the limit fails.
+
 These tests check control flow and integrity handling. They do not verify the PS4 certificate store, TLS negotiation, firmware compatibility, native symbol ABI, or console filesystem behavior. The production implementation explicitly enables peer/hostname/CA/date checks and SNI, and fails on TLS errors; no bypass callback is installed.

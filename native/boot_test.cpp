@@ -327,6 +327,7 @@ static const char* downloadErrorText(int code) {
     case DOWNLOAD_ERROR_THREAD: return "Não foi possível iniciar o download.";
     case DOWNLOAD_ERROR_NETWORK: return "Não foi possível estabelecer a conexão.";
     case DOWNLOAD_ERROR_NOT_READY: return "O PS4 ainda não obteve uma conexão de rede para baixar.";
+    case DOWNLOAD_ERROR_RESPONSE_HEADERS: return "A resposta do servidor excedeu o limite permitido.";
     case DOWNLOAD_ERROR_HTTP: return "O servidor não disponibilizou o pacote.";
     case DOWNLOAD_ERROR_REDIRECT: return "O link do pacote foi recusado.";
     case DOWNLOAD_ERROR_TLS: return "Falha na conexão segura. Confira a data e a hora do PS4.";

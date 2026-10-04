@@ -16,6 +16,8 @@ static std::atomic<bool> aborted(false), blocked(false);
 static std::string requestUrl;
 static bool secure=false, manual=false;
 static int moduleLoads=0, moduleProbes=0, stateQueries=0, netError=0;
+static size_t nativeHeaderCap=5000, connectionHeaderCap=5000;
+static bool headerConfigured=false;
 static const char* testDirectory(){static char path[]="/tmp/peppy-download-test-XXXXXX";static const char* created=mkdtemp(path);assert(created);return created;}
 static std::string outputPath(bool partial=false){return std::string(testDirectory())+"/sample.pkg"+(partial?".part":"");}
 extern "C" size_t __real_fwrite(const void*,size_t,size_t,FILE*);
@@ -44,7 +46,9 @@ extern "C" int32_t sceSslInit(size_t){return 2;}
 extern "C" int32_t mockSslTerm(int32_t) __asm__("sceSslTerm");
 extern "C" int32_t mockSslTerm(int32_t){++closedSsl;return 0;}
 extern "C" int32_t sceHttpInit(int32_t,int32_t,size_t){return 3;}
-extern "C" int32_t sceHttpCreateTemplate(int32_t,const char*,int32_t,int32_t proxy){assert(proxy==0);return 4;}
+extern "C" int32_t sceHttpCreateTemplate(int32_t,const char*,int32_t,int32_t proxy){assert(proxy==0);nativeHeaderCap=5000;headerConfigured=false;return 4;}
+extern "C" int32_t mockHeaderCap(int32_t,size_t) __asm__("sceHttpSetResponseHeaderMaxSize");
+extern "C" int32_t mockHeaderCap(int32_t templateId,size_t size){assert(templateId==4&&size==65536);if(mode==30)return (int32_t)0x804311fe;nativeHeaderCap=size;headerConfigured=true;return 0;}
 extern "C" int32_t sceHttpsEnableOption(int32_t,uint32_t flags){assert(flags==0xbd);secure=true;return 0;}
 extern "C" int32_t mockAuto(int32_t,int32_t) __asm__("sceHttpSetAutoRedirect");
 extern "C" int32_t mockAuto(int32_t,int32_t e){assert(e==0);manual=true;return 0;}
@@ -55,13 +59,13 @@ extern "C" int32_t mockSslError(int32_t,int32_t* e,uint32_t* d){*e=mode==7?1:0;*
 extern "C" int32_t sceHttpSetResolveTimeOut(int32_t,uint32_t){return mode==24?(int32_t)0x804310fe:0;}
 extern "C" int32_t sceHttpSetConnectTimeOut(int32_t,uint32_t){return 0;}
 extern "C" int32_t sceHttpSetSendTimeOut(int32_t,uint32_t){return 0;}
-extern "C" int32_t sceHttpCreateConnectionWithURL(int32_t,const char* url,bool){requestUrl=url;return 5;}
+extern "C" int32_t sceHttpCreateConnectionWithURL(int32_t,const char* url,bool){connectionHeaderCap=nativeHeaderCap;requestUrl=url;return 5;}
 extern "C" int32_t sceHttpCreateRequestWithURL(int32_t,int32_t,const char*,uint64_t){return 10+(++requests);}
 extern "C" int32_t sceHttpAddRequestHeader(int32_t,const char*,const char*,int32_t){return 0;}
-extern "C" int32_t sceHttpSendRequest(int32_t,const void*,size_t){assert(secure&&manual);if(mode==6){blocked=true;while(!aborted.load())sceKernelUsleep(1000);return -1;}if(mode==7)return -1;return 0;}
-extern "C" int32_t sceHttpGetStatusCode(int32_t,int32_t* out){*out=(mode==1&&requests==1)||mode==2||mode==8?302:mode==3?404:200;return 0;}
-extern "C" int32_t sceHttpGetLastErrno(int32_t,int32_t* out){*out=netError;return 0;}
-extern "C" int32_t sceHttpGetAllResponseHeaders(int32_t,char** out,size_t* n){static char good[]="HTTP/1.1 302 Found\r\nLocation: https://release-assets.githubusercontent.com/file.pkg?token=abc\r\n\r\n";static char evil[]="Location: https://github.com.evil.example/file.pkg\r\n";*out=mode==2?evil:good;*n=strlen(*out);return 0;}
+extern "C" int32_t sceHttpSendRequest(int32_t,const void*,size_t){assert(secure&&manual);if(mode==6){blocked=true;while(!aborted.load())sceKernelUsleep(1000);return -1;}if(mode==7)return -1;size_t headers=mode==29?65537:mode==28?8000:500;if(headers>connectionHeaderCap)return (int32_t)0x80431073;return 0;}
+extern "C" int32_t sceHttpGetStatusCode(int32_t,int32_t* out){*out=((mode==1||mode==28)&&requests==1)||mode==2||mode==8?302:mode==3?404:200;return 0;}
+extern "C" int32_t sceHttpGetLastErrno(int32_t,int32_t* out){*out=mode==29?(int32_t)0x80431073:netError;return 0;}
+extern "C" int32_t sceHttpGetAllResponseHeaders(int32_t,char** out,size_t* n){static char good[]="HTTP/1.1 302 Found\r\nLocation: https://release-assets.githubusercontent.com/file.pkg?token=abc\r\n\r\n";static char evil[]="Location: https://github.com.evil.example/file.pkg\r\n";static std::string large;if(mode==28){large=std::string(good)+"X-Security: "+std::string(8000,'a')+"\r\n";*out=&large[0];*n=large.size();}else{*out=mode==2?evil:good;*n=strlen(*out);}return 0;}
 extern "C" int32_t sceHttpGetResponseContentLength(int32_t,int32_t* type,size_t* n){*type=mode==14?1:ORBIS_HTTP_CONTENTLEN_EXIST;*n=mode==9||mode==10?8:payload.size()+(mode==4?1:0);return 0;}
 extern "C" int32_t sceHttpReadData(int32_t,void* out,uint32_t max){if(cursor==payload.size())return 0;size_t n=payload.size()-cursor;if(n>max)n=max;if(n>3)n=3;memcpy(out,payload.data()+cursor,n);cursor+=n;return n;}
 extern "C" int32_t sceHttpAbortRequest(int32_t){aborted=true;return 0;}
@@ -83,6 +87,7 @@ int main(){
  assert(hashText(std::string(1000000,'a'))=="cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
  assert(safeUrl("https://github.com/a/b/releases/download/v1/a.pkg"));assert(!safeUrl("http://github.com/a"));assert(!safeUrl("https://github.com.evil/a"));assert(!safeUrl("https://github.com@evil/a"));assert(!safeUrl("https://github.com:444/a"));assert(!safeFilename("../evil.pkg"));assert(!safeFilename("bad/name.pkg"));
  char url[URL_CAP];const char* h="Location: /next.pkg\r\n";assert(redirectUrl("https://github.com/a",h,strlen(h),url)&&!strcmp(url,"https://github.com/next.pkg"));h="Location: /a\r\nLocation: /b\r\n";assert(!redirectUrl("https://github.com/a",h,strlen(h),url));
+ std::string largeHeader="Location: https://release-assets.githubusercontent.com/a.pkg\r\nX-Padding: ";largeHeader.resize(RESPONSE_HEADER_CAP,'a');assert(redirectUrl("https://github.com/a",largeHeader.data(),largeHeader.size(),url));largeHeader.push_back('a');assert(!redirectUrl("https://github.com/a",largeHeader.data(),largeHeader.size(),url));
  DownloadSpec spec={"https://github.com/official/repo/releases/download/v1/app.pkg","sample.pkg",8,0};
  reset(0);assert(startDownload(spec));assert(finished().state==DONE);cleanHandles();assert(access(outputPath().c_str(),F_OK)==0);
  reset(1);assert(startDownload(spec));assert(finished().state==DONE&&requests==2);cleanHandles();
@@ -116,6 +121,9 @@ int main(){
  cursor=0;assert(startDownload(spec));assert(finished().state==DONE);assert(closedPools==2&&closedHttp==2&&closedSsl==2);
  const uint32_t threadErrors[]={0x80020022,0x80020016,0x8002000c};
  for(int fault=25;fault<=27;++fault){reset(fault);assert(!startDownload(spec));diag=downloadSnapshot();assert(diag.state==FAILED&&diag.errorCode==DOWNLOAD_ERROR_THREAD&&diag.stage==DOWNLOAD_STAGE_THREAD&&(uint32_t)diag.nativeCode==threadErrors[fault-25]&&moduleLoads==0&&!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));}
+ reset(28);secure=manual=true;connectionHeaderCap=5000;assert((uint32_t)sceHttpSendRequest(1,0,0)==0x80431073);assert(startDownload(spec));assert(finished().state==DONE&&requests==2&&nativeHeaderCap==65536&&headerConfigured);cleanHandles();
+ reset(29);assert(startDownload(spec));diag=finished();assert(diag.state==FAILED&&diag.errorCode==DOWNLOAD_ERROR_RESPONSE_HEADERS&&diag.stage==DOWNLOAD_STAGE_SEND&&(uint32_t)diag.nativeCode==0x80431073&&(uint32_t)diag.networkCode==0x80431073&&diag.sslCode==0&&diag.sslDetails==0);cleanHandles();
+ reset(30);assert(startDownload(spec));diag=finished();assert(diag.state==FAILED&&diag.stage==DOWNLOAD_STAGE_HEADER_LIMIT&&(uint32_t)diag.nativeCode==0x804311fe&&requests==0&&closedTemplates==1&&closedHttp==1&&closedSsl==1&&closedPools==1);
  spec.filename="../sample.pkg";assert(!startDownload(spec));assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC);
  FILE* log=fopen((std::string(testDirectory())+"/download.log").c_str(),"rb");assert(log);char logged[8192]={0};size_t loggedBytes=fread(logged,1,sizeof(logged)-1,log);assert(loggedBytes>0&&!ferror(log));assert(__real_fclose(log)==0);assert(!strstr(logged,"https://")&&!strstr(logged,"token="));
  unlink(outputPath().c_str());unlink((std::string(testDirectory())+"/download.log").c_str());rmdir(testDirectory());

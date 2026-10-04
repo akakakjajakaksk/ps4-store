@@ -31,6 +31,12 @@ já carregados após verificar seu estado. Falhas mostram a etapa e o retorno
 nativo, além do código resumido. O diagnóstico fica em
 `/data/peppy-store/downloads/download.log`, sem URLs nem tokens de redirecionamento.
 
+As respostas HTTP têm um limite explícito de 64 KiB para cabeçalhos,
+configurado antes de enviar cada pedido e aplicado também ao parser de
+redirecionamentos. Isso acomoda os cabeçalhos e os links assinados das
+releases do GitHub; o limite nativo padrão causava `0x80431073`
+(`TOO_LARGE_RESPONSE_HEADER`) no teste do console.
+
 ## Controles
 
 - Esquerda/direita: selecionar um card, com retorno ao início/fim da lista.
