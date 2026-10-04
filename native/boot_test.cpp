@@ -1,6 +1,8 @@
 #include <orbis/libkernel.h>
 #include <orbis/Sysmodule.h>
 #include <orbis/VideoOut.h>
+#include <orbis/Pad.h>
+#include <orbis/UserService.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -53,7 +55,7 @@ static void text(uint32_t*p,int x,int y,const char*s,int scale,uint32_t c){
  }
 }
 
-static void drawStore(uint32_t*p){
+static void drawStore(uint32_t*p,int selected){
  const uint32_t bg=0x80101420,top=0x80192334,panel=0x80212D42,card=0x802B3A54;
  const uint32_t accent=0x8000A8FF,white=0x80F4F7FF,muted=0x80788AA8;
  fill(p,bg); rect(p,0,0,W,120,top);rect(p,0,116,W,4,accent);
@@ -79,7 +81,7 @@ static void drawStore(uint32_t*p){
   text(p,x+25,y+260,names[i],4,white);text(p,x+25,y+305,"INSTALL",3,muted);
   rect(p,x+25,y+345,125,35,accent);text(p,x+39,y+353,"OPEN",3,white);
  }
- border(p,start-5,y-5,cw+10,ch+10,5,accent);
+ border(p,start+selected*(cw+gap)-5,y-5,cw+10,ch+10,5,accent);
  rect(p,430,950,1435,50,top);text(p,470,965,"SELECT",3,white);text(p,720,965,"BACK",3,muted);
 }
 
@@ -87,14 +89,41 @@ int main(void){
  sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_VIDEO_OUT);
  int32_t video=sceVideoOutOpen(ORBIS_VIDEO_USER_MAIN,ORBIS_VIDEO_OUT_BUS_MAIN,0,0);
  if(video<0)for(;;)sceKernelUsleep(1000000);
- const size_t sz=(size_t)W*H*4,align=0x200000,alloc=((sz+align-1)/align)*align;
+
+ const size_t one=(size_t)W*H*4,align=0x200000;
+ const size_t sz=one*2,alloc=((sz+align-1)/align)*align;
  off_t off=0;int rc=sceKernelAllocateDirectMemory(0,sceKernelGetDirectMemorySize(),alloc,align,3,&off);
  if(rc<0)for(;;)sceKernelUsleep(1000000);
- void*fb=0;rc=sceKernelMapDirectMemory(&fb,alloc,0x33,0,off,align);
- if(rc<0||!fb)for(;;)sceKernelUsleep(1000000);
- drawStore((uint32_t*)fb);
+ void*mem=0;rc=sceKernelMapDirectMemory(&mem,alloc,0x33,0,off,align);
+ if(rc<0||!mem)for(;;)sceKernelUsleep(1000000);
+
+ uint32_t*fb[2]={(uint32_t*)mem,(uint32_t*)((char*)mem+one)};
  OrbisVideoOutBufferAttribute attr;sceVideoOutSetBufferAttribute(&attr,0x80000000,1,0,W,H,W);
- void*bufs[1]={fb};rc=sceVideoOutRegisterBuffers(video,0,bufs,1,&attr);
- if(rc==0){sceVideoOutSetFlipRate(video,0);sceVideoOutSubmitFlip(video,0,ORBIS_VIDEO_OUT_FLIP_VSYNC,1);}
- for(;;)sceKernelUsleep(1000000);return 0;
+ void*bufs[2]={fb[0],fb[1]};rc=sceVideoOutRegisterBuffers(video,0,bufs,2,&attr);
+ if(rc<0)for(;;)sceKernelUsleep(1000000);
+ sceVideoOutSetFlipRate(video,0);
+
+ OrbisUserServiceInitializeParams param;param.priority=ORBIS_KERNEL_PRIO_FIFO_LOWEST;
+ sceUserServiceInitialize(&param);
+ int32_t user=0;sceUserServiceGetInitialUser(&user);
+ scePadInit();int32_t pad=scePadOpen(user,0,0,0);
+
+ int selected=0,front=0;uint32_t prev=0;int64_t frame=1;
+ drawStore(fb[front],selected);sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
+
+ for(;;){
+  OrbisPadData pd;
+  if(pad>=0 && scePadReadState(pad,&pd)>=0){
+   uint32_t now=pd.buttons;bool changed=false;
+   if((now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%4;changed=true;}
+   if((now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+3)%4;changed=true;}
+   prev=now;
+   if(changed){
+    front=1-front;drawStore(fb[front],selected);
+    sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
+   }
+  }
+  sceKernelUsleep(16000);
+ }
+ return 0;
 }
