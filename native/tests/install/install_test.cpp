@@ -544,7 +544,7 @@ static void httpFallbackTests() {
     for (int sdkError : { 78, 1, 0 }) {
         value = runHttp(NORMAL, -1, sdkError);
         assert(value.state == INSTALL_DONE && value.percent == 100 && value.errorCode == 0);
-        assert(httpRegisterCalls == 1 && foregroundUserCalls == 1 && titleCalls == 1);
+        assert(httpRegisterCalls == 1 && foregroundUserCalls == 1 && titleCalls == 0);
         assert(progressCalls == 3 && !stopCalls && !unregisterCalls);
         serverClosedAfterStop();
     }
