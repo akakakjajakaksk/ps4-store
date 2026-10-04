@@ -106,7 +106,12 @@ jobs:
               chmod +x "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" &&
               "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" pkg_extract IV0000-BREW00001_00-ORBISSTORE000001.pkg pkg-check
             '
-          find native/pkg-check -maxdepth 4 -type f -printf "%p %s bytes\\n" | sort
+          echo "===== GENERATED GP4 ====="
+          cat native/pkg.gp4
+          echo "===== EXTRACTED PKG TREE ====="
+          find native/pkg-check -maxdepth 6 -type f -printf "%p %s bytes\\n" | sort
+          echo "===== PARAM.SFO LOCATIONS ====="
+          find native/pkg-check -type f -iname 'param.sfo' -print
           test -s native/pkg-check/uroot/eboot.bin
           test -s native/pkg-check/uroot/sce_sys/param.sfo
           test -s native/pkg-check/uroot/sce_sys/about/right.sprx
