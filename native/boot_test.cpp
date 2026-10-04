@@ -79,7 +79,7 @@ static void drawStore(uint32_t*p,int selected,int padState){
  rect(p,1580,215,110,90,accent);rect(p,1603,238,64,44,0x8014243C);
 
  const int y=500,cw=330,ch=390,gap=27,start=413;
- const char*names[4]={"GAME 1","APP 2","GAME 3","APP 4"};
+ const char*names[4]={"APOLLO","ITEMZ","XPLORER","HOMEBREW"};
  const uint32_t covers[4]={0x80304D82,0x80513B68,0x802E6255,0x80604D32};
  for(int i=0;i<4;i++){
   int x=start+i*(cw+gap);
@@ -96,14 +96,14 @@ static void drawStore(uint32_t*p,int selected,int padState){
 }
 static void drawDetails(uint32_t*p,int selected){
  const uint32_t bg=0x80080D18,nav=0x80101728,panel=0x80151E30,accent=0x800078FF,glow=0x8030B8FF,white=0x80F5F8FF,muted=0x80879AB8;
- const char*names[4]={"GAME 1","APP 2","GAME 3","APP 4"};
+ const char*names[4]={"APOLLO","ITEMZ","XPLORER","HOMEBREW"};
  const uint32_t covers[4]={0x80304D82,0x80513B68,0x802E6255,0x80604D32};
  fill(p,bg);rect(p,0,0,W,108,nav);rect(p,0,104,W,4,accent);
  rect(p,58,25,62,62,accent);rect(p,72,39,34,34,bg);text(p,150,28,"ORBIS STORE",7,white);
  rect(p,100,165,540,650,panel);rect(p,125,190,490,390,covers[selected]);
  rect(p,250,300,240,170,0x80212E47);border(p,250,300,240,170,4,glow);
- text(p,720,190,names[selected],8,white);text(p,724,285,"PS4 APP",4,muted);
- text(p,724,365,"READY TO INSTALL",4,white);text(p,724,425,"DETAIL PAGE",3,muted);
+ text(p,720,190,names[selected],8,white);text(p,724,285,"PS4 HOMEBREW",4,muted);
+ text(p,724,365,"READY FOR STORE",4,white);text(p,724,425,"DETAIL PAGE",3,muted);
  rect(p,724,525,300,70,accent);text(p,790,544,"INSTALL",4,white);
  rect(p,100,900,1720,80,nav);text(p,145,925,"BACK",4,white);text(p,400,925,"ORBIS STORE",3,muted);
 }
