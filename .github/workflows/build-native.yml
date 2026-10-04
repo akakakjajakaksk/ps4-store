@@ -70,6 +70,15 @@ jobs:
           command -v ld.lld
           ld.lld --version
 
+      - name: Test package downloads on host
+        run: |
+          cd native
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
+            -Itests/downloads/stubs tests/downloads/downloads_test.cpp \
+            -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=fclose \
+            -o /tmp/peppy-download-tests
+          /tmp/peppy-download-tests
+
       - name: Build Peppy Store files
         run: |
           cd native

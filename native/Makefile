@@ -4,14 +4,14 @@ TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
 # Orbis Store native UI: graphics + DualShock 4 input.
-LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut -lScePad -lSceUserService
+LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut -lScePad -lSceUserService -lSceNet -lSceSsl -lSceHttp
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
 INTDIR := build
 
-CPPFILES := boot_test.cpp
-OBJS := $(INTDIR)/boot_test.o
+CPPFILES := boot_test.cpp downloads.cpp
+OBJS := $(INTDIR)/boot_test.o $(INTDIR)/downloads.o
 
 CXXFLAGS := --target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables -c -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1
 LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
@@ -33,7 +33,7 @@ all: $(CONTENT_ID).pkg
 $(CONTENT_ID).pkg: pkg.gp4
 	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core pkg_build $< .
 
-pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png assets/FONT_LICENSE.txt
+pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png assets/FONT_LICENSE.txt catalog.json
 	$(TOOLCHAIN)/bin/$(CDIR)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$^"
 
 sce_sys/param.sfo: Makefile
@@ -57,13 +57,17 @@ eboot.bin: $(OBJS)
 ui_assets.h: ../peppy-icon0-1.png scripts/generate-ui-assets.py
 	python3 scripts/generate-ui-assets.py --icon ../peppy-icon0-1.png --output $@
 
-$(INTDIR)/boot_test.o: ui_assets.h
+ui_catalog.h: catalog.json scripts/generate-catalog.py
+	python3 scripts/generate-catalog.py --catalog catalog.json --output $@
+
+$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h downloads.h
+$(INTDIR)/downloads.o: downloads.h
 
 $(INTDIR)/%.o: %.cpp
 	mkdir -p $(INTDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
 clean:
-	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo ui_assets.h $(CONTENT_ID).pkg
+	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo ui_assets.h ui_catalog.h $(CONTENT_ID).pkg
 
 .PHONY: all clean

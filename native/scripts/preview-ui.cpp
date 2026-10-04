@@ -3,6 +3,9 @@
 // g++ -std=c++11 -O2 native/scripts/preview-ui.cpp -o /tmp/peppy-preview
 // /tmp/peppy-preview /tmp/peppy
 #define PEPPY_UI_PREVIEW
+#include "../downloads.h"
+static DownloadSnapshot previewDownload = {IDLE, 0, 0, 0};
+DownloadSnapshot downloadSnapshot() { return previewDownload; }
 #include "../boot_test.cpp"
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,16 +26,30 @@ int main(int argc, char** argv) {
     if (argc != 2) { fprintf(stderr, "Usage: %s output-prefix\n", argv[0]); return 1; }
     uint32_t* frame = (uint32_t*)malloc((size_t)W * H * sizeof(uint32_t));
     if (!frame) return 1;
-    for (int selected = 0; selected < 4; ++selected) {
+    int states = 0;
+    for (activeCategory = 0; activeCategory < 5; ++activeCategory) {
+      for (int selected = 0; selected < categoryCount(); ++selected) {
         char path[4096];
         drawStore(frame, selected, 2);
-        snprintf(path, sizeof(path), "%s-home-%d.ppm", argv[1], selected);
+        snprintf(path, sizeof(path), "%s-home-%d-%d.ppm", argv[1], activeCategory, selected);
         if (!save(path, frame)) { free(frame); return 1; }
         drawDetails(frame, selected);
-        snprintf(path, sizeof(path), "%s-details-%d.ppm", argv[1], selected);
+        snprintf(path, sizeof(path), "%s-details-%d-%d.ppm", argv[1], activeCategory, selected);
         if (!save(path, frame)) { free(frame); return 1; }
+        states += 2;
+      }
+    }
+    activeCategory = 0;
+    downloadingApp = 0;
+    for (int state = RUNNING; state <= CANCELLED; ++state) {
+        char path[4096];
+        previewDownload = {state, UI_APPS[0].sizeBytes / 2, UI_APPS[0].sizeBytes, -200};
+        drawDetails(frame, 0);
+        snprintf(path, sizeof(path), "%s-download-%d.ppm", argv[1], state);
+        if (!save(path, frame)) { free(frame); return 1; }
+        ++states;
     }
     free(frame);
-    puts("Rendered all four home and detail states.");
+    printf("Rendered %d catalog, category and download states.\n", states);
     return 0;
 }

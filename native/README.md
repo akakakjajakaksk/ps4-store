@@ -7,17 +7,32 @@ Interface nativa para PS4 homebrew, compilada com OpenOrbis PS4 Toolchain.
 - Tela em 1920×1080 com fundo escuro e destaques azuis.
 - Arte PEPPY no banner e no ícone do menu do PS4.
 - Fonte suave com caracteres em português, preparada durante a build.
-- Quatro cards de catálogo e páginas de detalhes.
+- Catálogo de 15 PKGs, com categorias, páginas e detalhes.
+- Downloads HTTPS de releases oficiais, em segundo plano.
 
-Os downloads e a instalação de aplicativos ainda não estão implementados.
-As páginas de detalhes indicam que o download está indisponível.
-A interface não se conecta a servidores da PlayStation.
+O catálogo está em `catalog.json`, com versões, URLs fixas, tamanhos e
+evidências de firmware verificadas em 2026-10-04. Inclui utilitários,
+emuladores, PS4 Media Player e dois pacotes de Freedoom. O catálogo não
+representa todos os aplicativos existentes para PS4.
+A interface e os downloads não se conectam a servidores da PlayStation.
+
+O download verifica tamanho e assinatura de PKG, e confere SHA-256 quando
+o autor publica um hash. Pacotes concluídos ficam em
+`/data/peppy-store/downloads/`. Arquivos parciais são removidos em caso de
+erro ou cancelamento. A instalação deve ser feita com um instalador de PKG
+compatível; esta versão não inicia a instalação automaticamente.
+
+A conexão HTTPS valida os certificados e pode falhar caso o relógio,
+a rede ou os certificados do console sejam incompatíveis. O downloader
+foi testado com HTTP simulado e precisa de teste de download no PS4.
 
 ## Controles
 
 - Esquerda/direita: selecionar um card, com retorno ao início/fim da lista.
-- X: abrir os detalhes do card selecionado.
+- L1/R1: trocar a categoria.
+- X: abrir os detalhes; na tela de detalhes, baixar o PKG.
 - Bolinha: voltar à biblioteca.
+- Triângulo: cancelar o download atual.
 
 ## Build
 
@@ -37,11 +52,16 @@ Na raiz do repositório:
 
 ```sh
 python3 native/scripts/generate-ui-assets.py --icon peppy-icon0-1.png --output native/ui_assets.h
+python3 native/scripts/generate-catalog.py --catalog native/catalog.json --output native/ui_catalog.h
 g++ -std=c++11 -O2 native/scripts/preview-ui.cpp -o /tmp/peppy-preview
 /tmp/peppy-preview /tmp/peppy
 ```
 
-O programa gera arquivos PPM para os quatro estados da biblioteca e os
-quatro estados de detalhes usando o mesmo renderizador da build nativa.
+O programa gera arquivos PPM para biblioteca e detalhes de todos os itens
+e categorias, além dos estados de download, usando o renderizador nativo.
+
+Os testes de transferência em `tests/downloads/` também são executados na
+workflow antes da compilação nativa. Veja o README daquela pasta para rodar
+os testes no host.
 
 O funcionamento no console depende de teste real no PS4/GoldHEN.

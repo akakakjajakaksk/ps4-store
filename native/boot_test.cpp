@@ -7,12 +7,35 @@
 #endif
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <string.h>
 #include "ui_assets.h"
+#include "ui_catalog.h"
+#include "downloads.h"
 
 static const int W = 1920, H = 1080;
 static const uint32_t BG = 0x800B0F17, PANEL = 0x80131925;
 static const uint32_t WHITE = 0x80F4F6FA, MUTED = 0x809BA7BA;
 static const uint32_t BLUE = 0x8073B7FF, LINE = 0x80252D3C;
+static const char* CATEGORY_NAMES[5] = {"Todos", "Utilitários", "Emuladores", "Jogos", "Mídia"};
+static const uint32_t CATEGORY_COLORS[5] = {BLUE, 0x807BDECC, 0x80B9A2F9, 0x80EBC48A, 0x8085BBFB};
+static int activeCategory = 0, downloadingApp = -1;
+
+static int categoryCount() {
+    int count = 0;
+    for (int i = 0; i < UI_APP_COUNT; ++i)
+        if (!activeCategory || UI_APPS[i].category == activeCategory) ++count;
+    return count;
+}
+
+static int appIndex(int selected) {
+    for (int i = 0; i < UI_APP_COUNT; ++i) {
+        if (!activeCategory || UI_APPS[i].category == activeCategory) {
+            if (selected-- == 0) return i;
+        }
+    }
+    return -1;
+}
 
 static uint32_t mix(uint32_t a, uint32_t b, int t) {
     if (t <= 0) return a;
@@ -176,11 +199,6 @@ static void artwork(uint32_t* p, int x, int y, int w, int h, int r, bool fade = 
     }
 }
 
-static const char* NAMES[4] = {"Apollo Save Tool", "Itemzflow", "PS4 Xplorer", "Homebrew"};
-static const char* CATEGORIES[4] = {"SAVES", "BIBLIOTECA", "ARQUIVOS", "COMUNIDADE"};
-static const char* CAPTIONS[4] = {"Seus saves, organizados.", "Organize sua biblioteca.", "Explore seus arquivos.", "Descubra novos projetos."};
-static const uint32_t ACCENTS[4] = {0x807BDECC, 0x80B9A2F9, 0x8085BBFB, 0x80EBC48A};
-
 static void appIcon(uint32_t* p, int x, int y, int size, int id, uint32_t c) {
     int u = size / 8;
     int t = size > 120 ? 6 : 3;
@@ -220,9 +238,13 @@ static void header(uint32_t* p) {
     artwork(p, 72, 48, 60, 60, 14);
     text(p, 150, 45, "PEPPY", FONT_TITLE, WHITE);
     text(p, 152, 84, "S T O R E", FONT_SMALL, MUTED);
-    text(p, 480, 65, "Descobrir", FONT_CARD, WHITE);
-    roundRect(p, 480, 119, 140, 3, 1, BLUE);
-    text(p, 694, 67, "Apps para o seu PS4", FONT_BODY, MUTED);
+    int tabX = 420;
+    for (int i = 0; i < 5; ++i) {
+        int width = textWidth(CATEGORY_NAMES[i], FONT_BODY);
+        text(p, tabX, 67, CATEGORY_NAMES[i], FONT_BODY, i == activeCategory ? WHITE : MUTED);
+        if (i == activeCategory) roundRect(p, tabX, 119, width, 3, 1, BLUE);
+        tabX += width + 42;
+    }
     const char* label = "PS4  /  HOMEBREW";
     pill(p, W - 72 - textWidth(label, FONT_SMALL) - 32, 61, label, PANEL, MUTED);
     rect(p, 72, 130, W - 144, 1, LINE);
@@ -241,9 +263,78 @@ static void footer(uint32_t* p, bool details) {
         text(p, 130, 1001, "Navegar", FONT_BODY, MUTED);
         crossButton(p, 334, 1018);
         text(p, 366, 1001, "Ver detalhes", FONT_BODY, WHITE);
+        text(p, 656, 1001, "L1 / R1  Categorias", FONT_BODY, MUTED);
     }
     const char* label = "Feito para o seu PS4.";
     text(p, W - 72 - textWidth(label, FONT_SMALL), 1004, label, FONT_SMALL, MUTED);
+}
+
+static void textElided(uint32_t* p, int x, int y, const char* s, const UiFont& font,
+                       uint32_t color, int maxWidth) {
+    if (textWidth(s, font) <= maxWidth) { text(p, x, y, s, font, color); return; }
+    char label[256];
+    size_t used = 0;
+    int width = 0, dots = textWidth("...", font);
+    while (*s) {
+        const char* begin = s;
+        const UiGlyph* g = glyph(font, nextCodepoint(s));
+        size_t bytes = (size_t)(s - begin);
+        if (!g || width + g->advance + dots > maxWidth || used + bytes + 4 >= sizeof(label)) break;
+        memcpy(label + used, begin, bytes); used += bytes; width += g->advance;
+    }
+    memcpy(label + used, "...", 4);
+    text(p, x, y, label, font, color);
+}
+
+static void textWrapped(uint32_t* p, int x, int y, const char* s, const UiFont& font,
+                        uint32_t color, int maxWidth, int maxLines) {
+    char label[512];
+    int lineNumber = 0;
+    while (*s && lineNumber < maxLines) {
+        while (*s == ' ') ++s;
+        size_t used = 0, lastSpace = 0;
+        const char* start = s;
+        int width = 0;
+        while (*s) {
+            const char* begin = s;
+            const UiGlyph* g = glyph(font, nextCodepoint(s));
+            size_t bytes = (size_t)(s - begin);
+            if (!g || width + g->advance > maxWidth || used + bytes + 1 >= sizeof(label)) {
+                s = begin;
+                break;
+            }
+            if (*begin == ' ') lastSpace = used;
+            memcpy(label + used, begin, bytes); used += bytes; width += g->advance;
+        }
+        if (*s && lastSpace) { used = lastSpace; s = start + lastSpace + 1; }
+        if (!used) return;
+        label[used] = 0;
+        if (*s && lineNumber + 1 == maxLines)
+            textElided(p, x, y + lineNumber * font.lineHeight, start, font, color, maxWidth);
+        else text(p, x, y + lineNumber * font.lineHeight, label, font, color);
+        ++lineNumber;
+    }
+}
+
+static void sizeLabel(char* label, size_t capacity, uint64_t bytes) {
+    uint64_t tenths = bytes * 10 / (1024 * 1024);
+    snprintf(label, capacity, "%llu.%llu MB", (unsigned long long)(tenths / 10), (unsigned long long)(tenths % 10));
+}
+
+static const char* downloadErrorText(int code) {
+    switch (code) {
+    case DOWNLOAD_ERROR_SPEC: return "Os dados do pacote são inválidos.";
+    case DOWNLOAD_ERROR_THREAD: return "Não foi possível iniciar o download.";
+    case DOWNLOAD_ERROR_NETWORK: return "Falha na conexão. Confira a rede do PS4.";
+    case DOWNLOAD_ERROR_HTTP: return "O servidor não disponibilizou o pacote.";
+    case DOWNLOAD_ERROR_REDIRECT: return "O link do pacote foi recusado.";
+    case DOWNLOAD_ERROR_TLS: return "Falha na conexão segura. Confira a data e a hora do PS4.";
+    case DOWNLOAD_ERROR_FILESYSTEM: return "Não foi possível salvar. Confira o espaço disponível.";
+    case DOWNLOAD_ERROR_LENGTH: return "Download incompleto. Tente novamente.";
+    case DOWNLOAD_ERROR_PACKAGE: return "O arquivo recebido não é um PKG.";
+    case DOWNLOAD_ERROR_HASH: return "O pacote não confere com o hash publicado.";
+    default: return "O download não foi concluído. Tente novamente.";
+    }
 }
 
 static void drawStore(uint32_t* p, int selected, int padState) {
@@ -257,66 +348,116 @@ static void drawStore(uint32_t* p, int selected, int padState) {
     text(p, 112, 444, "Homebrews e ferramentas em um só lugar.", FONT_BODY, 0x80B6C4DB);
     pill(p, 1604, 482, "PEPPY ORIGINAL", 0x80111B2B, WHITE);
 
-    text(p, 72, 578, "Explore sua biblioteca", FONT_TITLE, WHITE);
-    text(p, 1718, 587, "04 apps", FONT_SMALL, MUTED);
+    int count = categoryCount(), first = selected / 4 * 4;
+    text(p, 72, 578, activeCategory ? CATEGORY_NAMES[activeCategory] : "Explore sua biblioteca", FONT_TITLE, WHITE);
+    char pageLabel[80];
+    snprintf(pageLabel, sizeof(pageLabel), "%02d apps  |  Página %d/%d", count, count ? selected / 4 + 1 : 0, (count + 3) / 4);
+    text(p, W - 72 - textWidth(pageLabel, FONT_SMALL), 587, pageLabel, FONT_SMALL, MUTED);
     const int start = 72, y = 650, cw = 426, ch = 294, gap = 24;
-    for (int i = 0; i < 4; ++i) {
-        int x = start + i * (cw + gap);
-        bool focus = selected == i;
+    for (int slot = 0; slot < 4 && first + slot < count; ++slot) {
+        int index = appIndex(first + slot);
+        if (index < 0) continue;
+        const UiApp& app = UI_APPS[index];
+        uint32_t accent = CATEGORY_COLORS[app.category];
+        int x = start + slot * (cw + gap);
+        bool focus = selected == first + slot;
         if (focus) roundRect(p, x - 5, y - 5, cw + 10, ch + 10, 25, 0x80243A58);
         roundRect(p, x, y, cw, ch, 20, focus ? 0x801B283B : PANEL);
         outline(p, x, y, cw, ch, 20, focus ? 2 : 1, focus ? BLUE : LINE);
-        roundRect(p, x + 26, y + 27, 104, 104, 24, mix(PANEL, ACCENTS[i], 22));
-        appIcon(p, x + 42, y + 43, 72, i, ACCENTS[i]);
-        text(p, x + 152, y + 53, CATEGORIES[i], FONT_SMALL, ACCENTS[i]);
-        text(p, x + 152, y + 88, "PS4 app", FONT_SMALL, MUTED);
-        text(p, x + 26, y + 157, NAMES[i], FONT_CARD, WHITE);
-        text(p, x + 26, y + 203, CAPTIONS[i], FONT_SMALL, MUTED);
+        roundRect(p, x + 26, y + 27, 104, 104, 24, mix(PANEL, accent, 22));
+        appIcon(p, x + 42, y + 43, 72, app.art, accent);
+        text(p, x + 152, y + 53, CATEGORY_NAMES[app.category], FONT_SMALL, accent);
+        char label[80];
+        sizeLabel(label, sizeof(label), app.sizeBytes);
+        text(p, x + 152, y + 88, label, FONT_SMALL, MUTED);
+        textElided(p, x + 26, y + 157, app.name, FONT_CARD, WHITE, cw - 52);
+        textElided(p, x + 26, y + 203, app.caption, FONT_SMALL, MUTED, cw - 52);
         text(p, x + 26, y + 254, "Ver detalhes", FONT_SMALL, focus ? BLUE : MUTED);
         line(p, x + cw - 51, y + 268, x + cw - 33, y + 268, 2, focus ? BLUE : MUTED);
         line(p, x + cw - 40, y + 261, x + cw - 33, y + 268, 2, focus ? BLUE : MUTED);
         line(p, x + cw - 40, y + 275, x + cw - 33, y + 268, 2, focus ? BLUE : MUTED);
     }
+    if (!count) text(p, 72, 706, "Nenhum PKG verificado nesta categoria.", FONT_BODY, MUTED);
     footer(p, false);
+    DownloadSnapshot progress = downloadSnapshot();
+    if (progress.state == RUNNING) {
+        char label[96];
+        int percent = progress.total ? (int)(progress.received * 100 / progress.total) : 0;
+        snprintf(label, sizeof(label), "Download em andamento: %d%%", percent);
+        rect(p, 1370, 992, 480, 56, BG);
+        text(p, W - 72 - textWidth(label, FONT_SMALL), 1004, label, FONT_SMALL, BLUE);
+    }
 }
 
 static void drawDetails(uint32_t* p, int selected) {
+    int index = appIndex(selected);
+    if (index < 0) { drawStore(p, selected, 2); return; }
+    const UiApp& app = UI_APPS[index];
+    uint32_t accent = CATEGORY_COLORS[app.category];
     header(p);
     text(p, 72, 169, "Biblioteca", FONT_BODY, MUTED);
     text(p, 225, 169, "/", FONT_BODY, MUTED);
-    text(p, 254, 169, NAMES[selected], FONT_BODY, WHITE);
-    gradient(p, 72, 246, 552, 626, 28, mix(PANEL, ACCENTS[selected], 28), PANEL);
+    textElided(p, 254, 169, app.name, FONT_BODY, WHITE, 1550);
+    gradient(p, 72, 246, 552, 626, 28, mix(PANEL, accent, 28), PANEL);
     outline(p, 72, 246, 552, 626, 28, 1, LINE);
-    roundRect(p, 232, 359, 232, 232, 46, mix(PANEL, ACCENTS[selected], 20));
-    appIcon(p, 260, 387, 176, selected, ACCENTS[selected]);
-    int labelWidth = textWidth(NAMES[selected], FONT_TITLE);
-    text(p, 348 - labelWidth / 2, 659, NAMES[selected], FONT_TITLE, WHITE);
-    int categoryWidth = textWidth(CATEGORIES[selected], FONT_SMALL) + 32;
-    pill(p, 348 - categoryWidth / 2, 725, CATEGORIES[selected], 0x80212B3B, ACCENTS[selected]);
+    roundRect(p, 232, 359, 232, 232, 46, mix(PANEL, accent, 20));
+    appIcon(p, 260, 387, 176, app.art, accent);
+    int nameWidth = textWidth(app.name, FONT_TITLE);
+    textElided(p, nameWidth < 500 ? 348 - nameWidth / 2 : 98, 659, app.name, FONT_TITLE, WHITE, 500);
+    int categoryWidth = textWidth(CATEGORY_NAMES[app.category], FONT_SMALL) + 32;
+    pill(p, 348 - categoryWidth / 2, 725, CATEGORY_NAMES[app.category], 0x80212B3B, accent);
 
-    pill(p, 708, 252, "APP HOMEBREW", 0x80212D41, BLUE);
-    text(p, 704, 321, NAMES[selected], FONT_HEADING, WHITE);
-    text(p, 708, 396, CAPTIONS[selected], FONT_BODY, MUTED);
-    rect(p, 708, 463, 1140, 1, LINE);
-    text(p, 708, 496, "Sobre este app", FONT_TITLE, WHITE);
-    const char* first[4] = {
-        "Uma ferramenta para gerenciar seus arquivos de save",
-        "Um gerenciador para explorar e organizar sua biblioteca",
-        "Um explorador para navegar pelas pastas e arquivos",
-        "Um espaço para descobrir aplicativos e projetos"
-    };
-    const char* second[4] = {
-        "e manter tudo organizado no seu PlayStation 4.",
-        "de aplicativos no PlayStation 4.",
-        "armazenados no seu PlayStation 4.",
-        "criados pela comunidade de homebrew do PS4."
-    };
-    text(p, 708, 558, first[selected], FONT_BODY, MUTED);
-    text(p, 708, 599, second[selected], FONT_BODY, MUTED);
-    roundRect(p, 708, 713, 480, 72, 16, 0x801C2432);
-    text(p, 738, 732, "Download indisponível", FONT_BODY, MUTED);
-    text(p, 708, 811, "Explore os outros apps na biblioteca.", FONT_SMALL, MUTED);
+    pill(p, 708, 252, "PKG  /  FONTE OFICIAL", 0x80212D41, BLUE);
+    textElided(p, 704, 321, app.name, FONT_HEADING, WHITE, 1140);
+    text(p, 708, 396, app.caption, FONT_BODY, MUTED);
+    char info[192], size[40];
+    sizeLabel(size, sizeof(size), app.sizeBytes);
+    snprintf(info, sizeof(info), "%s  |  %s  |  %s", app.version, size, app.developer);
+    textElided(p, 708, 443, info, FONT_SMALL, MUTED, 1140);
+    rect(p, 708, 494, 1140, 1, LINE);
+    text(p, 708, 517, "Sobre este app", FONT_TITLE, WHITE);
+    textWrapped(p, 708, 577, app.description, FONT_BODY, MUTED, 1110, 2);
+    textWrapped(p, 708, 661, app.firmware, FONT_SMALL, BLUE, 1110, 2);
+    if (*app.requiresData) textElided(p, 708, 714, app.requiresData, FONT_SMALL, MUTED, 1110);
+
+    DownloadSnapshot status = downloadSnapshot();
+    bool mine = downloadingApp == index;
+    const char* action = "Baixar PKG";
+    uint32_t button = 0x8032609A;
+    char buttonLabel[96];
+    if (status.state == RUNNING) {
+        if (mine) {
+            int percent = status.total ? (int)(status.received * 100 / status.total) : 0;
+            snprintf(buttonLabel, sizeof(buttonLabel), "Baixando... %d%%", percent);
+            action = buttonLabel;
+        } else action = "Outro download em andamento";
+        button = 0x8024344A;
+    } else if (mine && status.state == DONE) { action = "PKG baixado"; button = 0x80254B43; }
+    else if (mine && status.state == FAILED) action = "Tentar novamente";
+    else if (mine && status.state == CANCELLED) action = "Baixar novamente";
+    roundRect(p, 708, 771, 610, 70, 16, button);
+    crossButton(p, 744, 806);
+    text(p, 778, 788, action, FONT_BODY, WHITE);
+    if (mine && status.state == RUNNING) {
+        char received[40], total[40];
+        sizeLabel(received, sizeof(received), status.received);
+        sizeLabel(total, sizeof(total), status.total);
+        snprintf(info, sizeof(info), "%s de %s", received, total);
+    } else if (mine && status.state == DONE) {
+        snprintf(info, sizeof(info), "Salvo em /data/peppy-store/downloads. Instale pelo seu instalador de PKG.");
+    } else if (mine && status.state == FAILED) {
+        snprintf(info, sizeof(info), "%s (código %d)", downloadErrorText(status.errorCode), status.errorCode);
+    } else if (mine && status.state == CANCELLED) snprintf(info, sizeof(info), "Download cancelado.");
+    else if (*app.sha256) snprintf(info, sizeof(info), "SHA-256 conferido ao concluir o download.");
+    else snprintf(info, sizeof(info), "Pacote publicado pelo projeto; hash não informado no release.");
+    textWrapped(p, 708, 861, info, FONT_SMALL, MUTED, 1140, 2);
     footer(p, true);
+    if (status.state == RUNNING && mine) {
+        line(p, 668, 1028, 680, 1008, 2, 0x808BD4B0);
+        line(p, 680, 1008, 692, 1028, 2, 0x808BD4B0);
+        line(p, 668, 1028, 692, 1028, 2, 0x808BD4B0);
+        text(p, 710, 1001, "Cancelar download", FONT_BODY, MUTED);
+    }
 }
 
 #ifndef PEPPY_UI_PREVIEW
@@ -351,26 +492,52 @@ int main(void){
  int32_t pad=(padInit==0 && userRc==0)?scePadOpen(userId,0,0,0):-1;
 
  int selected=0,front=0;bool details=false;uint32_t prev=0;int64_t frame=1;
+ int progressTicks=0;
+ DownloadSnapshot previousProgress=downloadSnapshot();
  drawStore(fb[front],selected,2);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
  for(;;){
+  bool changed=false;
   OrbisPadData pd;
   if(pad>=0 && scePadReadState(pad,&pd)>=0){
    static bool readShown=false;
    if(!readShown){front=1-front;drawStore(fb[front],selected,2);sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);readShown=true;}
    uint32_t now=pd.buttons;
-   bool changed=false;
-   if(!details && (now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%4;changed=true;}
-   if(!details && (now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+3)%4;changed=true;}
-   if(!details && (now&ORBIS_PAD_BUTTON_CROSS)&&!(prev&ORBIS_PAD_BUTTON_CROSS)){details=true;changed=true;}
-   if(details && (now&ORBIS_PAD_BUTTON_CIRCLE)&&!(prev&ORBIS_PAD_BUTTON_CIRCLE)){details=false;changed=true;}
-   prev=now;
-   if(changed){
-    front=1-front;
-    if(details) drawDetails(fb[front],selected); else drawStore(fb[front],selected,2);
-    sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
+   int count=categoryCount();
+   if(!details && (now&ORBIS_PAD_BUTTON_R1)&&!(prev&ORBIS_PAD_BUTTON_R1)){activeCategory=(activeCategory+1)%5;selected=0;changed=true;}
+   if(!details && (now&ORBIS_PAD_BUTTON_L1)&&!(prev&ORBIS_PAD_BUTTON_L1)){activeCategory=(activeCategory+4)%5;selected=0;changed=true;}
+   count=categoryCount();
+   if(!details && count && (now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%count;changed=true;}
+   if(!details && count && (now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+count-1)%count;changed=true;}
+   if(count && (now&ORBIS_PAD_BUTTON_CROSS)&&!(prev&ORBIS_PAD_BUTTON_CROSS)){
+    if(!details) details=true;
+    else {
+     int index=appIndex(selected);
+     DownloadSnapshot progress=downloadSnapshot();
+     if(index>=0 && progress.state!=RUNNING){
+      const UiApp& app=UI_APPS[index];
+      DownloadSpec spec={app.url,app.filename,app.sizeBytes,app.sha256};
+      downloadingApp=index;
+      startDownload(spec);
+     }
+    }
+    changed=true;
    }
+   if(details && (now&ORBIS_PAD_BUTTON_CIRCLE)&&!(prev&ORBIS_PAD_BUTTON_CIRCLE)){details=false;changed=true;}
+   if((now&ORBIS_PAD_BUTTON_TRIANGLE)&&!(prev&ORBIS_PAD_BUTTON_TRIANGLE) && downloadSnapshot().state==RUNNING){cancelDownload();changed=true;}
+   prev=now;
+  }
+  if(++progressTicks>=12){
+   progressTicks=0;
+   DownloadSnapshot progress=downloadSnapshot();
+   if(progress.state!=previousProgress.state || progress.received!=previousProgress.received || progress.errorCode!=previousProgress.errorCode) changed=true;
+   previousProgress=progress;
+  }
+  if(changed){
+   front=1-front;
+   if(details) drawDetails(fb[front],selected); else drawStore(fb[front],selected,2);
+   sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
   }
   sceKernelUsleep(16000);
  }
