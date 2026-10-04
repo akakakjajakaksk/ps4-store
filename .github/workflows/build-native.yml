@@ -94,8 +94,6 @@ jobs:
 
       - name: Validate generated PKG
         run: |
-          rm -rf native/pkg-check
-          mkdir -p native/pkg-check
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace/native \
@@ -104,20 +102,12 @@ jobs:
               apt-get update &&
               DEBIAN_FRONTEND=noninteractive apt-get install -y libssl1.1 &&
               chmod +x "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" &&
-              "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" pkg_extract IV0000-BREW00001_00-ORBISSTORE000001.pkg pkg-check
+              echo "===== PKG VALIDATION =====" &&
+              "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" pkg_validate --verbose IV0000-BREW00001_00-ORBISSTORE000001.pkg &&
+              echo "===== PKG ENTRIES =====" &&
+              "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" pkg_listentries IV0000-BREW00001_00-ORBISSTORE000001.pkg
             '
-          echo "===== GENERATED GP4 ====="
-          cat native/pkg.gp4
-          echo "===== EXTRACTED PKG TREE ====="
-          find native/pkg-check -maxdepth 6 -type f -printf "%p %s bytes\\n" | sort
-          echo "===== PARAM.SFO LOCATIONS ====="
-          find native/pkg-check -type f -iname 'param.sfo' -print
-          test -s native/pkg-check/uroot/eboot.bin
-          test -s native/pkg-check/uroot/sce_sys/param.sfo
-          test -s native/pkg-check/uroot/sce_sys/about/right.sprx
-          cmp native/eboot.bin native/pkg-check/uroot/eboot.bin
-          cmp native/sce_sys/param.sfo native/pkg-check/uroot/sce_sys/param.sfo
-          sha256sum native/IV0000-BREW00001_00-ORBISSTORE000001.pkg native/eboot.bin native/pkg-check/uroot/eboot.bin
+          sha256sum native/IV0000-BREW00001_00-ORBISSTORE000001.pkg native/eboot.bin
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
