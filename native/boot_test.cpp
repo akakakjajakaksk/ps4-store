@@ -55,12 +55,15 @@ static void text(uint32_t*p,int x,int y,const char*s,int scale,uint32_t c){
  }
 }
 
-static void drawStore(uint32_t*p,int selected){
+static void drawStore(uint32_t*p,int selected,int padState){
  const uint32_t bg=0x80101420,top=0x80192334,panel=0x80212D42,card=0x802B3A54;
  const uint32_t accent=0x8000A8FF,white=0x80F4F7FF,muted=0x80788AA8;
  fill(p,bg); rect(p,0,0,W,120,top);rect(p,0,116,W,4,accent);
  rect(p,70,34,52,52,accent);rect(p,82,46,28,28,top);
  text(p,150,38,"ORBIS STORE",7,white); text(p,150,91,"HOME",2,muted);
+ if(padState==0) text(p,1050,52,"PAD FAIL",3,0x80FF6060);
+ else if(padState==1) text(p,1050,52,"PAD OPEN",3,0x80FFD060);
+ else text(p,1050,52,"PAD READ",3,0x8060FF90);
 
  rect(p,1450,36,380,50,panel);border(p,1450,36,380,50,2,muted);text(p,1490,52,"SEARCH",3,muted);
 
@@ -108,12 +111,14 @@ int main(void){
  int32_t pad=(padInit==0)?scePadOpen(ORBIS_VIDEO_USER_MAIN,0,0,0):-1;
 
  int selected=0,front=0;uint32_t prev=0;int64_t frame=1;
- drawStore(fb[front],selected);
+ drawStore(fb[front],selected,(pad>=0)?1:0);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
  for(;;){
   OrbisPadData pd;
   if(pad>=0 && scePadReadState(pad,&pd)>=0){
+   static bool readShown=false;
+   if(!readShown){front=1-front;drawStore(fb[front],selected,2);sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);readShown=true;}
    uint32_t now=pd.buttons;
    bool changed=false;
    if((now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%4;changed=true;}
