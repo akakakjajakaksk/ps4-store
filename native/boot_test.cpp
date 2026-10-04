@@ -103,18 +103,17 @@ int main(void){
  if(rc<0)for(;;)sceKernelUsleep(1000000);
  sceVideoOutSetFlipRate(video,0);
 
- OrbisUserServiceInitializeParams param;param.priority=ORBIS_KERNEL_PRIO_FIFO_LOWEST;
- sceUserServiceInitialize(&param);
- int32_t user=0;sceUserServiceGetInitialUser(&user);
- // Diagnostic stage: UserService only. Do not initialize/open Pad yet.
- // If this stays alive, UserService is not the source of CE-34878-0.
- volatile int32_t initialUser = user;
- (void)initialUser;
+ // Diagnostic: skip UserService completely and use the main user ID.
+ int32_t padInit=scePadInit();
+ int32_t pad=(padInit==0)?scePadOpen(ORBIS_VIDEO_USER_MAIN,0,0,0):-1;
 
  int selected=0,front=0;int64_t frame=1;
  drawStore(fb[front],selected);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
+ // Do not read buttons yet. This stage only proves Pad init/open can stay alive.
+ volatile int32_t padHandle=pad;
+ (void)padHandle;
  for(;;){
   sceKernelUsleep(1000000);
  }
