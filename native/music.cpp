@@ -30,7 +30,7 @@ const char* const TRACK_FILES[2] = {
 
 int g_state = MUSIC_STOPPED, g_running = 0, g_stop = 0, g_skip = 0;
 int g_track = 0, g_volume = 30, g_muted = 0;
-int32_t g_error = 0, g_user = ORBIS_USER_SERVICE_USER_ID_SYSTEM;
+int32_t g_error = 0;
 OrbisPthread g_thread;
 bool g_joinable = false;
 
@@ -162,7 +162,10 @@ void* musicWorker(void*) {
         if (stopping()) break;
         rc = sceAudioOutInit();
         if (rc != 0 && uint32_t(rc) != ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT) { failMusic(rc); break; }
-        audio = sceAudioOutOpen(g_user, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, FRAMES, 48000,
+        // MAIN is the application's system mixer, not the signed-in profile's
+        // device. Use the SYSTEM ID exactly as OpenOrbis' audio-wav example;
+        // passing the controller profile can return INVALID_USER (0x809B0001).
+        audio = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, FRAMES, 48000,
                                 ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
         if (audio <= 0) { failMusic(audio ? audio : MUSIC_ERROR_FILE); break; }
         int currentTrack = 0, attempted = 0;
@@ -217,10 +220,9 @@ void* musicWorker(void*) {
 }
 } // namespace
 
-bool musicStart(int32_t userId) {
+bool musicStart(int32_t) {
     if (__atomic_load_n(&g_running, __ATOMIC_ACQUIRE)) return false;
     if (g_joinable) musicShutdown();
-    g_user = userId >= 0 ? userId : ORBIS_USER_SERVICE_USER_ID_SYSTEM;
     __atomic_store_n(&g_stop, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_skip, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_error, 0, __ATOMIC_RELEASE);

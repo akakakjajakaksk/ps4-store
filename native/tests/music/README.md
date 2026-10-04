@@ -35,3 +35,10 @@ song paths after start and verify repeated playback, mute and next-track control
 Audio signatures, native already-initialized return code and output-buffer wait
 behavior follow the public OpenOrbis v0.5.4 headers and `samples/audio-wav`.
 Console playback still needs an actual PS4 test.
+
+The MAIN output uses `ORBIS_USER_SERVICE_USER_ID_SYSTEM` (0xFF), following the
+[OpenOrbis v0.5.4 audio example](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/v0.5.4/samples/audio-wav/audio-wav/main.cpp).
+Passing the controller's profile ID returned `0x809B0001` on the user's PS4;
+the public [device-service error definitions](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/pad/pad_errors.h)
+identify this as `INVALID_USER`. The audio mock reproduces that rejection for
+profile IDs and confirms playback opens the system mixer instead.

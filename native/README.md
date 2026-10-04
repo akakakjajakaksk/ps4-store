@@ -25,6 +25,9 @@ erro ou cancelamento. A ação **Baixar e instalar** encaminha o pacote validado
 para AppInstUtil/BGFT, o instalador do PS4, sem precisar abrir outro aplicativo.
 A loja acompanha a tarefa e só informa sucesso após confirmar a instalação.
 Uma falha permite tentar instalar novamente o arquivo já baixado.
+O instalador abre os arquivos com `O_NOFOLLOW` e verifica o descritor com
+`fstat`. A chamada `lstat` da biblioteca musl para PS4 não está implementada
+e retornava `ENOSYS` (`0x4E`) antes de iniciar a instalação.
 
 A integração exige o SDK público do GoldHEN, versão 1.00. A loja consulta essa
 versão antes de usar os comandos oficiais de permissões e restaura o contexto
@@ -53,7 +56,10 @@ existentes na raiz do repositório. A build converte as faixas para PCM16 estér
 a 48 kHz; os originais permanecem intactos. A reprodução usa um buffer fixo
 em uma thread, volume inicial de 30% e repete as duas faixas. Os arquivos ficam
 abertos durante a reprodução, inclusive enquanto o instalador muda o contexto
-de acesso a arquivos. Falhas de áudio não impedem usar a loja.
+de acesso a arquivos. A saída MAIN usa o usuário SYSTEM (`0xFF`), como no
+exemplo oficial do OpenOrbis; o usuário do perfil continua sendo usado para
+o controle. Usar o perfil na saída de áudio retornava `0x809B0001`
+(usuário inválido) no console. Falhas de áudio não impedem usar a loja.
 
 ## Controles
 

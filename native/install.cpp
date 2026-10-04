@@ -13,6 +13,15 @@
 #include <orbis/AppInstUtil.h>
 #include <orbis/Bgft.h>
 
+#if defined(__FreeBSD__) || defined(PS4)
+// These are the PS4 musl/libkernel ABI, not the host's Linux open flags/stat.
+// The dedicated PS4 fstat wrapper forwards to libkernel's _fstat export.
+static_assert(O_NOFOLLOW == 0x100 && O_DIRECTORY == 0x20000, "PS4 open flags ABI");
+static_assert(sizeof(struct stat) == 120 && offsetof(struct stat, st_mode) == 8 &&
+              offsetof(struct stat, st_ino) == 4 && offsetof(struct stat, st_size) == 72,
+              "PS4 fstat ABI");
+#endif
+
 // OpenOrbis 0.5.4 BGFT counters/packageSize are uint32_t. The native ABI
 // uses unsigned long (64 bits on PS4), documented by flatz and Itemzflow:
 // https://github.com/flatz/ps4_stub_lib_maker_v2/blob/master/include/bgft.h
@@ -211,11 +220,25 @@ struct InstallResources {
     }
 };
 
+// OpenOrbis musl lstat calls fstatat, whose PS4 implementation always returns
+// ENOSYS. Atomically refuse symlinks with O_NOFOLLOW, then inspect the opened
+// object with PS4's implemented fstat; never substitute a following stat call.
+// https://github.com/OpenOrbis/musl/blob/master/src/stat/fstatat.c
+// https://github.com/OpenOrbis/musl/blob/master/arch/ps4/bits/fcntl.h
+int pathInfo(const char* path, bool directory, struct stat& info) {
+    int flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK;
+    if (directory) flags |= O_DIRECTORY;
+    int descriptor = open(path, flags);
+    if (descriptor < 0) return errno;
+    int error = fstat(descriptor, &info) ? errno : 0;
+    if (close(descriptor) && !error) error = errno;
+    if (!error && directory && !S_ISDIR(info.st_mode)) error = ENOTDIR;
+    return error;
+}
 int checkedDirectory(const char* path) {
     if (mkdir(path, 0755) && errno != EEXIST) return errno;
     struct stat info;
-    if (lstat(path, &info)) return errno;
-    return S_ISDIR(info.st_mode) ? 0 : ENOTDIR;
+    return pathInfo(path, true, info);
 }
 bool sameFile(const struct stat& a, const struct stat& b) {
     return S_ISREG(b.st_mode) && a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size;
@@ -223,7 +246,12 @@ bool sameFile(const struct stat& a, const struct stat& b) {
 int systemFile(InstallResources& owned, const struct stat& source, char* destination, size_t capacity) {
     stage(INSTALL_STAGE_GLOBAL_PATH);
     struct stat global;
-    if (lstat(destination, &global) == 0 && sameFile(source, global)) return 0;
+    int aliasError = pathInfo(destination, false, global);
+    if (!aliasError && sameFile(source, global)) return 0;
+    // Only a missing path, a different inode/type or a refused symlink can
+    // require the safe FD copy. Metadata/access failures keep their real error.
+    if (aliasError && aliasError != ENOENT && aliasError != ENOTDIR && aliasError != ELOOP)
+        return fail(INSTALL_ERROR_GLOBAL_PATH, INSTALL_STAGE_GLOBAL_PATH, aliasError);
     // Namespace mounts differ between firmware/exploit setups. Copy from the
     // validated, still-open descriptor; never reopen its former sandbox path.
     stage(INSTALL_STAGE_COPY);
@@ -238,14 +266,16 @@ int systemFile(InstallResources& owned, const struct stat& source, char* destina
         owned.partialPath[0] = 0;
         return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, ENAMETOOLONG);
     }
-    int flags = O_WRONLY | O_CREAT | O_EXCL;
+    int flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW;
     int output = open(owned.partialPath, flags, 0644);
     if (output < 0) {
         owned.partialPath[0] = 0; // Do not remove a preexisting file we never owned.
         return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
     }
-    int error = 0;
-    if (fseek(owned.file, 0, SEEK_SET)) error = errno ? errno : EIO;
+    struct stat created, copiedInfo;
+    int error = fstat(output, &created) ? errno : 0;
+    if (!error && !S_ISREG(created.st_mode)) error = EINVAL;
+    if (!error && fseek(owned.file, 0, SEEK_SET)) error = errno ? errno : EIO;
     unsigned char buffer[64 * 1024];
     uint64_t copied = 0;
     while (!error && copied < g_installExpected && !cancelled()) {
@@ -267,13 +297,18 @@ int systemFile(InstallResources& owned, const struct stat& source, char* destina
         }
     }
     if (!error && !cancelled() && fsync(output)) error = errno;
+    if (!error && !cancelled() && fstat(output, &copiedInfo)) error = errno;
+    if (!error && !cancelled() && (!S_ISREG(copiedInfo.st_mode) ||
+        created.st_dev != copiedInfo.st_dev || created.st_ino != copiedInfo.st_ino ||
+        copiedInfo.st_size != source.st_size)) error = EINVAL;
     if (close(output) && !error) error = errno;
     if (error) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, error);
     if (cancelled()) return 0;
     if (fstat(fileno(owned.file), &global)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
     if (!sameFile(source, global)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EINVAL);
-    if (lstat(owned.partialPath, &global)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
-    if (!S_ISREG(global.st_mode) || global.st_size != source.st_size)
+    error = pathInfo(owned.partialPath, false, global);
+    if (error) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, error);
+    if (!sameFile(copiedInfo, global))
         return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EINVAL);
     if (rename(owned.partialPath, destination)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
     owned.partialPath[0] = 0;
@@ -293,14 +328,24 @@ int runInstall() {
         systemLength < 0 || (size_t)systemLength >= sizeof(systemPath))
         return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, ENAMETOOLONG);
     stage(INSTALL_STAGE_FILE);
-    struct stat before, after;
-    if (lstat(localPath, &before)) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
-    if (!S_ISREG(before.st_mode)) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, EINVAL);
-    owned.file = fopen(localPath, "rb");
-    if (!owned.file) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
-    if (fstat(fileno(owned.file), &after)) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
-    if (!S_ISREG(after.st_mode) || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
-        after.st_size < (off_t)HEADER_BYTES || (uint64_t)after.st_size != g_installExpected)
+    struct stat directoryInfo, after;
+    int directoryError = pathInfo(PEPPY_DOWNLOAD_DIRECTORY, true, directoryInfo);
+    if (directoryError) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, directoryError);
+    int descriptor = open(localPath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    if (descriptor < 0) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
+    int fileError = fstat(descriptor, &after) ? errno : 0;
+    if (!fileError && !S_ISREG(after.st_mode)) fileError = EINVAL;
+    if (fileError) {
+        if (close(descriptor)) cleanupError(INSTALL_STAGE_FILE, errno);
+        return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, fileError);
+    }
+    owned.file = fdopen(descriptor, "rb");
+    if (!owned.file) {
+        fileError = errno ? errno : ENOMEM;
+        if (close(descriptor)) cleanupError(INSTALL_STAGE_FILE, errno);
+        return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, fileError);
+    }
+    if (after.st_size < (off_t)HEADER_BYTES || (uint64_t)after.st_size != g_installExpected)
         return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
     unsigned char header[HEADER_BYTES];
     size_t got = fread(header, 1, sizeof(header), owned.file);

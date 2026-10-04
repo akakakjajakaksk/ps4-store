@@ -87,6 +87,7 @@ jobs:
           g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
             -Itests/install/stubs tests/install/install_test.cpp \
             -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=close -Wl,--wrap=rename \
+            -Wl,--wrap=lstat -Wl,--wrap=open -Wl,--wrap=__open_2 -Wl,--wrap=fstat \
             -o /tmp/peppy-install-tests
           /tmp/peppy-install-tests
 

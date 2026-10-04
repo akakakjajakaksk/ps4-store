@@ -1,5 +1,7 @@
 #include <assert.h>
 #include <atomic>
+#include <stdarg.h>
+#include <map>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +25,9 @@ enum Mode {
     OVERFLOW_PROGRESS, ZERO_PROGRESS, BLOCK_PROGRESS, STOP_FAIL, UNREGISTER_FAIL,
     BGFT_TERM_FAIL, APP_TERM_FAIL, ATTR_FAIL, DETACH_FAIL, CREATE_FAIL,
     DELAY_CONFIRM, CONFIRM_FAIL, ALIAS_COPY, COPY_ENOSPC, COPY_FSYNC_FAIL,
-    COPY_CLOSE_FAIL, COPY_RENAME_FAIL, COPY_CANCEL, BAD_GLOBAL_ROOT
+    COPY_CLOSE_FAIL, COPY_RENAME_FAIL, COPY_CANCEL, BAD_GLOBAL_ROOT,
+    SOURCE_STAT_FAIL, GLOBAL_STAT_FAIL, COPY_STAT_FAIL, COPY_REPLACED_PATH,
+    ALIAS_DIFFERENT_INODE, ALIAS_SYMLINK, COPY_DIRECTORY_SYMLINK
 };
 static Mode mode;
 static int modules, moduleProbes, appInitCalls, appTermCalls, bgftInitCalls, bgftTermCalls;
@@ -32,8 +36,15 @@ static int jailbreakCalls, restoreCalls, titleCalls;
 static bool jailbroken, nativeStarted;
 static std::atomic<bool> block(false), entered(false);
 static std::string registeredPath;
+static std::map<int, std::string> descriptorPaths;
+static int unavailableLstatCalls, noFollowOpens;
 static const int32_t RAW = (int32_t)0x8099ee01U;
 static const uint64_t NATIVE_LENGTH = 5ULL * 1024 * 1024 * 1024;
+static bool needsCopy(Mode value) {
+    return (value >= ALIAS_COPY && value <= BAD_GLOBAL_ROOT) ||
+           value == COPY_STAT_FAIL || value == COPY_REPLACED_PATH ||
+           value == ALIAS_DIFFERENT_INODE || value == ALIAS_SYMLINK || value == COPY_DIRECTORY_SYMLINK;
+}
 
 extern "C" int32_t sceKernelUsleep(uint32_t) { usleep(20); return 0; }
 extern "C" int32_t scePthreadAttrInit(OrbisPthreadAttr* value) {
@@ -70,7 +81,7 @@ extern "C" int32_t peppyInstallJailbreak(PeppyJailbreakBackup* backup) {
     backup->paid = 0x123456789abc;
     backup->rdir = (void*)0x1234;
     jailbroken = true;
-    if (mode >= ALIAS_COPY) {
+    if (needsCopy(mode)) {
         // The namespace-visible original path changes after jailbreak. Copy
         // must still read the validated old inode, never reopen this path.
         std::string original = localDirectory + "/apollo.pkg";
@@ -135,7 +146,7 @@ extern "C" int32_t peppyBgftRegister(PeppyBgftParamEx* params, int32_t* task) {
     if (mode == REGISTER_FAIL) return RAW;
     if (mode == REGISTER_EXISTS) { *task = 42; return (int32_t)0x80990088U; }
     if (mode == REGISTER_BUSY) return (int32_t)0x80990086U;
-    assert(registeredPath == (mode >= ALIAS_COPY ? copyDirectory : systemDirectory) + "/apollo.pkg");
+    assert(registeredPath == (needsCopy(mode) ? copyDirectory : systemDirectory) + "/apollo.pkg");
     *task = 17;
     return 0;
 }
@@ -177,6 +188,42 @@ extern "C" ssize_t __real_write(int, const void*, size_t);
 extern "C" int __real_fsync(int);
 extern "C" int __real_close(int);
 extern "C" int __real_rename(const char*, const char*);
+extern "C" int __real_open(const char*, int, ...);
+extern "C" int __real_fstat(int, struct stat*);
+extern "C" int __wrap_lstat(const char*, struct stat*) {
+    // Match OpenOrbis' PS4 implementation for every test, not just one mode.
+    ++unavailableLstatCalls;
+    errno = ENOSYS;
+    return -1;
+}
+extern "C" int __wrap_open(const char* path, int flags, ...) {
+    assert(flags & O_NOFOLLOW);
+    ++noFollowOpens;
+    mode_t permissions = 0;
+    if (flags & O_CREAT) {
+        va_list arguments; va_start(arguments, flags);
+        permissions = (mode_t)va_arg(arguments, int); va_end(arguments);
+    }
+    int descriptor = __real_open(path, flags, permissions);
+    if (descriptor >= 0) descriptorPaths[descriptor] = path;
+    return descriptor;
+}
+// glibc Fortify redirects nonconstant two-argument open calls to __open_2.
+// Exercise the same no-follow guard/injection even under _FORTIFY_SOURCE=3.
+extern "C" int __wrap___open_2(const char* path, int flags) {
+    assert(!(flags & O_CREAT));
+    return __wrap_open(path, flags);
+}
+extern "C" int __wrap_fstat(int descriptor, struct stat* info) {
+    const std::string& path = descriptorPaths[descriptor];
+    if ((mode == SOURCE_STAT_FAIL && path == localDirectory + "/apollo.pkg") ||
+        (mode == GLOBAL_STAT_FAIL && path == systemDirectory + "/apollo.pkg") ||
+        (mode == COPY_STAT_FAIL && path == copyDirectory + "/apollo.pkg.part")) {
+        errno = ENOSYS;
+        return -1;
+    }
+    return __real_fstat(descriptor, info);
+}
 extern "C" ssize_t __wrap_write(int fd, const void* bytes, size_t size) {
     if (mode == COPY_ENOSPC && jailbroken) { errno = ENOSPC; return -1; }
     if (mode == COPY_CANCEL && jailbroken) {
@@ -190,8 +237,21 @@ extern "C" int __wrap_fsync(int fd) {
     return __real_fsync(fd);
 }
 extern "C" int __wrap_close(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    std::string path = descriptorPaths[fd];
     int rc = __real_close(fd);
-    if (mode == COPY_CLOSE_FAIL && jailbroken) { errno = EIO; return -1; }
+    descriptorPaths.erase(fd);
+    if (mode == COPY_CLOSE_FAIL && jailbroken && (flags & O_ACCMODE) == O_WRONLY) {
+        errno = EIO; return -1;
+    }
+    if (mode == COPY_REPLACED_PATH && jailbroken && (flags & O_ACCMODE) == O_WRONLY) {
+        assert(path == copyDirectory + "/apollo.pkg.part");
+        assert(__real_rename(path.c_str(), (path + ".old").c_str()) == 0);
+        FILE* replacement = fopen(path.c_str(), "wb"); assert(replacement);
+        unsigned char invalid[8192] = {};
+        assert(fwrite(invalid, 1, sizeof(invalid), replacement) == sizeof(invalid));
+        assert(fclose(replacement) == 0);
+    }
     return rc;
 }
 extern "C" int __wrap_rename(const char* from, const char* to) {
@@ -207,6 +267,7 @@ static void reset(Mode next, bool alias = true) {
     jailbreakCalls = restoreCalls = titleCalls = 0;
     jailbroken = nativeStarted = false;
     registeredPath.clear();
+    descriptorPaths.clear(); noFollowOpens = 0;
     block.store(next == BLOCK_PROGRESS || next == STOP_FAIL || next == UNREGISTER_FAIL || next == COPY_CANCEL);
     entered.store(false);
     // Each fault scenario emulates a fresh application process.
@@ -229,6 +290,14 @@ static void reset(Mode next, bool alias = true) {
     assert(fwrite(header, 1, sizeof(header), file) == sizeof(header)); assert(fclose(file) == 0);
     if (alias) assert(link((localDirectory + "/apollo.pkg").c_str(),
                           (systemDirectory + "/apollo.pkg").c_str()) == 0);
+    if (next == ALIAS_DIFFERENT_INODE) {
+        file = fopen((systemDirectory + "/apollo.pkg").c_str(), "wb"); assert(file);
+        assert(fwrite(header, 1, sizeof(header), file) == sizeof(header)); assert(fclose(file) == 0);
+    }
+    if (next == ALIAS_SYMLINK)
+        assert(symlink((localDirectory + "/apollo.pkg").c_str(), (systemDirectory + "/apollo.pkg").c_str()) == 0);
+    if (next == COPY_DIRECTORY_SYMLINK)
+        assert(symlink(localDirectory.c_str(), copyDirectory.c_str()) == 0);
     if (next == BAD_GLOBAL_ROOT) {
         assert(rmdir(systemDirectory.c_str()) == 0 && rmdir(systemRoot.c_str()) == 0);
         file = fopen(systemRoot.c_str(), "wb"); assert(file); assert(fclose(file) == 0);
@@ -247,11 +316,16 @@ static void waitEntered() {
     assert(!"mock did not enter blocking stage");
 }
 static InstallSnapshot run(Mode next) {
-    reset(next, next < ALIAS_COPY);
+    reset(next, !needsCopy(next));
     assert(startInstall(spec())); return waitDone();
 }
 static void failed(Mode next, int category, int stageExpected, int32_t native) {
     InstallSnapshot value = run(next);
+    if (value.state != INSTALL_FAILED || value.errorCode != category ||
+        value.stage != stageExpected || value.nativeCode != native)
+        fprintf(stderr, "mode=%d state=%d category=%d stage=%d native=%d (expected %d/%d/%d)\n",
+                next, value.state, value.errorCode, value.stage, value.nativeCode,
+                category, stageExpected, native);
     assert(value.state == INSTALL_FAILED && value.errorCode == category);
     assert(value.stage == stageExpected && value.nativeCode == native);
     assert(restoreCalls == (jailbreakCalls && next != JAILBREAK_FAIL ? 1 : 0));
@@ -259,6 +333,9 @@ static void failed(Mode next, int category, int stageExpected, int32_t native) {
     assert(access((localDirectory + "/apollo.pkg").c_str(), F_OK) == 0);
 }
 int main() {
+    struct stat unavailable;
+    assert(lstat("/tmp", &unavailable) == -1 && errno == ENOSYS);
+    assert(unavailableLstatCalls == 1); unavailableLstatCalls = 0;
     InstallSnapshot value = run(NORMAL);
     assert(value.state == INSTALL_DONE && value.percent == 100 && value.errorCode == 0);
     assert(value.received == NATIVE_LENGTH && value.total == NATIVE_LENGTH);
@@ -327,6 +404,22 @@ int main() {
     value = run(ALIAS_COPY); assert(value.state == INSTALL_DONE);
     assert(registeredPath == copyDirectory + "/apollo.pkg");
     assert(access((copyDirectory + "/apollo.pkg.part").c_str(), F_OK) != 0);
+    value = run(ALIAS_DIFFERENT_INODE); assert(value.state == INSTALL_DONE);
+    assert(registeredPath == copyDirectory + "/apollo.pkg");
+    value = run(ALIAS_SYMLINK); assert(value.state == INSTALL_DONE);
+    assert(registeredPath == copyDirectory + "/apollo.pkg");
+    failed(SOURCE_STAT_FAIL, INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, ENOSYS);
+    assert(!jailbreakCalls && !registerCalls);
+    failed(GLOBAL_STAT_FAIL, INSTALL_ERROR_GLOBAL_PATH, INSTALL_STAGE_GLOBAL_PATH, ENOSYS);
+    assert(!registerCalls && access(copyDirectory.c_str(), F_OK) != 0);
+    failed(COPY_STAT_FAIL, INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, ENOSYS);
+    assert(!registerCalls && access((copyDirectory + "/apollo.pkg.part").c_str(), F_OK) != 0);
+    failed(COPY_REPLACED_PATH, INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EINVAL);
+    assert(!registerCalls);
+    value = run(COPY_DIRECTORY_SYMLINK);
+    assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_GLOBAL_PATH &&
+           (value.nativeCode == ELOOP || value.nativeCode == ENOTDIR));
+    assert(!registerCalls && access((localDirectory + "/apollo.pkg.part").c_str(), F_OK) != 0);
     failed(COPY_ENOSPC, INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, ENOSPC);
     failed(COPY_FSYNC_FAIL, INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EIO);
     failed(COPY_CLOSE_FAIL, INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EIO);
@@ -354,5 +447,22 @@ int main() {
     assert(symlink((systemDirectory + "/apollo.pkg").c_str(), (localDirectory + "/apollo.pkg").c_str()) == 0);
     assert(startInstall(spec())); value = waitDone();
     assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_FILE && !jailbreakCalls);
+    // O_NONBLOCK prevents an unexpected FIFO from hanging before type checks.
+    assert(unlink((localDirectory + "/apollo.pkg").c_str()) == 0);
+    assert(mkfifo((localDirectory + "/apollo.pkg").c_str(), 0600) == 0);
+    assert(startInstall(spec())); value = waitDone();
+    assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_FILE &&
+           value.nativeCode == EINVAL && !jailbreakCalls);
+    reset(NORMAL);
+    InstallSpec wrongSize = spec(); --wrongSize.expectedBytes;
+    assert(startInstall(wrongSize)); value = waitDone();
+    assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_PACKAGE && !jailbreakCalls);
+    // The source directory itself must also be a real directory, not a symlink.
+    assert(rename(localDirectory.c_str(), (localDirectory + "-real").c_str()) == 0);
+    assert(symlink((localDirectory + "-real").c_str(), localDirectory.c_str()) == 0);
+    assert(startInstall(spec())); value = waitDone();
+    assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_FILE &&
+           (value.nativeCode == ELOOP || value.nativeCode == ENOTDIR) && !jailbreakCalls);
+    assert(noFollowOpens > 0 && unavailableLstatCalls == 0);
     puts("All native installer ABI, privileges, local path/copy, progress, preservation, errors and cancellation tests passed.");
 }

@@ -18,6 +18,7 @@ std::atomic<int> initResult(0), moduleResult(0), openResult(7), createResult(0),
 std::atomic<bool> moduleLoaded(true);
 std::atomic<bool> holdOutput(false), waitingOutput(false);
 std::atomic<int> closeCount(0), openCount(0), outputs(0), loadCount(0);
+std::atomic<int32_t> openedUser(-1);
 const int16_t* outstanding = 0;
 std::mutex observationLock;
 std::vector<int16_t> observed;
@@ -60,6 +61,7 @@ void reset() {
     initResult = 0; moduleResult = 0; moduleLoaded = true; openResult = 7;
     outputFailAfter = -1; createResult = 0; closeCount = 0; openCount = 0; outputs = 0; loadCount = 0;
     outstanding = 0;
+    openedUser = -1;
     waitingOutput = false;
     musicSetVolume(30);
     if (musicSnapshot().muted) musicToggleMute();
@@ -79,6 +81,10 @@ extern "C" int32_t sceAudioOutOpen(int32_t user, OrbisAudioOutPort port, int32_t
     assert(user >= 0 && port == ORBIS_AUDIO_OUT_PORT_TYPE_MAIN && index == 0);
     assert(frames == FRAMES && frequency == 48000 && format == ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
     ++openCount;
+    openedUser = user;
+    // The real PS4 MAIN mixer rejects a logged-in profile: the reported Build
+    // #83 failure was DEVICE_SERVICE_ERROR_INVALID_USER, not a module error.
+    if (user != ORBIS_USER_SERVICE_USER_ID_SYSTEM) return int32_t(0x809B0001u);
     return openResult;
 }
 extern "C" int32_t sceAudioOutOutput(int32_t port, const void* samples) {
@@ -116,6 +122,10 @@ extern "C" int32_t scePthreadCreate(OrbisPthread* thread, const OrbisPthreadAttr
 extern "C" int32_t scePthreadJoin(OrbisPthread thread, void** result) { return pthread_join(thread, result); }
 
 int main() {
+    // Keep the PS4's rejection in the mock so passing the controller profile
+    // back into MAIN would make the playback regression below fail.
+    assert(sceAudioOutOpen(42, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, FRAMES, 48000,
+                          ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO) == int32_t(0x809B0001u));
     mkdir(PEPPY_MUSIC_DIRECTORY, 0700);
     writeFixture("fight.wav", waveBytes(10000, 258, true));
     writeFixture("acendaofarol.wav", waveBytes(20000));
@@ -151,6 +161,7 @@ int main() {
     assert(unlink(TRACK_FILES[0]) == 0 && unlink(TRACK_FILES[1]) == 0);
     await([] { return saw(3000) && saw(6000) && outputs >= 6; });
     assert(musicSnapshot().state == MUSIC_PLAYING && openCount == 1 && loadCount == 0);
+    assert(openedUser == ORBIS_USER_SERVICE_USER_ID_SYSTEM);
     musicToggleMute();
     await([] { return saw(0); });
     assert(musicSnapshot().muted);
@@ -172,7 +183,7 @@ int main() {
 
     reset(); initResult = int32_t(ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT);
     assert(musicStart(-1)); await([] { return musicSnapshot().state == MUSIC_PLAYING; });
-    musicShutdown(); assert(closeCount == 1);
+    musicShutdown(); assert(closeCount == 1 && openedUser == ORBIS_USER_SERVICE_USER_ID_SYSTEM);
 
     reset(); moduleLoaded = false; moduleResult = -123;
     assert(musicStart(42)); await([] { return musicSnapshot().state == MUSIC_FAILED; });
