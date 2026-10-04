@@ -46,6 +46,14 @@ static const char* glyph(char c){
  default:return 0;
  }
 }
+static void coverArt(uint32_t*p,int x,int y,int w,int h,int id,uint32_t base,uint32_t accent,uint32_t white){
+ rect(p,x,y,w,h,base);
+ if(id==0){rect(p,x+w/2-8,y+35,16,h-70,accent);rect(p,x+45,y+h/2-8,w-90,16,accent);border(p,x+70,y+45,w-140,h-90,5,white);}
+ else if(id==1){for(int k=0;k<3;k++){border(p,x+45+k*28,y+40+k*25,w-90-k*56,h-80-k*50,4,k==0?accent:white);}rect(p,x+w/2-25,y+h/2-25,50,50,accent);}
+ else if(id==2){border(p,x+38,y+35,w-76,h-70,6,accent);rect(p,x+70,y+70,w-140,18,white);rect(p,x+70,y+105,w-180,18,white);rect(p,x+70,y+140,w-110,18,white);}
+ else {for(int yy=0;yy<3;yy++)for(int xx=0;xx<3;xx++)rect(p,x+60+xx*70,y+40+yy*55,38,38,(xx+yy)%2?accent:white);}
+}
+
 static void text(uint32_t*p,int x,int y,const char*s,int scale,uint32_t c){
  for(;*s;s++){
   if(*s==' '){x+=4*scale;continue;}
@@ -84,9 +92,8 @@ static void drawStore(uint32_t*p,int selected,int padState){
  for(int i=0;i<4;i++){
   int x=start+i*(cw+gap);
   rect(p,x+8,y+10,cw,ch,shadow);rect(p,x,y,cw,ch,card);
-  rect(p,x,y,cw,225,covers[i]);
+  coverArt(p,x,y,cw,225,i,covers[i],accent,white);
   rect(p,x+22,y+20,286,8,i==selected?accent:0x80445A78);
-  rect(p,x+118,y+68,94,94,0x80212E47);border(p,x+118,y+68,94,94,3,i==selected?glow:muted);
   text(p,x+25,y+254,names[i],4,white);text(p,x+25,y+300,"INSTALL",3,muted);
   rect(p,x+25,y+342,132,34,i==selected?accent:0x802B3A54);text(p,x+42,y+350,"OPEN",3,white);
  }
@@ -100,8 +107,7 @@ static void drawDetails(uint32_t*p,int selected){
  const uint32_t covers[4]={0x80304D82,0x80513B68,0x802E6255,0x80604D32};
  fill(p,bg);rect(p,0,0,W,108,nav);rect(p,0,104,W,4,accent);
  rect(p,58,25,62,62,accent);rect(p,72,39,34,34,bg);text(p,150,28,"ORBIS STORE",7,white);
- rect(p,100,165,540,650,panel);rect(p,125,190,490,390,covers[selected]);
- rect(p,250,300,240,170,0x80212E47);border(p,250,300,240,170,4,glow);
+ rect(p,100,165,540,650,panel);coverArt(p,125,190,490,390,selected,covers[selected],accent,white);border(p,125,190,490,390,4,glow);
  text(p,720,190,names[selected],8,white);text(p,724,285,"PS4 HOMEBREW",4,muted);
  text(p,724,365,"READY FOR STORE",4,white);text(p,724,425,"DETAIL PAGE",3,muted);
  rect(p,724,525,300,70,accent);text(p,790,544,"INSTALL",4,white);
