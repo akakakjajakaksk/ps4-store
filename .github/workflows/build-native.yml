@@ -104,10 +104,14 @@ jobs:
           g++ -std=c++11 -O2 -Wall -Wextra -Werror native/scripts/preview-ui.cpp -o /tmp/peppy-ui-controls
           /tmp/peppy-ui-controls --check-controller
 
+      - name: Test package directory manifest
+        run: python3 native/tests/gp4/normalize_test.py
+
       - name: Build Peppy Store files
         run: |
           cd native
           make pkg.gp4
+          cat pkg.gp4
 
       - name: Package with compatible OpenSSL
         run: |

@@ -34,8 +34,9 @@ all: $(CONTENT_ID).pkg
 $(CONTENT_ID).pkg: pkg.gp4
 	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core pkg_build $< .
 
-pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png assets/FONT_LICENSE.txt assets/GOLDHEN_SDK_LICENSE.txt catalog.json $(MUSIC_ASSETS)
-	$(TOOLCHAIN)/bin/$(CDIR)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$^"
+pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png assets/FONT_LICENSE.txt assets/GOLDHEN_SDK_LICENSE.txt catalog.json $(MUSIC_ASSETS) scripts/normalize-gp4.py
+	$(TOOLCHAIN)/bin/$(CDIR)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$(filter-out scripts/normalize-gp4.py,$^)"
+	python3 scripts/normalize-gp4.py $@
 
 sce_sys/param.sfo: Makefile
 	mkdir -p sce_sys
