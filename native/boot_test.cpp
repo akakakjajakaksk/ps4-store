@@ -325,7 +325,8 @@ static const char* downloadErrorText(int code) {
     switch (code) {
     case DOWNLOAD_ERROR_SPEC: return "Os dados do pacote são inválidos.";
     case DOWNLOAD_ERROR_THREAD: return "Não foi possível iniciar o download.";
-    case DOWNLOAD_ERROR_NETWORK: return "Falha na conexão. Confira a rede do PS4.";
+    case DOWNLOAD_ERROR_NETWORK: return "Não foi possível estabelecer a conexão.";
+    case DOWNLOAD_ERROR_NOT_READY: return "O PS4 ainda não obteve uma conexão de rede para baixar.";
     case DOWNLOAD_ERROR_HTTP: return "O servidor não disponibilizou o pacote.";
     case DOWNLOAD_ERROR_REDIRECT: return "O link do pacote foi recusado.";
     case DOWNLOAD_ERROR_TLS: return "Falha na conexão segura. Confira a data e a hora do PS4.";
@@ -451,6 +452,19 @@ static void drawDetails(uint32_t* p, int selected) {
     else if (*app.sha256) snprintf(info, sizeof(info), "SHA-256 conferido ao concluir o download.");
     else snprintf(info, sizeof(info), "Pacote publicado pelo projeto; hash não informado no release.");
     textWrapped(p, 708, 861, info, FONT_SMALL, MUTED, 1140, 2);
+    if (mine && status.state == FAILED) {
+        char diagnostic[160];
+        int used = snprintf(diagnostic, sizeof(diagnostic), "%s | 0x%08X | rede %d",
+                            downloadStageName(status.stage), (unsigned)status.nativeCode, status.networkState);
+        if (used > 0 && (size_t)used < sizeof(diagnostic)) {
+            if (status.sslCode || status.sslDetails)
+                snprintf(diagnostic + used, sizeof(diagnostic) - used, " | SSL %08X/%08X",
+                         (unsigned)status.sslCode, (unsigned)status.sslDetails);
+            else if (status.networkCode)
+                snprintf(diagnostic + used, sizeof(diagnostic) - used, " | net %08X", (unsigned)status.networkCode);
+        }
+        textElided(p, 708, 926, diagnostic, FONT_SMALL, BLUE, 1140);
+    }
     footer(p, true);
     if (status.state == RUNNING && mine) {
         line(p, 668, 1028, 680, 1008, 2, 0x808BD4B0);

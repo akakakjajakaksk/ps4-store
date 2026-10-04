@@ -4,7 +4,7 @@ TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
 # Orbis Store native UI: graphics + DualShock 4 input.
-LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut -lScePad -lSceUserService -lSceNet -lSceSsl -lSceHttp
+LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut -lScePad -lSceUserService -lSceNet -lSceNetCtl -lSceSsl -lSceHttp
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source

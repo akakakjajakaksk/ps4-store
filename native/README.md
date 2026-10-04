@@ -26,6 +26,11 @@ A conexão HTTPS valida os certificados e pode falhar caso o relógio,
 a rede ou os certificados do console sejam incompatíveis. O downloader
 foi testado com HTTP simulado e precisa de teste de download no PS4.
 
+A inicialização consulta o estado da rede/IP via NetCtl e aceita módulos
+já carregados após verificar seu estado. Falhas mostram a etapa e o retorno
+nativo, além do código resumido. O diagnóstico fica em
+`/data/peppy-store/downloads/download.log`, sem URLs nem tokens de redirecionamento.
+
 ## Controles
 
 - Esquerda/direita: selecionar um card, com retorno ao início/fim da lista.

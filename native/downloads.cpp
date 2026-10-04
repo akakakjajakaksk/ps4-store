@@ -9,6 +9,7 @@
 #include <orbis/libkernel.h>
 #include <orbis/Sysmodule.h>
 #include <orbis/Net.h>
+#include <orbis/NetCtl.h>
 #include <orbis/Ssl.h>
 #include <orbis/Http.h>
 
@@ -21,6 +22,10 @@ extern "C" int32_t peppyHttpSetRecvTimeOut(int32_t, uint32_t)
 extern "C" int32_t peppyHttpsGetSslError(int32_t, int32_t*, uint32_t*)
     __asm__("sceHttpsGetSslError");
 extern "C" int32_t peppySslTerm(int32_t) __asm__("sceSslTerm");
+extern "C" int32_t peppySysmoduleIsLoaded(OrbisSysModuleInternal)
+    __asm__("sceSysmoduleIsLoadedInternal");
+extern "C" int32_t peppyNetCtlGetState(int32_t*) __asm__("sceNetCtlGetState");
+extern "C" int32_t* peppyNetErrnoLoc() __asm__("sceNetErrnoLoc");
 
 #ifndef PEPPY_DOWNLOAD_DIRECTORY
 #define PEPPY_DOWNLOAD_DIRECTORY "/data/peppy-store/downloads"
@@ -36,8 +41,36 @@ const int MAX_REDIRECTS = 5;
 int g_state = IDLE, g_busy = 0, g_cancel = 0, g_error = 0, g_committed = 0;
 uint64_t g_received = 0, g_total = 0;
 int g_reqLock = 0, g_request = -1;
+int g_stage = DOWNLOAD_STAGE_NONE, g_native = 0, g_network = 0, g_ssl = 0;
+uint32_t g_sslDetails = 0;
+int g_networkState = -1;
 char g_url[URL_CAP], g_filename[NAME_CAP], g_digest[65];
 uint64_t g_expected = 0;
+// Only the worker owns its diagnostic file; URLs and redirect tokens are never
+// written. Atomically published numeric diagnostics remain usable if logging fails.
+FILE* g_log = 0;
+
+void logCall(int stage, int32_t native, int32_t network = 0) {
+    if (!g_log) return;
+    int rc = fprintf(g_log, "stage=%d name=%s native=0x%08X net=0x%08X state=%d ssl=0x%08X detail=0x%08X\n",
+        stage, downloadStageName(stage), (unsigned)native, (unsigned)network,
+        __atomic_load_n(&g_networkState, __ATOMIC_ACQUIRE),
+        (unsigned)__atomic_load_n(&g_ssl, __ATOMIC_ACQUIRE),
+        (unsigned)__atomic_load_n(&g_sslDetails, __ATOMIC_ACQUIRE));
+    if (rc < 0 || fflush(g_log) != 0) {
+        fclose(g_log);
+        g_log = 0;
+    }
+}
+void stage(int value) { __atomic_store_n(&g_stage, value, __ATOMIC_RELEASE); }
+int fail(int category, int where, int32_t native, int32_t network = 0) {
+    stage(where);
+    __atomic_store_n(&g_native, native, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_network, network, __ATOMIC_RELEASE);
+    logCall(where, native, network);
+    return category;
+}
+int32_t networkErrno() { int32_t* value = peppyNetErrnoLoc(); return value ? *value : 0; }
 
 void requestLock() {
     while (__atomic_exchange_n(&g_reqLock, 1, __ATOMIC_ACQUIRE))
@@ -217,12 +250,26 @@ bool ensureDownloadDirectory() {
     return true;
 }
 bool removePartial(const char* path) { return unlink(path) == 0 || errno == ENOENT; }
-int transferError(int request) {
+int transferError(int request, int where, int32_t native) {
     int32_t error = 0;
     uint32_t detail = 0;
-    if (peppyHttpsGetSslError(request, &error, &detail) == 0 && (error || detail))
-        return DOWNLOAD_ERROR_TLS;
-    return DOWNLOAD_ERROR_NETWORK;
+    int32_t sslRc = peppyHttpsGetSslError(request, &error, &detail);
+    __atomic_store_n(&g_ssl, sslRc == 0 ? error : sslRc, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_sslDetails, detail, __ATOMIC_RELEASE);
+    int32_t net = 0;
+    if (sceHttpGetLastErrno(request, &net) < 0) net = networkErrno();
+    return fail(sslRc == 0 && (error || detail) ? DOWNLOAD_ERROR_TLS : DOWNLOAD_ERROR_NETWORK,
+                where, native, net);
+}
+
+int ensureModule(OrbisSysModuleInternal module, int where) {
+    stage(where);
+    if (peppySysmoduleIsLoaded(module) == 0) { logCall(where, 0); return 0; }
+    int32_t rc = (int32_t)sceSysmoduleLoadModuleInternal(module);
+    logCall(where, rc);
+    if (rc < 0 && peppySysmoduleIsLoaded(module) != 0)
+        return fail(DOWNLOAD_ERROR_NETWORK, where, rc);
+    return 0;
 }
 
 struct HttpHandles {
@@ -246,129 +293,207 @@ struct HttpHandles {
 
 int runTransfer() {
     if (cancelled()) return 0;
-    if (!ensureDownloadDirectory()) return DOWNLOAD_ERROR_FILESYSTEM;
+    stage(DOWNLOAD_STAGE_DIRECTORY);
+    if (!ensureDownloadDirectory()) return fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_DIRECTORY, errno);
+    char logPath[256];
+    int logLength = snprintf(logPath, sizeof(logPath), "%s/download.log", PEPPY_DOWNLOAD_DIRECTORY);
+    if (logLength > 0 && (size_t)logLength < sizeof(logPath)) g_log = fopen(logPath, "w");
     char finalPath[256], partPath[264];
     int a = snprintf(finalPath, sizeof(finalPath), "%s/%s", PEPPY_DOWNLOAD_DIRECTORY, g_filename);
     int b = snprintf(partPath, sizeof(partPath), "%s.part", finalPath);
     if (a < 0 || (size_t)a >= sizeof(finalPath) || b < 0 || (size_t)b >= sizeof(partPath))
-        return DOWNLOAD_ERROR_SPEC;
-    if (!removePartial(partPath)) return DOWNLOAD_ERROR_FILESYSTEM;
+        return fail(DOWNLOAD_ERROR_SPEC, DOWNLOAD_STAGE_SPEC, 0);
+    if (!removePartial(partPath)) return fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_CLEANUP, errno);
 
     HttpHandles handles;
     const OrbisSysModuleInternal modules[] = {ORBIS_SYSMODULE_INTERNAL_NET,
-        ORBIS_SYSMODULE_INTERNAL_SSL, ORBIS_SYSMODULE_INTERNAL_HTTP};
-    for (size_t i = 0; i < sizeof(modules)/sizeof(modules[0]); ++i)
-        if ((int32_t)sceSysmoduleLoadModuleInternal(modules[i]) < 0)
-            return DOWNLOAD_ERROR_NETWORK;
-    // sceNetInit is global; an already initialized network is usable as well.
-    // Pool creation below is the definitive check that it is available.
-    sceNetInit();
-    handles.net = sceNetPoolCreate("peppy-download", 64 * 1024, 0);
-    if (handles.net < 0) return DOWNLOAD_ERROR_NETWORK;
+        ORBIS_SYSMODULE_INTERNAL_NETCTL, ORBIS_SYSMODULE_INTERNAL_SSL, ORBIS_SYSMODULE_INTERNAL_HTTP};
+    const int moduleStages[] = {DOWNLOAD_STAGE_MODULE_NET, DOWNLOAD_STAGE_MODULE_NETCTL,
+        DOWNLOAD_STAGE_MODULE_SSL, DOWNLOAD_STAGE_MODULE_HTTP};
+    for (size_t i = 0; i < sizeof(modules)/sizeof(modules[0]); ++i) {
+        int rc = ensureModule(modules[i], moduleStages[i]);
+        if (rc) return rc;
+    }
+    stage(DOWNLOAD_STAGE_NETCTL_INIT);
+    int32_t ctlRc = sceNetCtlInit();
+    logCall(DOWNLOAD_STAGE_NETCTL_INIT, ctlRc);
+    int32_t networkState = -1;
+    int32_t stateRc = peppyNetCtlGetState(&networkState);
+    __atomic_store_n(&g_networkState, networkState, __ATOMIC_RELEASE);
+    // A usable state query confirms a preexisting NetCtl context. Do not
+    // whitelist guessed "already initialized" error constants.
+    if (ctlRc != 0 && stateRc != 0)
+        return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_NETCTL_INIT, ctlRc);
+    stage(DOWNLOAD_STAGE_NETCTL_STATE);
+    if (stateRc != 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_NETCTL_STATE, stateRc);
+    // State 3 is IP_OBTAINED. This checks local readiness and never runs a PSN
+    // connection test, logs the local address, or changes connection settings.
+    for (int attempt = 0; networkState != 3 && attempt < 100; ++attempt) {
+        if (cancelled()) return 0;
+        sceKernelUsleep(100000);
+        stateRc = peppyNetCtlGetState(&networkState);
+        __atomic_store_n(&g_networkState, networkState, __ATOMIC_RELEASE);
+        if (stateRc != 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_NETCTL_STATE, stateRc);
+    }
+    logCall(DOWNLOAD_STAGE_NETCTL_STATE, stateRc);
+    if (networkState != 3) return fail(DOWNLOAD_ERROR_NOT_READY, DOWNLOAD_STAGE_NETCTL_STATE, stateRc);
+
+    stage(DOWNLOAD_STAGE_NET_INIT);
+    int32_t netRc = sceNetInit();
+    int32_t netErr = netRc != 0 ? networkErrno() : 0;
+    logCall(DOWNLOAD_STAGE_NET_INIT, netRc, netErr);
+    // Official OpenOrbis/Apollo and SSPI validate usable pool creation after
+    // sceNetInit. Its original return is retained in the diagnostic log even
+    // when a preexisting global network lets pool creation succeed.
+    stage(DOWNLOAD_STAGE_NET_POOL);
+    handles.net = sceNetPoolCreate("peppy-download", 1024 * 1024, 0);
+    if (handles.net < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_NET_POOL, handles.net, networkErrno());
+    logCall(DOWNLOAD_STAGE_NET_POOL, handles.net);
+    stage(DOWNLOAD_STAGE_SSL_INIT);
     handles.ssl = sceSslInit(256 * 1024);
-    if (handles.ssl < 0) return DOWNLOAD_ERROR_TLS;
+    if (handles.ssl < 0) return fail(DOWNLOAD_ERROR_TLS, DOWNLOAD_STAGE_SSL_INIT, handles.ssl);
+    stage(DOWNLOAD_STAGE_HTTP_INIT);
     handles.http = sceHttpInit(handles.net, handles.ssl, 1024 * 1024);
-    if (handles.http < 0) return DOWNLOAD_ERROR_NETWORK;
+    if (handles.http < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_HTTP_INIT, handles.http);
+    stage(DOWNLOAD_STAGE_TEMPLATE);
     handles.tmpl = sceHttpCreateTemplate(handles.http, "PeppyStore/1.0", ORBIS_HTTP_VERSION_1_1, 0);
-    if (handles.tmpl < 0) return DOWNLOAD_ERROR_NETWORK;
-    if (sceHttpsEnableOption(handles.tmpl, TLS_CHECKS) < 0) return DOWNLOAD_ERROR_TLS;
-    if (peppyHttpSetAutoRedirect(handles.tmpl, 0) < 0 ||
-        sceHttpSetResolveTimeOut(handles.tmpl, 10000000) < 0 ||
-        sceHttpSetConnectTimeOut(handles.tmpl, 10000000) < 0 ||
-        sceHttpSetSendTimeOut(handles.tmpl, 15000000) < 0 ||
-        peppyHttpSetRecvTimeOut(handles.tmpl, 15000000) < 0) return DOWNLOAD_ERROR_NETWORK;
+    if (handles.tmpl < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_TEMPLATE, handles.tmpl);
+    int32_t rc;
+    stage(DOWNLOAD_STAGE_TLS_OPTIONS);
+    rc = sceHttpsEnableOption(handles.tmpl, TLS_CHECKS);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_TLS, DOWNLOAD_STAGE_TLS_OPTIONS, rc);
+    stage(DOWNLOAD_STAGE_REDIRECT_OPTION);
+    rc = peppyHttpSetAutoRedirect(handles.tmpl, 0);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_REDIRECT_OPTION, rc);
+    stage(DOWNLOAD_STAGE_RESOLVE_TIMEOUT);
+    rc = sceHttpSetResolveTimeOut(handles.tmpl, 10000000);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_RESOLVE_TIMEOUT, rc);
+    stage(DOWNLOAD_STAGE_CONNECT_TIMEOUT);
+    rc = sceHttpSetConnectTimeOut(handles.tmpl, 10000000);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_CONNECT_TIMEOUT, rc);
+    stage(DOWNLOAD_STAGE_SEND_TIMEOUT);
+    rc = sceHttpSetSendTimeOut(handles.tmpl, 15000000);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_SEND_TIMEOUT, rc);
+    stage(DOWNLOAD_STAGE_RECV_TIMEOUT);
+    rc = peppyHttpSetRecvTimeOut(handles.tmpl, 15000000);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_RECV_TIMEOUT, rc);
 
     char current[URL_CAP], next[URL_CAP];
     memcpy(current, g_url, strlen(g_url) + 1);
     int status = 0;
     for (int hop = 0;; ++hop) {
         if (cancelled()) return 0;
+        stage(DOWNLOAD_STAGE_CONNECTION);
         handles.conn = sceHttpCreateConnectionWithURL(handles.tmpl, current, false);
-        if (handles.conn < 0) return DOWNLOAD_ERROR_NETWORK;
+        if (handles.conn < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_CONNECTION, handles.conn);
+        stage(DOWNLOAD_STAGE_REQUEST);
         handles.req = sceHttpCreateRequestWithURL(handles.conn, ORBIS_METHOD_GET, current, 0);
-        if (handles.req < 0) return DOWNLOAD_ERROR_NETWORK;
+        if (handles.req < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_REQUEST, handles.req);
         publishRequest(handles.req);
         if (cancelled()) return 0;
-        if (sceHttpAddRequestHeader(handles.req, "Accept-Encoding", "identity", 0) < 0)
-            return DOWNLOAD_ERROR_NETWORK;
-        if (sceHttpSendRequest(handles.req, 0, 0) < 0) return transferError(handles.req);
+        stage(DOWNLOAD_STAGE_REQUEST_HEADER);
+        rc = sceHttpAddRequestHeader(handles.req, "Accept-Encoding", "identity", 0);
+        if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_REQUEST_HEADER, rc);
+        stage(DOWNLOAD_STAGE_SEND);
+        rc = sceHttpSendRequest(handles.req, 0, 0);
+        if (rc < 0) return transferError(handles.req, DOWNLOAD_STAGE_SEND, rc);
         if (cancelled()) return 0;
-        if (sceHttpGetStatusCode(handles.req, &status) < 0) return DOWNLOAD_ERROR_NETWORK;
+        stage(DOWNLOAD_STAGE_STATUS);
+        rc = sceHttpGetStatusCode(handles.req, &status);
+        if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_STATUS, rc);
+        logCall(DOWNLOAD_STAGE_STATUS, status);
         if (status == 200) break;
         if (!(status == 301 || status == 302 || status == 303 || status == 307 || status == 308))
-            return DOWNLOAD_ERROR_HTTP;
-        if (hop >= MAX_REDIRECTS) return DOWNLOAD_ERROR_REDIRECT;
+            return fail(DOWNLOAD_ERROR_HTTP, DOWNLOAD_STAGE_STATUS, status);
+        if (hop >= MAX_REDIRECTS) return fail(DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, 0);
         char* responseHeaders = 0;
         size_t responseHeaderLength = 0;
-        if (sceHttpGetAllResponseHeaders(handles.req, &responseHeaders, &responseHeaderLength) < 0 ||
-            !redirectUrl(current, responseHeaders, responseHeaderLength, next)) return DOWNLOAD_ERROR_REDIRECT;
+        stage(DOWNLOAD_STAGE_HEADERS);
+        rc = sceHttpGetAllResponseHeaders(handles.req, &responseHeaders, &responseHeaderLength);
+        if (rc < 0) return fail(DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, rc);
+        if (!redirectUrl(current, responseHeaders, responseHeaderLength, next))
+            return fail(DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, 0);
         handles.closeRequest();
         memcpy(current, next, strlen(next) + 1);
     }
 
     int32_t lengthType = -1;
     size_t responseLength = 0;
+    stage(DOWNLOAD_STAGE_CONTENT_LENGTH);
     int lengthRc = sceHttpGetResponseContentLength(handles.req, &lengthType, &responseLength);
+    logCall(DOWNLOAD_STAGE_CONTENT_LENGTH, lengthRc);
     bool knownLength = lengthRc == 0 && lengthType == ORBIS_HTTP_CONTENTLEN_EXIST;
     if (knownLength && (responseLength < 4 || responseLength > MAX_PACKAGE_BYTES ||
-        (g_expected && responseLength != g_expected))) return DOWNLOAD_ERROR_LENGTH;
-    if (!g_expected && !knownLength) return DOWNLOAD_ERROR_LENGTH;
+        (g_expected && responseLength != g_expected))) return fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_CONTENT_LENGTH, 0);
+    if (!g_expected && !knownLength) return fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_CONTENT_LENGTH, lengthRc);
     const uint64_t required = g_expected ? g_expected : responseLength;
     __atomic_store_n(&g_total, required, __ATOMIC_RELEASE);
     if (cancelled()) return 0;
+    stage(DOWNLOAD_STAGE_FILE_OPEN);
     FILE* file = fopen(partPath, "wb");
-    if (!file) { removePartial(partPath); return DOWNLOAD_ERROR_FILESYSTEM; }
+    if (!file) { int code = errno; removePartial(partPath); return fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, code); }
     int result = 0;
     uint64_t received = 0;
     uint8_t buffer[65536], magic[4] = {0,0,0,0};
     size_t magicCount = 0;
     Sha256 hash;
     while (!cancelled()) {
+        stage(DOWNLOAD_STAGE_READ);
         int32_t got = sceHttpReadData(handles.req, buffer, sizeof(buffer));
-        if (got < 0) { result = transferError(handles.req); break; }
+        if (got < 0) { result = transferError(handles.req, DOWNLOAD_STAGE_READ, got); break; }
         if (got == 0) break;
         if ((size_t)got > sizeof(buffer) || (uint64_t)got > required - received) {
-            result = DOWNLOAD_ERROR_LENGTH; break;
+            result = fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_READ, got); break;
         }
         for (int32_t i = 0; i < got && magicCount < 4; ++i) magic[magicCount++] = buffer[i];
         if (magicCount == 4 && (magic[0] != 0x7f || magic[1] != 0x43 ||
-            magic[2] != 0x4e || magic[3] != 0x54)) { result = DOWNLOAD_ERROR_PACKAGE; break; }
+            magic[2] != 0x4e || magic[3] != 0x54)) { result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0); break; }
         if (fwrite(buffer, 1, (size_t)got, file) != (size_t)got) {
-            result = DOWNLOAD_ERROR_FILESYSTEM; break;
+            result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_WRITE, errno); break;
         }
         hash.update(buffer, (size_t)got);
         received += (uint64_t)got;
         __atomic_store_n(&g_received, received, __ATOMIC_RELEASE);
     }
     if (!result && !cancelled() && (received != required || magicCount != 4 ||
-        (knownLength && received != responseLength))) result = DOWNLOAD_ERROR_LENGTH;
+        (knownLength && received != responseLength))) result = fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_READ, 0);
     if (!result && !cancelled() && g_digest[0]) {
         uint8_t digest[32];
         hash.finish(digest);
         for (int i = 0; i < 32; ++i)
             if (digest[i] != (uint8_t)((hex(g_digest[2*i]) << 4) | hex(g_digest[2*i+1])))
-                result = DOWNLOAD_ERROR_HASH;
+                result = fail(DOWNLOAD_ERROR_HASH, DOWNLOAD_STAGE_HASH, 0);
     }
-    if (fflush(file) != 0 || ferror(file)) result = DOWNLOAD_ERROR_FILESYSTEM;
-    if (fclose(file) != 0) result = DOWNLOAD_ERROR_FILESYSTEM;
+    if (fflush(file) != 0 || ferror(file)) {
+        if (!result) result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_FLUSH, errno);
+    }
+    if (fclose(file) != 0) {
+        if (!result) result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_CLOSE, errno);
+    }
     if (!result) {
         // Cancellation and the final rename use the same lock. A cancellation
         // cannot turn an already committed, complete download into CANCELLED.
         requestLock();
         if (!cancelled()) {
-            if (rename(partPath, finalPath) != 0) result = DOWNLOAD_ERROR_FILESYSTEM;
+            if (rename(partPath, finalPath) != 0) result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_RENAME, errno);
             else __atomic_store_n(&g_committed, 1, __ATOMIC_RELEASE);
         }
         requestUnlock();
     }
     if (result || cancelled()) {
-        if (!removePartial(partPath)) result = DOWNLOAD_ERROR_FILESYSTEM;
+        if (!removePartial(partPath) && !result)
+            result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_CLEANUP, errno);
     }
     return result;
 }
 
 void* downloadWorker(void*) {
     int result = runTransfer();
+    if (!result && !cancelled()) stage(DOWNLOAD_STAGE_FINISHED);
+    logCall(__atomic_load_n(&g_stage, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&g_native, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&g_network, __ATOMIC_ACQUIRE));
+    if (g_log) { fflush(g_log); fclose(g_log); g_log = 0; }
     __atomic_store_n(&g_error, result, __ATOMIC_RELEASE);
     __atomic_store_n(&g_state, cancelled() ? CANCELLED : result ? FAILED : DONE, __ATOMIC_RELEASE);
     __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE);
@@ -385,6 +510,12 @@ bool startDownload(const DownloadSpec& spec) {
     __atomic_store_n(&g_received, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_total, spec.expectedBytes, __ATOMIC_RELEASE);
     __atomic_store_n(&g_error, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_stage, DOWNLOAD_STAGE_NONE, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_native, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_network, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_ssl, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_sslDetails, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_networkState, -1, __ATOMIC_RELEASE);
     bool digestOkay = !spec.sha256 || !spec.sha256[0];
     if (!digestOkay && boundedLength(spec.sha256, 65) == 64) {
         digestOkay = true;
@@ -393,6 +524,7 @@ bool startDownload(const DownloadSpec& spec) {
     if (!safeUrl(spec.url) || !safeFilename(spec.filename) || !digestOkay ||
         (spec.expectedBytes && spec.expectedBytes < 4) || spec.expectedBytes > MAX_PACKAGE_BYTES) {
         __atomic_store_n(&g_error, DOWNLOAD_ERROR_SPEC, __ATOMIC_RELEASE);
+        stage(DOWNLOAD_STAGE_SPEC);
         __atomic_store_n(&g_state, FAILED, __ATOMIC_RELEASE);
         __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE);
         return false;
@@ -405,13 +537,15 @@ bool startDownload(const DownloadSpec& spec) {
     __atomic_store_n(&g_state, RUNNING, __ATOMIC_RELEASE);
 
     OrbisPthreadAttr attr;
-    bool attrReady = scePthreadAttrInit(&attr) == 0;
+    int32_t attrRc = scePthreadAttrInit(&attr);
+    bool attrReady = attrRc == 0;
     OrbisPthread thread;
     // Native pthread detach state: 1 = detached, 0 = joinable.
-    int32_t rc = attrReady ? scePthreadAttrSetdetachstate(&attr, 1) : -1;
+    int32_t rc = attrReady ? scePthreadAttrSetdetachstate(&attr, 1) : attrRc;
     if (rc == 0) rc = scePthreadCreate(&thread, &attr, downloadWorker, 0, "peppy-download");
     if (attrReady) scePthreadAttrDestroy(&attr);
     if (rc != 0) {
+        fail(DOWNLOAD_ERROR_THREAD, DOWNLOAD_STAGE_THREAD, rc);
         __atomic_store_n(&g_error, DOWNLOAD_ERROR_THREAD, __ATOMIC_RELEASE);
         __atomic_store_n(&g_state, FAILED, __ATOMIC_RELEASE);
         __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE);
@@ -438,5 +572,24 @@ DownloadSnapshot downloadSnapshot() {
     snapshot.received = __atomic_load_n(&g_received, __ATOMIC_ACQUIRE);
     snapshot.total = __atomic_load_n(&g_total, __ATOMIC_ACQUIRE);
     snapshot.errorCode = __atomic_load_n(&g_error, __ATOMIC_ACQUIRE);
+    snapshot.stage = __atomic_load_n(&g_stage, __ATOMIC_ACQUIRE);
+    snapshot.nativeCode = __atomic_load_n(&g_native, __ATOMIC_ACQUIRE);
+    snapshot.networkCode = __atomic_load_n(&g_network, __ATOMIC_ACQUIRE);
+    snapshot.sslCode = __atomic_load_n(&g_ssl, __ATOMIC_ACQUIRE);
+    snapshot.sslDetails = __atomic_load_n(&g_sslDetails, __ATOMIC_ACQUIRE);
+    snapshot.networkState = __atomic_load_n(&g_networkState, __ATOMIC_ACQUIRE);
     return snapshot;
+}
+
+const char* downloadStageName(int value) {
+    static const char* names[] = {"Aguardando", "Pasta de downloads", "Módulo de rede",
+        "Módulo SSL", "Módulo HTTP", "Módulo NetCtl", "Inicializar NetCtl", "Estado da rede",
+        "Inicializar rede", "Memória de rede", "Inicializar SSL", "Inicializar HTTP",
+        "Configurar HTTP", "Validação TLS", "Redirecionamentos", "Prazo de DNS",
+        "Prazo de conexão", "Prazo de envio", "Prazo de leitura", "Criar conexão",
+        "Criar requisição", "Cabeçalho HTTP", "Envio HTTPS", "Resposta HTTP",
+        "Destino HTTPS", "Tamanho do arquivo", "Abrir arquivo", "Receber arquivo",
+        "Validar PKG", "Validar SHA-256", "Gravar arquivo", "Finalizar gravação",
+        "Fechar arquivo", "Salvar PKG", "Limpar parcial", "Concluído", "Iniciar tarefa", "Dados do download"};
+    return value >= 0 && (size_t)value < sizeof(names)/sizeof(names[0]) ? names[value] : "Download";
 }

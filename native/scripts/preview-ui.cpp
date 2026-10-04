@@ -4,8 +4,11 @@
 // /tmp/peppy-preview /tmp/peppy
 #define PEPPY_UI_PREVIEW
 #include "../downloads.h"
-static DownloadSnapshot previewDownload = {IDLE, 0, 0, 0};
+static DownloadSnapshot previewDownload = {};
 DownloadSnapshot downloadSnapshot() { return previewDownload; }
+const char* downloadStageName(int stage) {
+    return stage == DOWNLOAD_STAGE_SEND ? "Enviar pedido" : "Diagnóstico de rede";
+}
 #include "../boot_test.cpp"
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,7 +46,14 @@ int main(int argc, char** argv) {
     downloadingApp = 0;
     for (int state = RUNNING; state <= CANCELLED; ++state) {
         char path[4096];
-        previewDownload = {state, UI_APPS[0].sizeBytes / 2, UI_APPS[0].sizeBytes, -200};
+        previewDownload = {};
+        previewDownload.state = state;
+        previewDownload.received = UI_APPS[0].sizeBytes / 2;
+        previewDownload.total = UI_APPS[0].sizeBytes;
+        previewDownload.errorCode = DOWNLOAD_ERROR_NETWORK;
+        previewDownload.stage = DOWNLOAD_STAGE_SEND;
+        previewDownload.nativeCode = (int32_t)0x80431068;
+        previewDownload.networkState = 3;
         drawDetails(frame, 0);
         snprintf(path, sizeof(path), "%s-download-%d.ppm", argv[1], state);
         if (!save(path, frame)) { free(frame); return 1; }
