@@ -106,24 +106,17 @@ int main(void){
  OrbisUserServiceInitializeParams param;param.priority=ORBIS_KERNEL_PRIO_FIFO_LOWEST;
  sceUserServiceInitialize(&param);
  int32_t user=0;sceUserServiceGetInitialUser(&user);
- scePadInit();int32_t pad=scePadOpen(user,0,0,0);
+ // Diagnostic stage: UserService only. Do not initialize/open Pad yet.
+ // If this stays alive, UserService is not the source of CE-34878-0.
+ volatile int32_t initialUser = user;
+ (void)initialUser;
 
- int selected=0,front=0;uint32_t prev=0;int64_t frame=1;
- drawStore(fb[front],selected);sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
+ int selected=0,front=0;int64_t frame=1;
+ drawStore(fb[front],selected);
+ sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
  for(;;){
-  OrbisPadData pd;
-  if(pad>=0 && scePadReadState(pad,&pd)>=0){
-   uint32_t now=pd.buttons;bool changed=false;
-   if((now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%4;changed=true;}
-   if((now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+3)%4;changed=true;}
-   prev=now;
-   if(changed){
-    front=1-front;drawStore(fb[front],selected);
-    sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
-   }
-  }
-  sceKernelUsleep(16000);
+  sceKernelUsleep(1000000);
  }
  return 0;
 }
