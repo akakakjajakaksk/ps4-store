@@ -7,6 +7,8 @@ on:
     paths:
       - "native/**"
       - "peppy-icon0-1.png"
+      - "fight-ps4.mp3"
+      - "acendaofarol-ps4.mp3"
       - ".github/workflows/build-native.yml"
 
 jobs:
@@ -66,7 +68,7 @@ jobs:
       - name: Install linker and UI asset tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y lld python3-pil fonts-dejavu-core
+          sudo apt-get install -y lld python3-pil fonts-dejavu-core ffmpeg
           command -v ld.lld
           ld.lld --version
 
@@ -78,6 +80,29 @@ jobs:
             -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=fclose \
             -o /tmp/peppy-download-tests
           /tmp/peppy-download-tests
+
+      - name: Test native installation on host
+        run: |
+          cd native
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
+            -Itests/install/stubs tests/install/install_test.cpp \
+            -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=close -Wl,--wrap=rename \
+            -o /tmp/peppy-install-tests
+          /tmp/peppy-install-tests
+
+      - name: Test native music on host
+        run: |
+          cd native
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
+            -Itests/music/stubs tests/music/music_test.cpp -o /tmp/peppy-music-tests
+          /tmp/peppy-music-tests
+
+      - name: Test store controller handoff on host
+        run: |
+          python3 native/scripts/generate-ui-assets.py --icon peppy-icon0-1.png --output native/ui_assets.h
+          python3 native/scripts/generate-catalog.py --catalog native/catalog.json --output native/ui_catalog.h
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror native/scripts/preview-ui.cpp -o /tmp/peppy-ui-controls
+          /tmp/peppy-ui-controls --check-controller
 
       - name: Build Peppy Store files
         run: |

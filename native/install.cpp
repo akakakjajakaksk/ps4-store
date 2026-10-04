@@ -1,0 +1,539 @@
+#include "install.h"
+
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <orbis/libkernel.h>
+#include <orbis/Sysmodule.h>
+#include <orbis/AppInstUtil.h>
+#include <orbis/Bgft.h>
+
+// OpenOrbis 0.5.4 BGFT counters/packageSize are uint32_t. The native ABI
+// uses unsigned long (64 bits on PS4), documented by flatz and Itemzflow:
+// https://github.com/flatz/ps4_stub_lib_maker_v2/blob/master/include/bgft.h
+struct PeppyBgftInit { void* heap; size_t heapSize; };
+struct PeppyBgftParam {
+    int32_t userId, entitlementType;
+    const char *id, *contentUrl, *contentExUrl, *contentName, *iconPath, *skuId;
+    uint32_t option;
+    const char *playgoScenarioId, *releaseDate, *packageType, *packageSubType;
+    uint64_t packageSize;
+};
+struct PeppyBgftParamEx { PeppyBgftParam params; uint32_t slot; };
+struct PeppyBgftProgress {
+    uint32_t bits;
+    int32_t errorResult;
+    uint64_t length, transferred, lengthTotal, transferredTotal;
+    uint32_t numIndex, numTotal, restSec, restSecTotal;
+    int32_t preparingPercent, localCopyPercent;
+};
+static_assert(sizeof(PeppyBgftInit) == 16, "native BGFT init ABI");
+static_assert(sizeof(PeppyBgftParam) == 104, "native BGFT param ABI");
+static_assert(offsetof(PeppyBgftParam, packageSize) == 96, "BGFT package size ABI");
+static_assert(sizeof(PeppyBgftParamEx) == 112 && offsetof(PeppyBgftParamEx, slot) == 104,
+              "native BGFT extended param ABI");
+static_assert(sizeof(PeppyBgftProgress) == 64 &&
+              offsetof(PeppyBgftProgress, transferred) == 16 &&
+              offsetof(PeppyBgftProgress, localCopyPercent) == 60, "native BGFT progress ABI");
+extern "C" int32_t peppyInstallModuleLoaded(OrbisSysModuleInternal)
+    __asm__("sceSysmoduleIsLoadedInternal");
+extern "C" int32_t peppyBgftInit(PeppyBgftInit*) __asm__("sceBgftServiceIntInit");
+extern "C" int32_t peppyBgftRegister(PeppyBgftParamEx*, int32_t*)
+    __asm__("sceBgftServiceIntDownloadRegisterTaskByStorageEx");
+extern "C" int32_t peppyBgftProgress(int32_t, PeppyBgftProgress*)
+    __asm__("sceBgftServiceDownloadGetProgress");
+
+// The official GoldHEN SDK saves/restores credentials and namespace without
+// firmware-specific kernel offsets. The bridge is vendored separately under MIT.
+struct PeppyJailbreakBackup {
+    uint32_t uid, ruid, rgid, groups;
+    uint64_t paid, caps[2];
+    void *prison, *cdir, *jdir, *rdir;
+};
+static_assert(sizeof(PeppyJailbreakBackup) == 72 &&
+              offsetof(PeppyJailbreakBackup, prison) == 40, "GoldHEN SDK backup ABI");
+extern "C" int32_t peppyInstallSdkVersion() __asm__("sys_sdk_version");
+extern "C" int32_t peppyInstallJailbreak(PeppyJailbreakBackup*) __asm__("sys_sdk_jailbreak");
+extern "C" int32_t peppyInstallRestore(PeppyJailbreakBackup*) __asm__("sys_sdk_unjailbreak");
+
+#ifndef PEPPY_DOWNLOAD_DIRECTORY
+#define PEPPY_DOWNLOAD_DIRECTORY "/data/peppy-store/downloads"
+#endif
+#ifndef PEPPY_INSTALL_SYSTEM_DIRECTORY
+// BGFT is a system service. Its path must be outside the application's /data
+// mount; ezRemote's local installer maps /data/... to /user/data/....
+#define PEPPY_INSTALL_SYSTEM_DIRECTORY "/user/data/peppy-store/downloads"
+#endif
+#ifndef PEPPY_INSTALL_COPY_DIRECTORY
+#define PEPPY_INSTALL_COPY_DIRECTORY "/user/data/peppy-store/install"
+#endif
+#ifndef PEPPY_INSTALL_ROOT_DIRECTORY
+#define PEPPY_INSTALL_ROOT_DIRECTORY "/user/data/peppy-store"
+#endif
+#ifndef PEPPY_TITLE_ID
+#define PEPPY_TITLE_ID "BREW00001"
+#endif
+
+namespace {
+const size_t NAME_CAP = 96, TITLE_CAP = 256, PATH_CAP = 512;
+const uint64_t MAX_PACKAGE_BYTES = 4ULL * 1024 * 1024 * 1024;
+const size_t HEADER_BYTES = 0x438, CONTENT_ID_BYTES = 36;
+const size_t BGFT_HEAP_BYTES = 1024 * 1024;
+const unsigned POLL_US = 250000;
+const unsigned MAX_POLLS = 30 * 60 * 1000000U / POLL_US;
+
+int g_installState = INSTALL_IDLE, g_installBusy = 0, g_installCancel = 0;
+int g_installPercent = 0, g_installError = 0, g_installStage = 0;
+int32_t g_installNative = 0, g_installCleanup = 0;
+int g_installCleanupStage = 0, g_installUnsafe = 0;
+int g_installTask = -1, g_installPreparing = 0, g_installCopy = 0;
+uint64_t g_installReceived = 0, g_installTotal = 0;
+uint32_t g_installBits = 0;
+uint32_t g_installGeneration = 0;
+char g_installFilename[NAME_CAP], g_installName[TITLE_CAP];
+uint64_t g_installExpected = 0;
+FILE* g_installLog = 0;
+
+size_t lengthBounded(const char* value, size_t maximum) {
+    if (!value) return maximum;
+    size_t size = 0;
+    while (size < maximum && value[size]) ++size;
+    return size;
+}
+bool validFilename(const char* value) {
+    size_t size = lengthBounded(value, NAME_CAP);
+    if (size < 5 || size >= NAME_CAP || value[0] == '.' ||
+        strcmp(value + size - 4, ".pkg") || strstr(value, "..")) return false;
+    for (size_t i = 0; i < size; ++i) {
+        char c = value[i];
+        if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+            !(c >= '0' && c <= '9') && c != '_' && c != '-' && c != '.') return false;
+    }
+    return true;
+}
+bool validName(const char* value) {
+    size_t size = lengthBounded(value, TITLE_CAP);
+    if (!size || size >= TITLE_CAP) return false;
+    for (size_t i = 0; i < size; ++i)
+        if ((unsigned char)value[i] < 32 || (unsigned char)value[i] == 127) return false;
+    return true;
+}
+bool validTitleId(const char* value) {
+    if (lengthBounded(value, 16) != 9) return false;
+    for (int i = 0; i < 9; ++i)
+        if (!(value[i] >= 'A' && value[i] <= 'Z') &&
+            !(value[i] >= '0' && value[i] <= '9')) return false;
+    return true;
+}
+bool cancelled() { return __atomic_load_n(&g_installCancel, __ATOMIC_ACQUIRE) != 0; }
+void stage(int value) { __atomic_store_n(&g_installStage, value, __ATOMIC_RELEASE); }
+void logCall(int where, int32_t native) {
+    if (!g_installLog) return;
+    int rc = fprintf(g_installLog, "stage=%d native=0x%08X task=%d\n", where,
+        (unsigned)native, __atomic_load_n(&g_installTask, __ATOMIC_ACQUIRE));
+    if (rc < 0 || fflush(g_installLog)) { fclose(g_installLog); g_installLog = 0; }
+}
+int fail(int category, int where, int32_t native) {
+    stage(where);
+    __atomic_store_n(&g_installNative, native, __ATOMIC_RELEASE);
+    logCall(where, native);
+    return category;
+}
+void cleanupError(int where, int32_t native) {
+    if (!native) return;
+    if (where == INSTALL_STAGE_RESTORE) {
+        // Restoring the application's credentials takes priority over other
+        // cleanup diagnostics; earlier failures remain in install.log.
+        __atomic_store_n(&g_installCleanup, native, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installCleanupStage, where, __ATOMIC_RELEASE);
+        logCall(where, native);
+        return;
+    }
+    int32_t zero = 0;
+    if (__atomic_compare_exchange_n(&g_installCleanup, &zero, native, false,
+                                   __ATOMIC_RELEASE, __ATOMIC_RELAXED))
+        __atomic_store_n(&g_installCleanupStage, where, __ATOMIC_RELEASE);
+    logCall(where, native);
+}
+int module(OrbisSysModuleInternal id, int where) {
+    stage(where);
+    if (peppyInstallModuleLoaded(id) == 0) return 0;
+    int32_t rc = (int32_t)sceSysmoduleLoadModuleInternal(id);
+    logCall(where, rc);
+    if (rc && peppyInstallModuleLoaded(id) != 0) return fail(INSTALL_ERROR_MODULE, where, rc);
+    return 0;
+}
+
+struct InstallResources {
+    FILE* file;
+    void* heap;
+    bool appReady, bgftReady, completed, jailbroken;
+    PeppyJailbreakBackup backup;
+    char partialPath[PATH_CAP];
+    int32_t task;
+    InstallResources() : file(0), heap(0), appReady(false), bgftReady(false),
+                         completed(false), jailbroken(false), backup(), task(-1) { partialPath[0] = 0; }
+    ~InstallResources() {
+        if (task >= 0 && !completed) {
+            int32_t rc = sceBgftServiceDownloadStopTask(task);
+            cleanupError(INSTALL_STAGE_STOP, rc);
+            if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
+            rc = sceBgftServiceIntDownloadUnregisterTask(task);
+            cleanupError(INSTALL_STAGE_UNREGISTER, rc);
+            if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
+        }
+        if (bgftReady) {
+            int32_t rc = sceBgftServiceIntTerm();
+            cleanupError(INSTALL_STAGE_BGFT_TERM, rc);
+            if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
+            // A failed term can leave the native service using its heap. Keep
+            // it allocated rather than creating a use-after-free in that case.
+            if (!rc) { free(heap); heap = 0; }
+        } else { free(heap); heap = 0; }
+        if (appReady) {
+            int32_t rc = sceAppInstUtilTerminate();
+            cleanupError(INSTALL_STAGE_APP_TERM, rc);
+            if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
+        }
+        if (partialPath[0] && unlink(partialPath) && errno != ENOENT)
+            cleanupError(INSTALL_STAGE_COPY, errno);
+        if (file && fclose(file)) cleanupError(INSTALL_STAGE_FILE, errno ? errno : EIO);
+        if (jailbroken) {
+            int32_t rc = peppyInstallRestore(&backup);
+            cleanupError(INSTALL_STAGE_RESTORE, rc);
+            if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
+        }
+    }
+};
+
+int checkedDirectory(const char* path) {
+    if (mkdir(path, 0755) && errno != EEXIST) return errno;
+    struct stat info;
+    if (lstat(path, &info)) return errno;
+    return S_ISDIR(info.st_mode) ? 0 : ENOTDIR;
+}
+bool sameFile(const struct stat& a, const struct stat& b) {
+    return S_ISREG(b.st_mode) && a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size;
+}
+int systemFile(InstallResources& owned, const struct stat& source, char* destination, size_t capacity) {
+    stage(INSTALL_STAGE_GLOBAL_PATH);
+    struct stat global;
+    if (lstat(destination, &global) == 0 && sameFile(source, global)) return 0;
+    // Namespace mounts differ between firmware/exploit setups. Copy from the
+    // validated, still-open descriptor; never reopen its former sandbox path.
+    stage(INSTALL_STAGE_COPY);
+    int rc = checkedDirectory(PEPPY_INSTALL_ROOT_DIRECTORY);
+    if (!rc) rc = checkedDirectory(PEPPY_INSTALL_COPY_DIRECTORY);
+    if (rc) return fail(INSTALL_ERROR_GLOBAL_PATH, INSTALL_STAGE_GLOBAL_PATH, rc);
+    int size = snprintf(destination, capacity, "%s/%s", PEPPY_INSTALL_COPY_DIRECTORY, g_installFilename);
+    if (size < 0 || (size_t)size >= capacity)
+        return fail(INSTALL_ERROR_GLOBAL_PATH, INSTALL_STAGE_GLOBAL_PATH, ENAMETOOLONG);
+    size = snprintf(owned.partialPath, sizeof(owned.partialPath), "%s.part", destination);
+    if (size < 0 || (size_t)size >= sizeof(owned.partialPath)) {
+        owned.partialPath[0] = 0;
+        return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, ENAMETOOLONG);
+    }
+    int flags = O_WRONLY | O_CREAT | O_EXCL;
+    int output = open(owned.partialPath, flags, 0644);
+    if (output < 0) {
+        owned.partialPath[0] = 0; // Do not remove a preexisting file we never owned.
+        return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
+    }
+    int error = 0;
+    if (fseek(owned.file, 0, SEEK_SET)) error = errno ? errno : EIO;
+    unsigned char buffer[64 * 1024];
+    uint64_t copied = 0;
+    while (!error && copied < g_installExpected && !cancelled()) {
+        size_t want = (size_t)((g_installExpected - copied) < sizeof(buffer)
+                              ? g_installExpected - copied : sizeof(buffer));
+        size_t amount = fread(buffer, 1, want, owned.file);
+        if (amount != want) { error = errno ? errno : EIO; break; }
+        size_t offset = 0;
+        while (offset < amount) {
+            ssize_t written = write(output, buffer + offset, amount - offset);
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0) { error = errno ? errno : EIO; break; }
+            offset += (size_t)written;
+        }
+        if (!error) {
+            copied += amount;
+            __atomic_store_n(&g_installReceived, copied, __ATOMIC_RELEASE);
+            __atomic_store_n(&g_installTotal, g_installExpected, __ATOMIC_RELEASE);
+        }
+    }
+    if (!error && !cancelled() && fsync(output)) error = errno;
+    if (close(output) && !error) error = errno;
+    if (error) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, error);
+    if (cancelled()) return 0;
+    if (fstat(fileno(owned.file), &global)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
+    if (!sameFile(source, global)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EINVAL);
+    if (lstat(owned.partialPath, &global)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
+    if (!S_ISREG(global.st_mode) || global.st_size != source.st_size)
+        return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EINVAL);
+    if (rename(owned.partialPath, destination)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
+    owned.partialPath[0] = 0;
+    __atomic_store_n(&g_installReceived, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installTotal, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+
+int runInstall() {
+    InstallResources owned;
+    char localPath[PATH_CAP], systemPath[PATH_CAP];
+    int localLength = snprintf(localPath, sizeof(localPath), "%s/%s", PEPPY_DOWNLOAD_DIRECTORY,
+                               g_installFilename);
+    int systemLength = snprintf(systemPath, sizeof(systemPath), "%s/%s", PEPPY_INSTALL_SYSTEM_DIRECTORY,
+                                g_installFilename);
+    if (localLength < 0 || (size_t)localLength >= sizeof(localPath) ||
+        systemLength < 0 || (size_t)systemLength >= sizeof(systemPath))
+        return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, ENAMETOOLONG);
+    stage(INSTALL_STAGE_FILE);
+    struct stat before, after;
+    if (lstat(localPath, &before)) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
+    if (!S_ISREG(before.st_mode)) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, EINVAL);
+    owned.file = fopen(localPath, "rb");
+    if (!owned.file) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
+    if (fstat(fileno(owned.file), &after)) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
+    if (!S_ISREG(after.st_mode) || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+        after.st_size < (off_t)HEADER_BYTES || (uint64_t)after.st_size != g_installExpected)
+        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
+    unsigned char header[HEADER_BYTES];
+    size_t got = fread(header, 1, sizeof(header), owned.file);
+    if (got != sizeof(header)) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_PACKAGE, errno ? errno : EIO);
+    const unsigned char magic[] = { 0x7f, 'C', 'N', 'T' };
+    if (memcmp(header, magic, sizeof(magic)))
+        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
+    char contentId[CONTENT_ID_BYTES + 1];
+    memcpy(contentId, header + 0x40, CONTENT_ID_BYTES);
+    contentId[CONTENT_ID_BYTES] = 0;
+    for (size_t i = 0; i < CONTENT_ID_BYTES; ++i) {
+        char c = contentId[i];
+        if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+            !(c >= '0' && c <= '9') && c != '-' && c != '_')
+            return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
+    }
+    if (cancelled()) return 0;
+    stage(INSTALL_STAGE_SDK);
+    int32_t sdk = peppyInstallSdkVersion();
+    if (sdk != 0x100) return fail(INSTALL_ERROR_SDK, INSTALL_STAGE_SDK, sdk);
+    stage(INSTALL_STAGE_JAILBREAK);
+    int32_t jailbreak = peppyInstallJailbreak(&owned.backup);
+    if (jailbreak) return fail(INSTALL_ERROR_JAILBREAK, INSTALL_STAGE_JAILBREAK, jailbreak);
+    owned.jailbroken = true;
+    if (cancelled()) return 0;
+    int globalResult = systemFile(owned, after, systemPath, sizeof(systemPath));
+    if (globalResult || cancelled()) return globalResult;
+    int result = module(ORBIS_SYSMODULE_INTERNAL_APP_INST_UTIL, INSTALL_STAGE_MODULE_APP);
+    if (result) return result;
+    result = module(ORBIS_SYSMODULE_INTERNAL_BGFT, INSTALL_STAGE_MODULE_BGFT);
+    if (result) return result;
+    stage(INSTALL_STAGE_APP_INIT);
+    int32_t rc = sceAppInstUtilInitialize();
+    if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_APP_INIT, rc);
+    owned.appReady = true;
+    char titleId[16] = {};
+    int32_t isApp = -1;
+    stage(INSTALL_STAGE_TITLE);
+    rc = sceAppInstUtilGetTitleIdFromPkg(systemPath, titleId, &isApp);
+    if (rc) return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, rc);
+    if (!validTitleId(titleId) || isApp != 1)
+        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
+    if (!strcmp(titleId, PEPPY_TITLE_ID))
+        return fail(INSTALL_ERROR_SELF, INSTALL_STAGE_TITLE, 0);
+    if (contentId[6] != '-' || contentId[16] != '_' || contentId[19] != '-' ||
+        memcmp(contentId + 7, titleId, 9))
+        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
+    stage(INSTALL_STAGE_EXISTS);
+    int32_t exists = 0;
+    rc = sceAppInstUtilAppExists(titleId, &exists);
+    if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_EXISTS, rc);
+    if (exists) return fail(INSTALL_ERROR_ALREADY_INSTALLED, INSTALL_STAGE_EXISTS, 0);
+    if (cancelled()) return 0;
+    stage(INSTALL_STAGE_HEAP);
+    owned.heap = calloc(1, BGFT_HEAP_BYTES);
+    if (!owned.heap) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_HEAP, ENOMEM);
+    PeppyBgftInit init = { owned.heap, BGFT_HEAP_BYTES };
+    stage(INSTALL_STAGE_BGFT_INIT);
+    rc = peppyBgftInit(&init);
+    if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_BGFT_INIT, rc);
+    owned.bgftReady = true;
+    if (cancelled()) return 0;
+    PeppyBgftParamEx params = {};
+    params.params.entitlementType = 5;
+    params.params.id = contentId;
+    params.params.contentUrl = systemPath;
+    params.params.contentName = g_installName;
+    params.params.iconPath = "";
+    params.params.playgoScenarioId = "0";
+    // This is a local storage task. Keep Peppy's own progress UI visible and
+    // do not enable FORCE_UPDATE, which could replace an existing app.
+    params.params.option = 0x2; // BGFT_TASK_OPT_INVISIBLE, used by Itemzflow.
+    params.params.packageSize = g_installExpected;
+    params.slot = 0;
+    stage(INSTALL_STAGE_REGISTER);
+    int32_t candidate = -1;
+    rc = peppyBgftRegister(&params, &candidate);
+    if (rc) {
+        uint32_t native = (uint32_t)rc;
+        int category = native == 0x80990088U || native == 0x80990015U
+            ? INSTALL_ERROR_ALREADY_INSTALLED
+            : native == 0x80990086U ? INSTALL_ERROR_BUSY : INSTALL_ERROR_TASK;
+        return fail(category, INSTALL_STAGE_REGISTER, rc);
+    }
+    if (candidate < 0) return fail(INSTALL_ERROR_TASK, INSTALL_STAGE_REGISTER, EINVAL);
+    // A failed registration may populate its output with an existing task.
+    // Adopt ownership only after success, so cleanup can never stop that task.
+    owned.task = candidate;
+    __atomic_store_n(&g_installTask, owned.task, __ATOMIC_RELEASE);
+    if (cancelled()) return 0;
+    stage(INSTALL_STAGE_START);
+    rc = sceBgftServiceDownloadStartTask(owned.task);
+    if (rc) return fail(INSTALL_ERROR_TASK, INSTALL_STAGE_START, rc);
+    for (unsigned poll = 0; poll < MAX_POLLS; ++poll) {
+        if (cancelled()) return 0;
+        stage(INSTALL_STAGE_PROGRESS);
+        PeppyBgftProgress progress = {};
+        rc = peppyBgftProgress(owned.task, &progress);
+        if (rc) return fail(INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS, rc);
+        if (progress.errorResult) return fail(INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS, progress.errorResult);
+        uint64_t total = progress.lengthTotal ? progress.lengthTotal : progress.length;
+        uint64_t received = progress.lengthTotal ? progress.transferredTotal : progress.transferred;
+        if (received > total) return fail(INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS, EINVAL);
+        __atomic_store_n(&g_installReceived, received, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installTotal, total, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installBits, progress.bits, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installPreparing, progress.preparingPercent, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installCopy, progress.localCopyPercent, __ATOMIC_RELEASE);
+        int percent = total ? (int)((double)received / (double)total * 100.0) : 0;
+        if (percent >= 100) percent = 99;
+        __atomic_store_n(&g_installPercent, percent, __ATOMIC_RELEASE);
+        if (total && received == total) {
+            stage(INSTALL_STAGE_CONFIRM);
+            exists = 0;
+            rc = sceAppInstUtilAppExists(titleId, &exists);
+            if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_CONFIRM, rc);
+            if (exists && !sceAppInstUtilAppIsInInstalling(contentId)) {
+                owned.completed = true;
+                __atomic_store_n(&g_installPercent, 100, __ATOMIC_RELEASE);
+                return 0;
+            }
+        }
+        sceKernelUsleep(POLL_US);
+    }
+    return fail(INSTALL_ERROR_TIMEOUT, INSTALL_STAGE_PROGRESS, 0);
+}
+
+void* installWorker(void*) {
+    char logPath[PATH_CAP];
+    int length = snprintf(logPath, sizeof(logPath), "%s/install.log", PEPPY_DOWNLOAD_DIRECTORY);
+    if (length > 0 && (size_t)length < sizeof(logPath)) g_installLog = fopen(logPath, "w");
+    int result = runInstall();
+    int32_t cleanup = __atomic_load_n(&g_installCleanup, __ATOMIC_ACQUIRE);
+    int finalState;
+    if (__atomic_load_n(&g_installCleanupStage, __ATOMIC_ACQUIRE) == INSTALL_STAGE_RESTORE) {
+        result = fail(INSTALL_ERROR_RESTORE, INSTALL_STAGE_RESTORE, cleanup);
+        finalState = INSTALL_FAILED;
+    } else if (result) finalState = INSTALL_FAILED;
+    else if (cleanup) {
+        result = fail(INSTALL_ERROR_CLEANUP,
+            __atomic_load_n(&g_installCleanupStage, __ATOMIC_ACQUIRE), cleanup);
+        finalState = INSTALL_FAILED;
+    } else if (__atomic_load_n(&g_installPercent, __ATOMIC_ACQUIRE) == 100) {
+        finalState = INSTALL_DONE;
+        stage(INSTALL_STAGE_FINISHED);
+    } else finalState = INSTALL_CANCELLED;
+    __atomic_store_n(&g_installError, result, __ATOMIC_RELEASE);
+    logCall(__atomic_load_n(&g_installStage, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&g_installNative, __ATOMIC_ACQUIRE));
+    if (g_installLog) { fclose(g_installLog); g_installLog = 0; }
+    __atomic_store_n(&g_installState, finalState, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installBusy, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+}
+
+bool startInstall(const InstallSpec& spec) {
+    // Failed native stop/term/restore may leave an owned task or service alive.
+    // Do not overwrite its backing copy or reinitialize it in this process.
+    if (__atomic_load_n(&g_installUnsafe, __ATOMIC_ACQUIRE)) return false;
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(&g_installBusy, &expected, 1, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return false;
+    __atomic_add_fetch(&g_installGeneration, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installCancel, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installReceived, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installTotal, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installPercent, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installError, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installNative, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installCleanup, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installCleanupStage, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installTask, -1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installBits, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installPreparing, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installCopy, 0, __ATOMIC_RELEASE);
+    stage(INSTALL_STAGE_SPEC);
+    if (!validFilename(spec.filename) || !validName(spec.name) ||
+        spec.expectedBytes < HEADER_BYTES || spec.expectedBytes > MAX_PACKAGE_BYTES) {
+        __atomic_store_n(&g_installError, INSTALL_ERROR_SPEC, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installState, INSTALL_FAILED, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installBusy, 0, __ATOMIC_RELEASE);
+        return false;
+    }
+    strcpy(g_installFilename, spec.filename);
+    strcpy(g_installName, spec.name);
+    g_installExpected = spec.expectedBytes;
+    __atomic_store_n(&g_installState, INSTALL_RUNNING, __ATOMIC_RELEASE);
+    stage(INSTALL_STAGE_THREAD);
+    OrbisPthreadAttr attributes;
+    int32_t rc = scePthreadAttrInit(&attributes);
+    bool initialized = rc == 0;
+    if (!rc) rc = scePthreadAttrSetdetachstate(&attributes, 1);
+    OrbisPthread thread;
+    if (!rc) rc = scePthreadCreate(&thread, &attributes, installWorker, 0, "peppy-install");
+    if (initialized) scePthreadAttrDestroy(&attributes);
+    if (rc) {
+        __atomic_store_n(&g_installNative, rc, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installError, INSTALL_ERROR_THREAD, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installState, INSTALL_FAILED, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_installBusy, 0, __ATOMIC_RELEASE);
+        return false;
+    }
+    return true;
+}
+void cancelInstall() {
+    if (__atomic_load_n(&g_installBusy, __ATOMIC_ACQUIRE))
+        __atomic_store_n(&g_installCancel, 1, __ATOMIC_RELEASE);
+}
+InstallSnapshot installSnapshot() {
+    InstallSnapshot value;
+    value.state = __atomic_load_n(&g_installState, __ATOMIC_ACQUIRE);
+    value.received = __atomic_load_n(&g_installReceived, __ATOMIC_ACQUIRE);
+    value.total = __atomic_load_n(&g_installTotal, __ATOMIC_ACQUIRE);
+    value.percent = __atomic_load_n(&g_installPercent, __ATOMIC_ACQUIRE);
+    value.errorCode = __atomic_load_n(&g_installError, __ATOMIC_ACQUIRE);
+    value.stage = __atomic_load_n(&g_installStage, __ATOMIC_ACQUIRE);
+    value.nativeCode = __atomic_load_n(&g_installNative, __ATOMIC_ACQUIRE);
+    value.taskId = __atomic_load_n(&g_installTask, __ATOMIC_ACQUIRE);
+    value.progressBits = __atomic_load_n(&g_installBits, __ATOMIC_ACQUIRE);
+    value.preparingPercent = __atomic_load_n(&g_installPreparing, __ATOMIC_ACQUIRE);
+    value.localCopyPercent = __atomic_load_n(&g_installCopy, __ATOMIC_ACQUIRE);
+    value.cleanupCode = __atomic_load_n(&g_installCleanup, __ATOMIC_ACQUIRE);
+    value.cleanupStage = __atomic_load_n(&g_installCleanupStage, __ATOMIC_ACQUIRE);
+    value.generation = __atomic_load_n(&g_installGeneration, __ATOMIC_ACQUIRE);
+    return value;
+}
+const char* installStageName(int value) {
+    static const char* names[] = { "Pronto", "Pacote escolhido", "Inicialização", "Arquivo local",
+        "Validação PKG", "Módulo AppInstUtil", "Módulo BGFT", "AppInstUtil",
+        "Identificação do app", "App existente", "Memória BGFT", "Inicialização BGFT",
+        "Registro local", "Início da instalação", "Instalando", "Confirmando instalação",
+        "Cancelando", "Limpeza da tarefa", "Encerrando BGFT", "Encerrando AppInstUtil", "Concluído",
+        "GoldHEN SDK", "Permissões GoldHEN", "Arquivo do sistema", "Preparando pacote", "Restaurando permissões" };
+    return value >= 0 && (size_t)value < sizeof(names) / sizeof(names[0]) ? names[value] : "Instalação";
+}

@@ -4,14 +4,15 @@ TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
 # Orbis Store native UI: graphics + DualShock 4 input.
-LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut -lScePad -lSceUserService -lSceNet -lSceNetCtl -lSceSsl -lSceHttp
+LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut -lScePad -lSceUserService -lSceNet -lSceNetCtl -lSceSsl -lSceHttp -lSceAppInstUtil -lSceBgft -lSceAudioOut
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
 INTDIR := build
 
-CPPFILES := boot_test.cpp downloads.cpp
-OBJS := $(INTDIR)/boot_test.o $(INTDIR)/downloads.o
+CPPFILES := boot_test.cpp downloads.cpp install.cpp goldhen_bridge.cpp music.cpp
+OBJS := $(CPPFILES:%.cpp=$(INTDIR)/%.o)
+MUSIC_ASSETS := assets/music/fight.wav assets/music/acendaofarol.wav
 
 CXXFLAGS := --target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables -c -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1
 LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
@@ -33,7 +34,7 @@ all: $(CONTENT_ID).pkg
 $(CONTENT_ID).pkg: pkg.gp4
 	$(TOOLCHAIN)/bin/$(CDIR)/PkgTool.Core pkg_build $< .
 
-pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png assets/FONT_LICENSE.txt catalog.json
+pkg.gp4: eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png assets/FONT_LICENSE.txt assets/GOLDHEN_SDK_LICENSE.txt catalog.json $(MUSIC_ASSETS)
 	$(TOOLCHAIN)/bin/$(CDIR)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$^"
 
 sce_sys/param.sfo: Makefile
@@ -60,14 +61,23 @@ ui_assets.h: ../peppy-icon0-1.png scripts/generate-ui-assets.py
 ui_catalog.h: catalog.json scripts/generate-catalog.py
 	python3 scripts/generate-catalog.py --catalog catalog.json --output $@
 
-$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h downloads.h
+$(MUSIC_ASSETS): ../fight-ps4.mp3 ../acendaofarol-ps4.mp3 scripts/prepare-music.py
+	python3 scripts/prepare-music.py --repo-root .. --output assets/music
+
+# Both tracks are prepared together; serialize the packaging prerequisites.
+.NOTPARALLEL: pkg.gp4
+
+$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h downloads.h install.h music.h
 $(INTDIR)/downloads.o: downloads.h
+$(INTDIR)/install.o: install.h
+$(INTDIR)/music.o: music.h
+$(INTDIR)/goldhen_bridge.o: third_party/goldhen/GoldHEN.h
 
 $(INTDIR)/%.o: %.cpp
 	mkdir -p $(INTDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
 clean:
-	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo ui_assets.h ui_catalog.h $(CONTENT_ID).pkg
+	rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo ui_assets.h ui_catalog.h $(MUSIC_ASSETS) $(CONTENT_ID).pkg
 
 .PHONY: all clean

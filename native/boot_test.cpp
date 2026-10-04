@@ -12,6 +12,8 @@
 #include "ui_assets.h"
 #include "ui_catalog.h"
 #include "downloads.h"
+#include "install.h"
+#include "music.h"
 
 static const int W = 1920, H = 1080;
 static const uint32_t BG = 0x800B0F17, PANEL = 0x80131925;
@@ -19,7 +21,82 @@ static const uint32_t WHITE = 0x80F4F6FA, MUTED = 0x809BA7BA;
 static const uint32_t BLUE = 0x8073B7FF, LINE = 0x80252D3C;
 static const char* CATEGORY_NAMES[5] = {"Todos", "Utilitários", "Emuladores", "Jogos", "Mídia"};
 static const uint32_t CATEGORY_COLORS[5] = {BLUE, 0x807BDECC, 0x80B9A2F9, 0x80EBC48A, 0x8085BBFB};
-static int activeCategory = 0, downloadingApp = -1;
+static int activeCategory = 0, downloadingApp = -1, installingApp = -1;
+static bool autoInstallPending = false, installCancelRequested = false;
+static uint64_t downloadedBytes[UI_APP_COUNT] = {};
+static bool installedApps[UI_APP_COUNT] = {};
+
+static bool validApp(int index) { return index >= 0 && index < UI_APP_COUNT; }
+
+static bool beginInstall(int index) {
+    InstallSnapshot status = installSnapshot();
+    if (!validApp(index) || !downloadedBytes[index] || status.state == INSTALL_RUNNING || status.cleanupCode)
+        return false;
+    const UiApp& app = UI_APPS[index];
+    InstallSpec spec = {app.filename, app.name, downloadedBytes[index]};
+    bool accepted = startInstall(spec);
+    InstallSnapshot after = installSnapshot();
+    bool newAttempt = after.generation != status.generation;
+    // A busy worker may reject a start after publishing its previous DONE.
+    // Keep that snapshot associated with its original app unless accepted.
+    if (accepted || newAttempt) {
+        installingApp = index;
+        installCancelRequested = false;
+    }
+    return accepted;
+}
+
+// Consume a completed download before starting installation. Failure never
+// re-arms this flag; an install retry requires an explicit X press.
+static bool pollAutoInstall() {
+    bool changed = false;
+    DownloadSnapshot download = downloadSnapshot();
+    InstallSnapshot install = installSnapshot();
+    if (validApp(installingApp) && install.state == INSTALL_DONE && !installedApps[installingApp]) {
+        installedApps[installingApp] = true;
+        changed = true;
+    }
+    if (autoInstallPending && download.state == DONE && install.state != INSTALL_RUNNING) {
+        autoInstallPending = false;
+        if (validApp(downloadingApp) && download.received == UI_APPS[downloadingApp].sizeBytes) {
+            downloadedBytes[downloadingApp] = download.received;
+            beginInstall(downloadingApp);
+        }
+        changed = true;
+    } else if (autoInstallPending && (download.state == FAILED || download.state == CANCELLED)) {
+        autoInstallPending = false;
+        changed = true;
+    }
+    install = installSnapshot();
+    if (install.state != INSTALL_RUNNING && installCancelRequested) {
+        installCancelRequested = false;
+        changed = true;
+    }
+    return changed;
+}
+
+static bool activateApp(int index) {
+    InstallSnapshot status = installSnapshot();
+    if (!validApp(index) || downloadSnapshot().state == RUNNING ||
+        status.state == INSTALL_RUNNING || status.cleanupCode || installedApps[index]) return false;
+    if (downloadedBytes[index]) return beginInstall(index);
+    const UiApp& app = UI_APPS[index];
+    DownloadSpec spec = {app.url, app.filename, app.sizeBytes, app.sha256};
+    downloadingApp = index;
+    autoInstallPending = true;
+    if (!startDownload(spec)) autoInstallPending = false;
+    return true;
+}
+
+static bool cancelOperation(int selectedIndex) {
+    if (downloadSnapshot().state == RUNNING) { cancelDownload(); return true; }
+    if (installSnapshot().state == INSTALL_RUNNING && selectedIndex == installingApp) {
+        cancelInstall();
+        installCancelRequested = true;
+        return true;
+    }
+    return false;
+}
 
 static int categoryCount() {
     int count = 0;
@@ -250,25 +327,6 @@ static void header(uint32_t* p) {
     rect(p, 72, 130, W - 144, 1, LINE);
 }
 
-static void footer(uint32_t* p, bool details) {
-    rect(p, 72, 978, W - 144, 1, LINE);
-    if (details) {
-        ring(p, 92, 1018, 12, 2, 0x80EBA5B4);
-        text(p, 120, 1001, "Voltar à biblioteca", FONT_BODY, WHITE);
-    } else {
-        line(p, 81, 1018, 89, 1010, 2, MUTED);
-        line(p, 81, 1018, 89, 1026, 2, MUTED);
-        line(p, 109, 1018, 101, 1010, 2, MUTED);
-        line(p, 109, 1018, 101, 1026, 2, MUTED);
-        text(p, 130, 1001, "Navegar", FONT_BODY, MUTED);
-        crossButton(p, 334, 1018);
-        text(p, 366, 1001, "Ver detalhes", FONT_BODY, WHITE);
-        text(p, 656, 1001, "L1 / R1  Categorias", FONT_BODY, MUTED);
-    }
-    const char* label = "Feito para o seu PS4.";
-    text(p, W - 72 - textWidth(label, FONT_SMALL), 1004, label, FONT_SMALL, MUTED);
-}
-
 static void textElided(uint32_t* p, int x, int y, const char* s, const UiFont& font,
                        uint32_t color, int maxWidth) {
     if (textWidth(s, font) <= maxWidth) { text(p, x, y, s, font, color); return; }
@@ -319,6 +377,105 @@ static void textWrapped(uint32_t* p, int x, int y, const char* s, const UiFont& 
 static void sizeLabel(char* label, size_t capacity, uint64_t bytes) {
     uint64_t tenths = bytes * 10 / (1024 * 1024);
     snprintf(label, capacity, "%llu.%llu MB", (unsigned long long)(tenths / 10), (unsigned long long)(tenths % 10));
+}
+
+static int transferPercent(uint64_t received, uint64_t total) {
+    if (!total) return 0;
+    if (received >= total) return 100;
+    return (int)((double)received * 100.0 / (double)total);
+}
+
+static int installPercent(const InstallSnapshot& status) {
+    return status.percent < 0 ? 0 : (status.percent > 100 ? 100 : status.percent);
+}
+
+static void triangleButton(uint32_t* p, int x, int y) {
+    line(p, x - 9, y + 7, x, y - 8, 2, 0x808BD4B0);
+    line(p, x, y - 8, x + 9, y + 7, 2, 0x808BD4B0);
+    line(p, x - 9, y + 7, x + 9, y + 7, 2, 0x808BD4B0);
+}
+
+static void footer(uint32_t* p, bool details, int selectedIndex) {
+    DownloadSnapshot download = downloadSnapshot();
+    InstallSnapshot install = installSnapshot();
+    MusicSnapshot music = musicSnapshot();
+    rect(p, 72, 978, W - 144, 1, LINE);
+    if (details) {
+        ring(p, 86, 1006, 10, 2, 0x80EBA5B4);
+        text(p, 112, 992, "Biblioteca", FONT_SMALL, WHITE);
+    } else {
+        line(p, 80, 1006, 87, 999, 2, MUTED);
+        line(p, 80, 1006, 87, 1013, 2, MUTED);
+        line(p, 108, 1006, 101, 999, 2, MUTED);
+        line(p, 108, 1006, 101, 1013, 2, MUTED);
+        text(p, 122, 992, "Navegar", FONT_SMALL, MUTED);
+        crossButton(p, 260, 1006);
+        text(p, 288, 992, "Ver detalhes", FONT_SMALL, WHITE);
+        text(p, 472, 992, "L1 / R1  Categorias", FONT_SMALL, MUTED);
+    }
+    bool canCancel = download.state == RUNNING ||
+        (install.state == INSTALL_RUNNING && selectedIndex == installingApp);
+    if (canCancel) {
+        int x = details ? 285 : 750;
+        triangleButton(p, x, 1006);
+        text(p, x + 24, 992, "Cancelar", FONT_SMALL, MUTED);
+    }
+    char label[256];
+    uint32_t statusColor = MUTED;
+    if (install.cleanupCode) {
+        snprintf(label, sizeof(label), "Feche e reabra a Peppy Store  |  limpeza 0x%08X", (unsigned)install.cleanupCode);
+        statusColor = 0x80EBA5B4;
+    } else if (install.state == INSTALL_RUNNING && validApp(installingApp)) {
+        snprintf(label, sizeof(label), "%s %s  |  %s  |  %d%%",
+                 installCancelRequested ? "Cancelando:" : "Instalando:", UI_APPS[installingApp].name,
+                 installStageName(install.stage), installPercent(install));
+        statusColor = BLUE;
+    } else if (download.state == RUNNING && validApp(downloadingApp)) {
+        snprintf(label, sizeof(label), "Baixando: %s  |  %d%%", UI_APPS[downloadingApp].name,
+                 transferPercent(download.received, download.total));
+        statusColor = BLUE;
+    } else if (install.state == INSTALL_FAILED && validApp(installingApp)) {
+        snprintf(label, sizeof(label), "Falha ao instalar: %s  |  0x%08X",
+                 UI_APPS[installingApp].name, (unsigned)install.nativeCode);
+        statusColor = 0x80EBA5B4;
+    } else if (install.state == INSTALL_DONE && validApp(installingApp)) {
+        snprintf(label, sizeof(label), "Instalado no PS4: %s", UI_APPS[installingApp].name);
+        statusColor = 0x807BDECC;
+    } else snprintf(label, sizeof(label), "Feito para o seu PS4.");
+    textElided(p, 1040, 992, label, FONT_SMALL, statusColor, 808);
+
+    if (music.state == MUSIC_FAILED)
+        snprintf(label, sizeof(label), "Música indisponível: 0x%08X", (unsigned)music.errorCode);
+    else if (music.state == MUSIC_STARTING) snprintf(label, sizeof(label), "Preparando a música...");
+    else if (music.state == MUSIC_PLAYING) snprintf(label, sizeof(label), "Tocando: %s", musicTrackName(music.track));
+    else snprintf(label, sizeof(label), "Música parada");
+    textElided(p, 72, 1030, label, FONT_SMALL, music.state == MUSIC_FAILED ? MUTED : WHITE, 420);
+    outline(p, 508, 1031, 22, 22, 3, 2, MUTED);
+    if (music.muted) snprintf(label, sizeof(label), "Som: mudo");
+    else snprintf(label, sizeof(label), "Som: %d%%", music.volume);
+    text(p, 545, 1030, label, FONT_SMALL, MUTED);
+    ring(p, 747, 1044, 18, 2, MUTED);
+    text(p, 733, 1030, "L3", FONT_SMALL, MUTED);
+    text(p, 781, 1030, "Próxima faixa", FONT_SMALL, MUTED);
+}
+
+static const char* installErrorText(int code) {
+    switch (code) {
+    case INSTALL_ERROR_SPEC: return "Os dados de instalação são inválidos.";
+    case INSTALL_ERROR_THREAD: return "Não foi possível iniciar a instalação.";
+    case INSTALL_ERROR_FILE: return "Não foi possível abrir o PKG baixado.";
+    case INSTALL_ERROR_PACKAGE: return "O arquivo salvo não passou na validação de PKG.";
+    case INSTALL_ERROR_ALREADY_INSTALLED: return "Esse app já está instalado no PS4.";
+    case INSTALL_ERROR_BUSY: return "O serviço de instalação está ocupado.";
+    case INSTALL_ERROR_SELF: return "Esse pacote aponta para a própria Peppy Store.";
+    case INSTALL_ERROR_TIMEOUT: return "O serviço de instalação excedeu o tempo de espera.";
+    case INSTALL_ERROR_SDK: return "O suporte de instalação não ficou disponível.";
+    case INSTALL_ERROR_JAILBREAK: return "Não foi possível preparar o acesso para instalar.";
+    case INSTALL_ERROR_GLOBAL_PATH: return "O PS4 não encontrou o PKG no caminho de instalação.";
+    case INSTALL_ERROR_COPY: return "Não foi possível preparar o PKG para a instalação.";
+    case INSTALL_ERROR_RESTORE: return "Não foi possível encerrar a preparação de instalação.";
+    default: return "A instalação não foi concluída.";
+    }
 }
 
 static const char* downloadErrorText(int code) {
@@ -380,15 +537,7 @@ static void drawStore(uint32_t* p, int selected, int padState) {
         line(p, x + cw - 40, y + 275, x + cw - 33, y + 268, 2, focus ? BLUE : MUTED);
     }
     if (!count) text(p, 72, 706, "Nenhum PKG verificado nesta categoria.", FONT_BODY, MUTED);
-    footer(p, false);
-    DownloadSnapshot progress = downloadSnapshot();
-    if (progress.state == RUNNING) {
-        char label[96];
-        int percent = progress.total ? (int)(progress.received * 100 / progress.total) : 0;
-        snprintf(label, sizeof(label), "Download em andamento: %d%%", percent);
-        rect(p, 1370, 992, 480, 56, BG);
-        text(p, W - 72 - textWidth(label, FONT_SMALL), 1004, label, FONT_SMALL, BLUE);
-    }
+    footer(p, false, appIndex(selected));
 }
 
 static void drawDetails(uint32_t* p, int selected) {
@@ -423,37 +572,73 @@ static void drawDetails(uint32_t* p, int selected) {
     if (*app.requiresData) textElided(p, 708, 714, app.requiresData, FONT_SMALL, MUTED, 1110);
 
     DownloadSnapshot status = downloadSnapshot();
-    bool mine = downloadingApp == index;
-    const char* action = "Baixar PKG";
+    InstallSnapshot install = installSnapshot();
+    bool mine = downloadingApp == index, myInstall = installingApp == index;
+    const char* action = "Baixar e instalar";
     uint32_t button = 0x8032609A;
     char buttonLabel[96];
-    if (status.state == RUNNING) {
+    if (install.cleanupCode) {
+        action = "Reabra a Peppy Store";
+        button = 0x8024344A;
+    } else if (install.state == INSTALL_RUNNING) {
+        if (myInstall) {
+            snprintf(buttonLabel, sizeof(buttonLabel), "%s %d%%",
+                     installCancelRequested ? "Cancelando..." : "Instalando...", installPercent(install));
+            action = buttonLabel;
+        } else action = "Outro app em instalação";
+        button = 0x8024344A;
+    } else if (status.state == RUNNING) {
         if (mine) {
-            int percent = status.total ? (int)(status.received * 100 / status.total) : 0;
+            int percent = transferPercent(status.received, status.total);
             snprintf(buttonLabel, sizeof(buttonLabel), "Baixando... %d%%", percent);
             action = buttonLabel;
         } else action = "Outro download em andamento";
         button = 0x8024344A;
-    } else if (mine && status.state == DONE) { action = "PKG baixado"; button = 0x80254B43; }
+    } else if (installedApps[index] || (myInstall && install.state == INSTALL_DONE)) {
+        action = "Instalado no PS4"; button = 0x80254B43;
+    } else if (downloadedBytes[index]) action = "Tentar instalar novamente";
+    else if (mine && status.state == DONE && autoInstallPending) action = "Preparando instalação...";
     else if (mine && status.state == FAILED) action = "Tentar novamente";
     else if (mine && status.state == CANCELLED) action = "Baixar novamente";
     roundRect(p, 708, 771, 610, 70, 16, button);
     crossButton(p, 744, 806);
     text(p, 778, 788, action, FONT_BODY, WHITE);
-    if (mine && status.state == RUNNING) {
+    if (install.cleanupCode) {
+        snprintf(info, sizeof(info), "Feche e reabra a Peppy Store antes de tentar novamente.");
+    } else if (install.state == INSTALL_RUNNING) {
+        if (myInstall)
+            snprintf(info, sizeof(info), "%s  |  %d%%", installStageName(install.stage), installPercent(install));
+        else snprintf(info, sizeof(info), "Aguarde a instalação de %s.",
+                      validApp(installingApp) ? UI_APPS[installingApp].name : "outro app");
+    } else if (installedApps[index] || (myInstall && install.state == INSTALL_DONE)) {
+        snprintf(info, sizeof(info), "Instalação concluída. O app está disponível no menu do PS4.");
+    } else if (myInstall && install.state == INSTALL_FAILED) {
+        snprintf(info, sizeof(info), "%s PKG preservado para tentar novamente. (código %d)",
+                 installErrorText(install.errorCode), install.errorCode);
+    } else if (myInstall && install.state == INSTALL_CANCELLED) {
+        snprintf(info, sizeof(info), "Instalação cancelada. X tenta instalar o PKG salvo sem baixar novamente.");
+    } else if (downloadedBytes[index]) {
+        snprintf(info, sizeof(info), "PKG salvo e validado. X inicia a instalação no PS4.");
+    } else if (mine && status.state == RUNNING) {
         char received[40], total[40];
         sizeLabel(received, sizeof(received), status.received);
         sizeLabel(total, sizeof(total), status.total);
         snprintf(info, sizeof(info), "%s de %s", received, total);
-    } else if (mine && status.state == DONE) {
-        snprintf(info, sizeof(info), "Salvo em /data/peppy-store/downloads. Instale pelo seu instalador de PKG.");
+    } else if (mine && status.state == DONE && autoInstallPending) {
+        snprintf(info, sizeof(info), "Download validado. Preparando a instalação automática.");
     } else if (mine && status.state == FAILED) {
         snprintf(info, sizeof(info), "%s (código %d)", downloadErrorText(status.errorCode), status.errorCode);
     } else if (mine && status.state == CANCELLED) snprintf(info, sizeof(info), "Download cancelado.");
     else if (*app.sha256) snprintf(info, sizeof(info), "SHA-256 conferido ao concluir o download.");
     else snprintf(info, sizeof(info), "Pacote publicado pelo projeto; hash não informado no release.");
     textWrapped(p, 708, 861, info, FONT_SMALL, MUTED, 1140, 2);
-    if (mine && status.state == FAILED) {
+    if (install.cleanupCode || (myInstall && install.state == INSTALL_FAILED)) {
+        char diagnostic[192];
+        snprintf(diagnostic, sizeof(diagnostic), "%s | 0x%08X | tarefa %d | limpeza 0x%08X",
+                 installStageName(install.stage), (unsigned)install.nativeCode,
+                 install.taskId, (unsigned)install.cleanupCode);
+        textElided(p, 708, 926, diagnostic, FONT_SMALL, BLUE, 1140);
+    } else if (mine && status.state == FAILED && !downloadedBytes[index]) {
         char diagnostic[160];
         int used = snprintf(diagnostic, sizeof(diagnostic), "%s | 0x%08X | rede %d",
                             downloadStageName(status.stage), (unsigned)status.nativeCode, status.networkState);
@@ -466,13 +651,7 @@ static void drawDetails(uint32_t* p, int selected) {
         }
         textElided(p, 708, 926, diagnostic, FONT_SMALL, BLUE, 1140);
     }
-    footer(p, true);
-    if (status.state == RUNNING && mine) {
-        line(p, 668, 1028, 680, 1008, 2, 0x808BD4B0);
-        line(p, 680, 1008, 692, 1028, 2, 0x808BD4B0);
-        line(p, 668, 1028, 692, 1028, 2, 0x808BD4B0);
-        text(p, 710, 1001, "Cancelar download", FONT_BODY, MUTED);
-    }
+    footer(p, true, index);
 }
 
 #ifndef PEPPY_UI_PREVIEW
@@ -502,6 +681,7 @@ int main(void){
   userRc=sceUserServiceInitialize(&usp);
   if(userRc==0) userRc=sceUserServiceGetInitialUser(&userId);
  }
+ musicStart(userId);
  int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
  int32_t padInit=(padModule>=0)?scePadInit():padModule;
  int32_t pad=(padInit==0 && userRc==0)?scePadOpen(userId,0,0,0):-1;
@@ -509,11 +689,13 @@ int main(void){
  int selected=0,front=0;bool details=false;uint32_t prev=0;int64_t frame=1;
  int progressTicks=0;
  DownloadSnapshot previousProgress=downloadSnapshot();
+ InstallSnapshot previousInstall=installSnapshot();
+ MusicSnapshot previousMusic=musicSnapshot();
  drawStore(fb[front],selected,2);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
  for(;;){
-  bool changed=false;
+  bool changed=pollAutoInstall();
   OrbisPadData pd;
   if(pad>=0 && scePadReadState(pad,&pd)>=0){
    static bool readShown=false;
@@ -527,20 +709,13 @@ int main(void){
    if(!details && count && (now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+count-1)%count;changed=true;}
    if(count && (now&ORBIS_PAD_BUTTON_CROSS)&&!(prev&ORBIS_PAD_BUTTON_CROSS)){
     if(!details) details=true;
-    else {
-     int index=appIndex(selected);
-     DownloadSnapshot progress=downloadSnapshot();
-     if(index>=0 && progress.state!=RUNNING){
-      const UiApp& app=UI_APPS[index];
-      DownloadSpec spec={app.url,app.filename,app.sizeBytes,app.sha256};
-      downloadingApp=index;
-      startDownload(spec);
-     }
-    }
+    else activateApp(appIndex(selected));
     changed=true;
    }
    if(details && (now&ORBIS_PAD_BUTTON_CIRCLE)&&!(prev&ORBIS_PAD_BUTTON_CIRCLE)){details=false;changed=true;}
-   if((now&ORBIS_PAD_BUTTON_TRIANGLE)&&!(prev&ORBIS_PAD_BUTTON_TRIANGLE) && downloadSnapshot().state==RUNNING){cancelDownload();changed=true;}
+   if((now&ORBIS_PAD_BUTTON_TRIANGLE)&&!(prev&ORBIS_PAD_BUTTON_TRIANGLE)) changed=cancelOperation(appIndex(selected)) || changed;
+   if((now&ORBIS_PAD_BUTTON_SQUARE)&&!(prev&ORBIS_PAD_BUTTON_SQUARE)){musicToggleMute();changed=true;}
+   if((now&ORBIS_PAD_BUTTON_L3)&&!(prev&ORBIS_PAD_BUTTON_L3)){musicNextTrack();changed=true;}
    prev=now;
   }
   if(++progressTicks>=12){
@@ -548,6 +723,18 @@ int main(void){
    DownloadSnapshot progress=downloadSnapshot();
    if(progress.state!=previousProgress.state || progress.received!=previousProgress.received || progress.errorCode!=previousProgress.errorCode) changed=true;
    previousProgress=progress;
+   InstallSnapshot install=installSnapshot();
+   if(install.state!=previousInstall.state || install.percent!=previousInstall.percent ||
+      install.received!=previousInstall.received || install.stage!=previousInstall.stage ||
+      install.errorCode!=previousInstall.errorCode || install.nativeCode!=previousInstall.nativeCode ||
+      install.preparingPercent!=previousInstall.preparingPercent || install.localCopyPercent!=previousInstall.localCopyPercent ||
+      install.cleanupCode!=previousInstall.cleanupCode || install.cleanupStage!=previousInstall.cleanupStage ||
+      install.generation!=previousInstall.generation) changed=true;
+   previousInstall=install;
+   MusicSnapshot music=musicSnapshot();
+   if(music.state!=previousMusic.state || music.track!=previousMusic.track || music.volume!=previousMusic.volume ||
+      music.muted!=previousMusic.muted || music.errorCode!=previousMusic.errorCode) changed=true;
+   previousMusic=music;
   }
   if(changed){
    front=1-front;
@@ -556,6 +743,8 @@ int main(void){
   }
   sceKernelUsleep(16000);
  }
+ musicStop();
+ musicShutdown();
  return 0;
 }
 #endif
