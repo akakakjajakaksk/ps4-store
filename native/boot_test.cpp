@@ -94,6 +94,20 @@ static void drawStore(uint32_t*p,int selected,int padState){
  border(p,sx-7,y-7,cw+14,ch+14,5,glow);
  rect(p,413,930,1460,72,nav);text(p,455,952,"SELECT",3,white);text(p,720,952,"BACK",3,muted);
 }
+static void drawDetails(uint32_t*p,int selected){
+ const uint32_t bg=0x80080D18,nav=0x80101728,panel=0x80151E30,accent=0x800078FF,glow=0x8030B8FF,white=0x80F5F8FF,muted=0x80879AB8;
+ const char*names[4]={"GAME 1","APP 2","GAME 3","APP 4"};
+ const uint32_t covers[4]={0x80304D82,0x80513B68,0x802E6255,0x80604D32};
+ fill(p,bg);rect(p,0,0,W,108,nav);rect(p,0,104,W,4,accent);
+ rect(p,58,25,62,62,accent);rect(p,72,39,34,34,bg);text(p,150,28,"ORBIS STORE",7,white);
+ rect(p,100,165,540,650,panel);rect(p,125,190,490,390,covers[selected]);
+ rect(p,250,300,240,170,0x80212E47);border(p,250,300,240,170,4,glow);
+ text(p,720,190,names[selected],8,white);text(p,724,285,"PS4 APP",4,muted);
+ text(p,724,365,"READY TO INSTALL",4,white);text(p,724,425,"DETAIL PAGE",3,muted);
+ rect(p,724,525,300,70,accent);text(p,790,544,"INSTALL",4,white);
+ rect(p,100,900,1720,80,nav);text(p,145,925,"BACK",4,white);text(p,400,925,"ORBIS STORE",3,muted);
+}
+
 int main(void){
  sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_VIDEO_OUT);
  int32_t video=sceVideoOutOpen(ORBIS_VIDEO_USER_MAIN,ORBIS_VIDEO_OUT_BUS_MAIN,0,0);
@@ -124,7 +138,7 @@ int main(void){
  int32_t padInit=(padModule>=0)?scePadInit():padModule;
  int32_t pad=(padInit==0 && userRc==0)?scePadOpen(userId,0,0,0):-1;
 
- int selected=0,front=0;uint32_t prev=0;int64_t frame=1;
+ int selected=0,front=0;bool details=false;uint32_t prev=0;int64_t frame=1;
  drawStore(fb[front],selected,2);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
@@ -135,12 +149,14 @@ int main(void){
    if(!readShown){front=1-front;drawStore(fb[front],selected,2);sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);readShown=true;}
    uint32_t now=pd.buttons;
    bool changed=false;
-   if((now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%4;changed=true;}
-   if((now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+3)%4;changed=true;}
+   if(!details && (now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%4;changed=true;}
+   if(!details && (now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+3)%4;changed=true;}
+   if(!details && (now&ORBIS_PAD_BUTTON_CROSS)&&!(prev&ORBIS_PAD_BUTTON_CROSS)){details=true;changed=true;}
+   if(details && (now&ORBIS_PAD_BUTTON_CIRCLE)&&!(prev&ORBIS_PAD_BUTTON_CIRCLE)){details=false;changed=true;}
    prev=now;
    if(changed){
     front=1-front;
-    drawStore(fb[front],selected,2);
+    if(details) drawDetails(fb[front],selected); else drawStore(fb[front],selected,2);
     sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
    }
   }
