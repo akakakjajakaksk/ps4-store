@@ -3,8 +3,8 @@ VERSION := 01.00
 TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
-# Stage 2 diagnostic: load VideoOut and call sceVideoOutOpen only.
-LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut
+# Orbis Store native UI: graphics + DualShock 4 input.
+LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut -lScePad -lSceUserService
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
