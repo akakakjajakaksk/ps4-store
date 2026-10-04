@@ -437,17 +437,30 @@ int runInstall() {
     if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_APP_INIT, rc);
     owned.appReady = true;
     char titleId[16] = {};
-    int32_t isApp = -1;
     stage(INSTALL_STAGE_TITLE);
-    rc = sceAppInstUtilGetTitleIdFromPkg(storage ? systemPath : localPath, titleId, &isApp);
-    if (rc) return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, rc);
-    if (!validTitleId(titleId) || isApp != 1)
+    // sceAppInstUtilGetTitleIdFromPkg resolves paths in the system-service
+    // namespace. An application-sandbox /data path is therefore invalid on
+    // consoles where the GoldHEN SDK syscall is unavailable and we use the
+    // loopback HTTP installer. The PKG header has already been read from a
+    // held, validated descriptor, so derive the Title ID from its Content ID
+    // in HTTP mode. Storage mode still asks AppInstUtil to parse the global
+    // /user/data path and cross-checks both values below.
+    if (contentId[6] != '-' || contentId[16] != '_' || contentId[19] != '-')
         return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
+    memcpy(titleId, contentId + 7, 9);
+    titleId[9] = 0;
+    if (!validTitleId(titleId))
+        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
+    if (storage) {
+        char parsedTitleId[16] = {};
+        int32_t isApp = -1;
+        rc = sceAppInstUtilGetTitleIdFromPkg(systemPath, parsedTitleId, &isApp);
+        if (rc) return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, rc);
+        if (!validTitleId(parsedTitleId) || isApp != 1 || strcmp(parsedTitleId, titleId))
+            return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
+    }
     if (!strcmp(titleId, PEPPY_TITLE_ID))
         return fail(INSTALL_ERROR_SELF, INSTALL_STAGE_TITLE, 0);
-    if (contentId[6] != '-' || contentId[16] != '_' || contentId[19] != '-' ||
-        memcmp(contentId + 7, titleId, 9))
-        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
     stage(INSTALL_STAGE_EXISTS);
     int32_t exists = 0;
     rc = sceAppInstUtilAppExists(titleId, &exists);
