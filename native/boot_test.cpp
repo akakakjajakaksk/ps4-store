@@ -103,8 +103,10 @@ int main(void){
  if(rc<0)for(;;)sceKernelUsleep(1000000);
  sceVideoOutSetFlipRate(video,0);
 
- // Diagnostic: initialize Pad only. Do not open a controller yet.
- volatile int32_t padInit=scePadInit();
+ // Diagnostic: explicitly load libScePad before initializing Pad.
+ volatile int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
+ volatile int32_t padInit=(padModule>=0)?scePadInit():padModule;
+ (void)padModule;
  (void)padInit;
 
  int selected=0,front=0;int64_t frame=1;
