@@ -3,8 +3,8 @@ VERSION := 01.00
 TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
-# Control build: known-good baseline with no VideoOut linked or called.
-LIBS := -lc -lkernel -lc++ -lSceSysmodule
+# Stage 2 diagnostic: load VideoOut and call sceVideoOutOpen only.
+LIBS := -lc -lkernel -lc++ -lSceSysmodule -lSceVideoOut
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
