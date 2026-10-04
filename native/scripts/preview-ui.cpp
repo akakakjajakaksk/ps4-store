@@ -47,6 +47,10 @@ const char* installStageName(int stage) {
     case INSTALL_STAGE_PROGRESS: return "Instalar no PS4";
     case INSTALL_STAGE_THREAD: return "Iniciar instalação";
     case INSTALL_STAGE_RESTORE: return "Restaurar acesso";
+    case INSTALL_STAGE_USER: return "Usuário do PS4";
+    case INSTALL_STAGE_SERVER_START: return "Preparar entrega do PKG";
+    case INSTALL_STAGE_SERVER_TRANSFER: return "Entregar PKG ao instalador";
+    case INSTALL_STAGE_SERVER_STOP: return "Encerrar entrega do PKG";
     default: return "Preparar instalação";
     }
 }
@@ -254,6 +258,26 @@ int main(int argc, char** argv) {
         if (!saveState(argv[1], name, frame)) { free(allocation); return 1; }
         states += 2;
     }
+    resetController();
+    installingApp = downloadingApp = 0;
+    downloadedBytes[0] = UI_APPS[0].sizeBytes;
+    completeDownload(0);
+    previewInstall.state = INSTALL_RUNNING;
+    previewInstall.mode = INSTALL_MODE_HTTP_LOCAL;
+    previewInstall.sdkVersion = 0xFFFFFFFFU;
+    previewInstall.sdkErrno = 78;
+    previewInstall.stage = INSTALL_STAGE_PROGRESS;
+    previewInstall.taskId = 7;
+    previewInstall.percent = 42;
+    drawDetails(frame, 0);
+    if (!saveState(argv[1], "install-http-local", frame)) { free(allocation); return 1; }
+    previewInstall.state = INSTALL_FAILED;
+    previewInstall.errorCode = INSTALL_ERROR_TASK;
+    previewInstall.stage = INSTALL_STAGE_REGISTER;
+    previewInstall.nativeCode = (int32_t)0x80990015;
+    drawDetails(frame, 0);
+    if (!saveState(argv[1], "install-http-native-failure", frame)) { free(allocation); return 1; }
+    states += 2;
     previewInstall.state = INSTALL_RUNNING;
     drawDetails(frame, 1);
     if (!saveState(argv[1], "install-other-app", frame)) { free(allocation); return 1; }

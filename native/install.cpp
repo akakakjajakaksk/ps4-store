@@ -1,5 +1,10 @@
 #include "install.h"
 
+#ifndef PEPPY_PKG_SERVER_HEADER
+#define PEPPY_PKG_SERVER_HEADER "pkg_server.h"
+#endif
+#include PEPPY_PKG_SERVER_HEADER
+
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,8 +76,12 @@ extern "C" int32_t peppyInstallModuleLoaded(OrbisSysModuleInternal)
 extern "C" int32_t peppyBgftInit(PeppyBgftInit*) __asm__("sceBgftServiceIntInit");
 extern "C" int32_t peppyBgftRegister(PeppyBgftParamEx*, int32_t*)
     __asm__("sceBgftServiceIntDownloadRegisterTaskByStorageEx");
+extern "C" int32_t peppyBgftRegisterHttp(PeppyBgftParam*, int32_t*)
+    __asm__("sceBgftServiceIntDownloadRegisterTask");
 extern "C" int32_t peppyBgftProgress(int32_t, PeppyBgftProgress*)
     __asm__("sceBgftServiceDownloadGetProgress");
+extern "C" int32_t peppyInstallForegroundUser(int32_t*)
+    __asm__("sceUserServiceGetForegroundUser");
 
 // The official GoldHEN SDK saves/restores credentials and namespace without
 // firmware-specific kernel offsets. The bridge is vendored separately under MIT.
@@ -121,6 +130,8 @@ int g_installTask = -1, g_installPreparing = 0, g_installCopy = 0;
 uint64_t g_installReceived = 0, g_installTotal = 0;
 uint32_t g_installBits = 0;
 uint32_t g_installGeneration = 0;
+int g_installMode = INSTALL_MODE_NONE, g_installSdkErrno = 0;
+uint32_t g_installSdkVersion = 0;
 char g_installFilename[NAME_CAP], g_installName[TITLE_CAP];
 uint64_t g_installExpected = 0;
 FILE* g_installLog = 0;
@@ -160,8 +171,12 @@ bool cancelled() { return __atomic_load_n(&g_installCancel, __ATOMIC_ACQUIRE) !=
 void stage(int value) { __atomic_store_n(&g_installStage, value, __ATOMIC_RELEASE); }
 void logCall(int where, int32_t native) {
     if (!g_installLog) return;
-    int rc = fprintf(g_installLog, "stage=%d native=0x%08X task=%d\n", where,
-        (unsigned)native, __atomic_load_n(&g_installTask, __ATOMIC_ACQUIRE));
+    int rc = fprintf(g_installLog,
+        "stage=%d native=0x%08X task=%d mode=%d sdk=0x%08X sdk_errno=%d\n", where,
+        (unsigned)native, __atomic_load_n(&g_installTask, __ATOMIC_ACQUIRE),
+        __atomic_load_n(&g_installMode, __ATOMIC_ACQUIRE),
+        __atomic_load_n(&g_installSdkVersion, __ATOMIC_ACQUIRE),
+        __atomic_load_n(&g_installSdkErrno, __ATOMIC_ACQUIRE));
     if (rc < 0 || fflush(g_installLog)) { fclose(g_installLog); g_installLog = 0; }
 }
 int fail(int category, int where, int32_t native) {
@@ -199,11 +214,14 @@ struct InstallResources {
     FILE* file;
     void* heap;
     bool appReady, bgftReady, completed, jailbroken;
+    bool serverAttempted;
+    PkgServer server;
     PeppyJailbreakBackup backup;
     char partialPath[PATH_CAP];
     int32_t task;
     InstallResources() : file(0), heap(0), appReady(false), bgftReady(false),
-                         completed(false), jailbroken(false), backup(), task(-1) { partialPath[0] = 0; }
+                         completed(false), jailbroken(false), serverAttempted(false),
+                         backup(), task(-1) { partialPath[0] = 0; }
     ~InstallResources() {
         if (task >= 0 && !completed) {
             int32_t rc = sceBgftServiceDownloadStopTask(task);
@@ -211,6 +229,13 @@ struct InstallResources {
             if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
             rc = sceBgftServiceIntDownloadUnregisterTask(task);
             cleanupError(INSTALL_STAGE_UNREGISTER, rc);
+            if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
+        }
+        if (serverAttempted) {
+            // stop waits for every server worker even when it reports an
+            // error. Keep the borrowed FILE alive until that join finishes.
+            int32_t rc = server.stop();
+            cleanupError(INSTALL_STAGE_SERVER_STOP, rc);
             if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
         }
         if (bgftReady) {
@@ -382,15 +407,27 @@ int runInstall() {
     }
     if (cancelled()) return 0;
     stage(INSTALL_STAGE_SDK);
+    errno = 0;
     int32_t sdk = peppyInstallSdkVersion();
-    if (sdk != 0x100) return fail(INSTALL_ERROR_SDK, INSTALL_STAGE_SDK, sdk);
-    stage(INSTALL_STAGE_JAILBREAK);
-    int32_t jailbreak = peppyInstallJailbreak(&owned.backup);
-    if (jailbreak) return fail(INSTALL_ERROR_JAILBREAK, INSTALL_STAGE_JAILBREAK, jailbreak);
-    owned.jailbroken = true;
+    int sdkError = errno; // The official trampoline saves its raw error here.
+    __atomic_store_n(&g_installSdkVersion, (uint32_t)sdk, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installSdkErrno, sdkError, __ATOMIC_RELEASE);
+    bool storage = sdk == 0x100;
+    __atomic_store_n(&g_installMode,
+        storage ? INSTALL_MODE_STORAGE : INSTALL_MODE_HTTP_LOCAL, __ATOMIC_RELEASE);
+    logCall(INSTALL_STAGE_SDK, sdk);
+    if (storage) {
+        stage(INSTALL_STAGE_JAILBREAK);
+        int32_t jailbreak = peppyInstallJailbreak(&owned.backup);
+        // A failed credential change is never a reason to try another mode.
+        if (jailbreak) return fail(INSTALL_ERROR_JAILBREAK, INSTALL_STAGE_JAILBREAK, jailbreak);
+        owned.jailbroken = true;
+    }
     if (cancelled()) return 0;
-    int globalResult = systemFile(owned, after, systemPath, sizeof(systemPath));
-    if (globalResult || cancelled()) return globalResult;
+    if (storage) {
+        int globalResult = systemFile(owned, after, systemPath, sizeof(systemPath));
+        if (globalResult || cancelled()) return globalResult;
+    }
     int result = module(ORBIS_SYSMODULE_INTERNAL_APP_INST_UTIL, INSTALL_STAGE_MODULE_APP);
     if (result) return result;
     result = module(ORBIS_SYSMODULE_INTERNAL_BGFT, INSTALL_STAGE_MODULE_BGFT);
@@ -402,7 +439,7 @@ int runInstall() {
     char titleId[16] = {};
     int32_t isApp = -1;
     stage(INSTALL_STAGE_TITLE);
-    rc = sceAppInstUtilGetTitleIdFromPkg(systemPath, titleId, &isApp);
+    rc = sceAppInstUtilGetTitleIdFromPkg(storage ? systemPath : localPath, titleId, &isApp);
     if (rc) return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, rc);
     if (!validTitleId(titleId) || isApp != 1)
         return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
@@ -417,6 +454,24 @@ int runInstall() {
     if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_EXISTS, rc);
     if (exists) return fail(INSTALL_ERROR_ALREADY_INSTALLED, INSTALL_STAGE_EXISTS, 0);
     if (cancelled()) return 0;
+    int32_t userId = 0;
+    if (!storage) {
+        stage(INSTALL_STAGE_USER);
+        userId = -1;
+        rc = peppyInstallForegroundUser(&userId);
+        if (rc) return fail(INSTALL_ERROR_USER, INSTALL_STAGE_USER, rc);
+        if (userId < 0) return fail(INSTALL_ERROR_USER, INSTALL_STAGE_USER, EINVAL);
+        // Native title parsing uses a pathname. Confirm it still names the
+        // same file, while HTTP itself always serves the held descriptor.
+        PeppyFileInfo current;
+        rc = pathInfo(localPath, false, current);
+        if (!rc && !sameFile(after, current)) rc = EINVAL;
+        if (!rc) rc = peppyInstallFstat(fileno(owned.file), &current);
+        if (!rc && !sameFile(after, current)) rc = EINVAL;
+        if (rc) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, rc);
+        if (fseek(owned.file, 0, SEEK_SET))
+            return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno ? errno : EIO);
+    }
     stage(INSTALL_STAGE_HEAP);
     owned.heap = calloc(1, BGFT_HEAP_BYTES);
     if (!owned.heap) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_HEAP, ENOMEM);
@@ -426,21 +481,42 @@ int runInstall() {
     if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_BGFT_INIT, rc);
     owned.bgftReady = true;
     if (cancelled()) return 0;
+    if (!storage) {
+        stage(INSTALL_STAGE_SERVER_START);
+        owned.serverAttempted = true;
+        rc = owned.server.start(owned.file, g_installExpected);
+        if (rc) return fail(INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_START, rc);
+        rc = owned.server.errorCode();
+        if (rc) return fail(INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_TRANSFER, rc);
+        const char* url = owned.server.url();
+        const char loopback[] = "http://127.0.0.1:";
+        size_t urlLength = lengthBounded(url, PATH_CAP);
+        if (!url || urlLength >= PATH_CAP || urlLength <= sizeof(loopback) - 1 ||
+            strncmp(url, loopback, sizeof(loopback) - 1))
+            return fail(INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_START, EINVAL);
+        if (cancelled()) return 0;
+    }
     PeppyBgftParamEx params = {};
+    params.params.userId = userId;
     params.params.entitlementType = 5;
     params.params.id = contentId;
-    params.params.contentUrl = systemPath;
+    params.params.contentUrl = storage ? systemPath : owned.server.url();
     params.params.contentName = g_installName;
     params.params.iconPath = "";
     params.params.playgoScenarioId = "0";
-    // This is a local storage task. Keep Peppy's own progress UI visible and
-    // do not enable FORCE_UPDATE, which could replace an existing app.
-    params.params.option = 0x2; // BGFT_TASK_OPT_INVISIBLE, used by Itemzflow.
+    // Keep Peppy's progress UI and never force an existing application update.
+    // HTTP uses RPI's CDN-query suppression to retain the exact local URL.
+    params.params.option = storage ? 0x2 : 0x10002;
+    if (!storage) {
+        params.params.packageType = "PS4GD";
+        params.params.packageSubType = "";
+    }
     params.params.packageSize = g_installExpected;
     params.slot = 0;
     stage(INSTALL_STAGE_REGISTER);
     int32_t candidate = -1;
-    rc = peppyBgftRegister(&params, &candidate);
+    rc = storage ? peppyBgftRegister(&params, &candidate)
+                 : peppyBgftRegisterHttp(&params.params, &candidate);
     if (rc) {
         uint32_t native = (uint32_t)rc;
         int category = native == 0x80990088U || native == 0x80990015U
@@ -459,6 +535,10 @@ int runInstall() {
     if (rc) return fail(INSTALL_ERROR_TASK, INSTALL_STAGE_START, rc);
     for (unsigned poll = 0; poll < MAX_POLLS; ++poll) {
         if (cancelled()) return 0;
+        if (!storage) {
+            rc = owned.server.errorCode();
+            if (rc) return fail(INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_TRANSFER, rc);
+        }
         stage(INSTALL_STAGE_PROGRESS);
         PeppyBgftProgress progress = {};
         rc = peppyBgftProgress(owned.task, &progress);
@@ -481,6 +561,10 @@ int runInstall() {
             rc = sceAppInstUtilAppExists(titleId, &exists);
             if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_CONFIRM, rc);
             if (exists && !sceAppInstUtilAppIsInInstalling(contentId)) {
+                if (!storage) {
+                    rc = owned.server.errorCode();
+                    if (rc) return fail(INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_TRANSFER, rc);
+                }
                 owned.completed = true;
                 __atomic_store_n(&g_installPercent, 100, __ATOMIC_RELEASE);
                 return 0;
@@ -540,6 +624,9 @@ bool startInstall(const InstallSpec& spec) {
     __atomic_store_n(&g_installBits, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_installPreparing, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_installCopy, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installMode, INSTALL_MODE_NONE, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installSdkVersion, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installSdkErrno, 0, __ATOMIC_RELEASE);
     stage(INSTALL_STAGE_SPEC);
     if (!validFilename(spec.filename) || !validName(spec.name) ||
         spec.expectedBytes < HEADER_BYTES || spec.expectedBytes > MAX_PACKAGE_BYTES) {
@@ -589,6 +676,9 @@ InstallSnapshot installSnapshot() {
     value.cleanupCode = __atomic_load_n(&g_installCleanup, __ATOMIC_ACQUIRE);
     value.cleanupStage = __atomic_load_n(&g_installCleanupStage, __ATOMIC_ACQUIRE);
     value.generation = __atomic_load_n(&g_installGeneration, __ATOMIC_ACQUIRE);
+    value.mode = __atomic_load_n(&g_installMode, __ATOMIC_ACQUIRE);
+    value.sdkVersion = __atomic_load_n(&g_installSdkVersion, __ATOMIC_ACQUIRE);
+    value.sdkErrno = __atomic_load_n(&g_installSdkErrno, __ATOMIC_ACQUIRE);
     return value;
 }
 const char* installStageName(int value) {
@@ -597,6 +687,7 @@ const char* installStageName(int value) {
         "Identificação do app", "App existente", "Memória BGFT", "Inicialização BGFT",
         "Registro local", "Início da instalação", "Instalando", "Confirmando instalação",
         "Cancelando", "Limpeza da tarefa", "Encerrando BGFT", "Encerrando AppInstUtil", "Concluído",
-        "GoldHEN SDK", "Permissões GoldHEN", "Arquivo do sistema", "Preparando pacote", "Restaurando permissões" };
+        "GoldHEN SDK", "Permissões GoldHEN", "Arquivo do sistema", "Preparando pacote", "Restaurando permissões",
+        "Perfil do console", "Servidor HTTP local", "Transferência local", "Encerrando servidor local" };
     return value >= 0 && (size_t)value < sizeof(names) / sizeof(names[0]) ? names[value] : "Instalação";
 }

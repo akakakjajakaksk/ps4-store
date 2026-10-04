@@ -7,6 +7,7 @@
 #include <string.h>
 #include <string>
 #include <thread>
+#include <vector>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -15,6 +16,7 @@ static std::string testRoot, localDirectory, systemDirectory, copyDirectory, sys
 #define PEPPY_INSTALL_SYSTEM_DIRECTORY systemDirectory.c_str()
 #define PEPPY_INSTALL_COPY_DIRECTORY copyDirectory.c_str()
 #define PEPPY_INSTALL_ROOT_DIRECTORY systemRoot.c_str()
+#define PEPPY_PKG_SERVER_HEADER "tests/install/stubs/pkg_server.h"
 #include "../../install.cpp"
 
 enum Mode {
@@ -27,20 +29,34 @@ enum Mode {
     DELAY_CONFIRM, CONFIRM_FAIL, ALIAS_COPY, COPY_ENOSPC, COPY_FSYNC_FAIL,
     COPY_CLOSE_FAIL, COPY_RENAME_FAIL, COPY_CANCEL, BAD_GLOBAL_ROOT,
     SOURCE_STAT_FAIL, GLOBAL_STAT_FAIL, COPY_STAT_FAIL, COPY_REPLACED_PATH,
-    ALIAS_DIFFERENT_INODE, ALIAS_SYMLINK, COPY_DIRECTORY_SYMLINK
+    ALIAS_DIFFERENT_INODE, ALIAS_SYMLINK, COPY_DIRECTORY_SYMLINK,
+    USER_FAIL, USER_INVALID, SERVER_START_FAIL, SERVER_TRANSFER_FAIL, SERVER_STOP_FAIL,
+    SERVER_EARLY_FAIL, SERVER_LATE_FAIL, SERVER_URL_INVALID, SERVER_URL_NULL,
+    HTTP_PATH_REPLACED
 };
 static Mode mode;
 static int modules, moduleProbes, appInitCalls, appTermCalls, bgftInitCalls, bgftTermCalls;
 static int registerCalls, startCalls, progressCalls, existsCalls, stopCalls, unregisterCalls;
-static int jailbreakCalls, restoreCalls, titleCalls;
+static int jailbreakCalls, restoreCalls, titleCalls, sdkCalls, foregroundUserCalls;
+static int storageRegisterCalls, httpRegisterCalls, serverStartCalls, serverStopCalls, sourceCloseCalls;
 static bool jailbroken, nativeStarted;
+static bool forceHttp, serverActive;
+static int32_t forcedSdkVersion;
+static int forcedSdkErrno;
+static FILE* borrowedFile;
+static int borrowedDescriptor = -1;
+enum Event { TASK_STOP, TASK_UNREGISTER, SERVER_STOP, SOURCE_CLOSE, BGFT_TERM, APP_TERM };
+static std::vector<Event> events;
 static std::atomic<bool> block(false), entered(false);
 static std::string registeredPath;
 static std::map<int, std::string> descriptorPaths;
 static int unavailableLstatCalls, unavailablePosixFstatCalls, nativeFstatCalls, noFollowOpens;
+static int globalNamespaceOpens;
 static const int32_t RAW = (int32_t)0x8099ee01U;
 static const int32_t RAW_ENOSYS = (int32_t)0x8002004eU;
 static const uint64_t NATIVE_LENGTH = 5ULL * 1024 * 1024 * 1024;
+static bool httpFallback() { return forceHttp || mode == NO_SDK; }
+static void credentialsExpected() { assert(jailbroken == !httpFallback()); }
 static bool needsCopy(Mode value) {
     return (value >= ALIAS_COPY && value <= BAD_GLOBAL_ROOT) ||
            value == COPY_STAT_FAIL || value == COPY_REPLACED_PATH ||
@@ -69,12 +85,17 @@ extern "C" int32_t peppyInstallModuleLoaded(OrbisSysModuleInternal) {
     return -1;
 }
 extern "C" uint32_t sceSysmoduleLoadModuleInternal(OrbisSysModuleInternal id) {
-    assert(jailbroken);
+    credentialsExpected();
     assert(id == ORBIS_SYSMODULE_INTERNAL_APP_INST_UTIL || id == ORBIS_SYSMODULE_INTERNAL_BGFT);
     ++modules;
     return mode == MODULE_FAIL || mode == LOAD_FAIL_BUT_PRESENT ? (uint32_t)RAW : 0;
 }
-extern "C" int32_t peppyInstallSdkVersion() { return mode == NO_SDK ? -1 : 0x100; }
+extern "C" int32_t peppyInstallSdkVersion() {
+    ++sdkCalls;
+    assert(errno == 0); // Stale errno must not become the SDK diagnostic.
+    errno = forceHttp ? forcedSdkErrno : mode == NO_SDK ? 78 : 0;
+    return forceHttp ? forcedSdkVersion : mode == NO_SDK ? -1 : 0x100;
+}
 extern "C" int32_t peppyInstallJailbreak(PeppyJailbreakBackup* backup) {
     assert(!jailbroken);
     ++jailbreakCalls;
@@ -104,35 +125,45 @@ extern "C" int32_t peppyInstallRestore(PeppyJailbreakBackup* backup) {
     return 0;
 }
 extern "C" int32_t sceAppInstUtilInitialize() {
-    assert(jailbroken); ++appInitCalls; return mode == APP_INIT_FAIL ? RAW : 0;
+    credentialsExpected(); ++appInitCalls; return mode == APP_INIT_FAIL ? RAW : 0;
 }
 extern "C" int32_t sceAppInstUtilTerminate() {
-    assert(jailbroken); ++appTermCalls; return mode == APP_TERM_FAIL ? RAW : 0;
+    credentialsExpected(); ++appTermCalls; events.push_back(APP_TERM);
+    return mode == APP_TERM_FAIL ? RAW : 0;
 }
 extern "C" int32_t sceAppInstUtilGetTitleIdFromPkg(const char* path, char* title, int32_t* isApp) {
-    assert(jailbroken); ++titleCalls;
-    assert(std::string(path).find(systemRoot) == 0);
+    credentialsExpected(); ++titleCalls;
+    if (httpFallback()) assert(std::string(path) == localDirectory + "/apollo.pkg");
+    else assert(std::string(path).find(systemRoot) == 0);
     FILE* file = fopen(path, "rb");
     assert(file); unsigned char magic[4]; assert(fread(magic, 1, 4, file) == 4);
     assert(fclose(file) == 0 && magic[0] == 0x7f && magic[1] == 'C');
+    if (mode == HTTP_PATH_REPLACED) {
+        assert(httpFallback());
+        assert(rename(path, (std::string(path) + ".old").c_str()) == 0);
+        file = fopen(path, "wb"); assert(file);
+        unsigned char replacement[8192] = {};
+        assert(fwrite(replacement, 1, sizeof(replacement), file) == sizeof(replacement));
+        assert(fclose(file) == 0);
+    }
     if (mode == TITLE_FAIL) return RAW;
     strcpy(title, mode == BAD_TITLE ? "invalid" : mode == SELF_APP ? "BREW00001" : "APOL00004");
     *isApp = mode == NON_APP ? 0 : 1;
     return 0;
 }
 extern "C" int32_t sceAppInstUtilAppExists(const char* title, int32_t* exists) {
-    assert(jailbroken && !strcmp(title, "APOL00004"));
+    credentialsExpected(); assert(!strcmp(title, "APOL00004"));
     ++existsCalls;
     if (mode == EXISTS_FAIL || (mode == CONFIRM_FAIL && existsCalls > 1)) return RAW;
     *exists = mode == APP_EXISTS || (nativeStarted && progressCalls >= 3) ? 1 : 0;
     return 0;
 }
 extern "C" bool sceAppInstUtilAppIsInInstalling(const char* id) {
-    assert(jailbroken && !strcmp(id, "UP0001-APOL00004_00-0000000000000000"));
+    credentialsExpected(); assert(!strcmp(id, "UP0001-APOL00004_00-0000000000000000"));
     return mode == DELAY_CONFIRM && progressCalls < 5;
 }
 extern "C" int32_t peppyBgftInit(PeppyBgftInit* init) {
-    assert(jailbroken && init->heap && init->heapSize == 1024 * 1024);
+    credentialsExpected(); assert(init->heap && init->heapSize == 1024 * 1024);
     ++bgftInitCalls;
     return mode == BGFT_INIT_FAIL ? RAW : 0;
 }
@@ -143,7 +174,7 @@ extern "C" int32_t peppyBgftRegister(PeppyBgftParamEx* params, int32_t* task) {
     assert(!strcmp(params->params.playgoScenarioId, "0"));
     assert(!strstr(params->params.contentUrl, "://"));
     registeredPath = params->params.contentUrl;
-    ++registerCalls;
+    ++registerCalls; ++storageRegisterCalls;
     if (mode == REGISTER_FAIL) return RAW;
     if (mode == REGISTER_EXISTS) { *task = 42; return (int32_t)0x80990088U; }
     if (mode == REGISTER_BUSY) return (int32_t)0x80990086U;
@@ -151,14 +182,41 @@ extern "C" int32_t peppyBgftRegister(PeppyBgftParamEx* params, int32_t* task) {
     *task = 17;
     return 0;
 }
+extern "C" int32_t peppyInstallForegroundUser(int32_t* user) {
+    assert(httpFallback() && !jailbroken);
+    ++foregroundUserCalls;
+    if (mode == USER_FAIL) return RAW;
+    *user = mode == USER_INVALID ? -1 : 99;
+    return 0;
+}
+extern "C" int32_t peppyBgftRegisterHttp(PeppyBgftParam* params, int32_t* task) {
+    assert(httpFallback() && !jailbroken && serverActive && borrowedFile);
+    assert(params->userId == 99 && params->entitlementType == 5);
+    assert(params->packageSize == 8192 && params->option == 0x10002);
+    assert(!strcmp(params->id, "UP0001-APOL00004_00-0000000000000000"));
+    assert(!strcmp(params->contentUrl, "http://127.0.0.1:17991/package.pkg"));
+    assert(!strcmp(params->contentName, "Apollo Save Tool"));
+    assert(params->iconPath && !strcmp(params->iconPath, ""));
+    assert(params->packageType && !strcmp(params->packageType, "PS4GD"));
+    assert(params->packageSubType && !strcmp(params->packageSubType, ""));
+    assert(params->playgoScenarioId && !strcmp(params->playgoScenarioId, "0"));
+    registeredPath = params->contentUrl;
+    ++registerCalls; ++httpRegisterCalls;
+    if (mode == REGISTER_FAIL) { *task = 42; return RAW; }
+    if (mode == REGISTER_EXISTS) { *task = 42; return (int32_t)0x80990088U; }
+    if (mode == REGISTER_BUSY) { *task = 42; return (int32_t)0x80990086U; }
+    *task = 17;
+    return 0;
+}
 extern "C" int32_t sceBgftServiceDownloadStartTask(int32_t task) {
-    assert(jailbroken && task == 17); ++startCalls;
+    credentialsExpected(); assert(task == 17); ++startCalls;
     if (mode == START_FAIL) return RAW;
     nativeStarted = true;
     return 0;
 }
 extern "C" int32_t peppyBgftProgress(int32_t task, PeppyBgftProgress* progress) {
-    assert(jailbroken && task == 17); ++progressCalls;
+    credentialsExpected(); assert(task == 17); ++progressCalls;
+    if (httpFallback()) assert(serverActive && borrowedFile);
     if (mode == BLOCK_PROGRESS || mode == STOP_FAIL || mode == UNREGISTER_FAIL) {
         entered.store(true);
         while (block.load()) usleep(20);
@@ -177,17 +235,65 @@ extern "C" int32_t peppyBgftProgress(int32_t task, PeppyBgftProgress* progress) 
     return 0;
 }
 extern "C" int32_t sceBgftServiceDownloadStopTask(int32_t task) {
-    assert(jailbroken && task == 17); ++stopCalls; return mode == STOP_FAIL ? RAW : 0;
+    credentialsExpected(); assert(task == 17);
+    if (httpFallback()) assert(serverActive && borrowedFile);
+    ++stopCalls; events.push_back(TASK_STOP); return mode == STOP_FAIL ? RAW : 0;
 }
 extern "C" int32_t sceBgftServiceIntDownloadUnregisterTask(int32_t task) {
-    assert(jailbroken && task == 17); ++unregisterCalls; return mode == UNREGISTER_FAIL ? RAW : 0;
+    credentialsExpected(); assert(task == 17);
+    if (httpFallback()) assert(serverActive && borrowedFile);
+    ++unregisterCalls; events.push_back(TASK_UNREGISTER);
+    return mode == UNREGISTER_FAIL ? RAW : 0;
 }
 extern "C" int32_t sceBgftServiceIntTerm() {
-    assert(jailbroken); ++bgftTermCalls; return mode == BGFT_TERM_FAIL ? RAW : 0;
+    credentialsExpected(); ++bgftTermCalls; events.push_back(BGFT_TERM);
+    return mode == BGFT_TERM_FAIL ? RAW : 0;
+}
+PkgServer::PkgServer() : file_(0), descriptor_(-1), active_(false) {}
+PkgServer::~PkgServer() { assert(!active_ && !file_); }
+int32_t PkgServer::start(FILE* file, uint64_t size) {
+    assert(httpFallback() && !active_ && file && size == 8192);
+    assert(nativeFstatCalls > 0);
+    ++serverStartCalls;
+    file_ = borrowedFile = file;
+    descriptor_ = borrowedDescriptor = fileno(file);
+    assert(descriptorPaths[descriptor_] == localDirectory + "/apollo.pkg");
+    unsigned char magic[4];
+    assert(pread(descriptor_, magic, sizeof(magic), 0) == (ssize_t)sizeof(magic));
+    assert(magic[0] == 0x7f && magic[1] == 'C' && magic[2] == 'N' && magic[3] == 'T');
+    if (mode == SERVER_START_FAIL) return RAW;
+    active_ = serverActive = true;
+    return 0;
+}
+const char* PkgServer::url() const {
+    if (mode == SERVER_URL_INVALID) return "http://example.org/package.pkg";
+    if (mode == SERVER_URL_NULL) return 0;
+    return "http://127.0.0.1:17991/package.pkg";
+}
+int32_t PkgServer::errorCode() const {
+    if (active_) {
+        assert(file_ == borrowedFile && fileno(file_) == descriptor_);
+        assert(fcntl(descriptor_, F_GETFD) >= 0);
+    }
+    if (mode == SERVER_EARLY_FAIL && active_) return RAW;
+    if (mode == SERVER_TRANSFER_FAIL && nativeStarted && progressCalls >= 1) return RAW;
+    if (mode == SERVER_LATE_FAIL && nativeStarted && progressCalls >= 3) return RAW;
+    return 0;
+}
+int32_t PkgServer::stop() {
+    if (!file_) return 0;
+    assert(file_ == borrowedFile && fileno(file_) == descriptor_);
+    assert(fcntl(descriptor_, F_GETFD) >= 0);
+    // stop() guarantees quiescence even when reporting a shutdown error.
+    ++serverStopCalls; events.push_back(SERVER_STOP);
+    active_ = serverActive = false;
+    file_ = 0; descriptor_ = -1;
+    return mode == SERVER_STOP_FAIL ? RAW : 0;
 }
 extern "C" ssize_t __real_write(int, const void*, size_t);
 extern "C" int __real_fsync(int);
 extern "C" int __real_close(int);
+extern "C" int __real_fclose(FILE*);
 extern "C" int __real_rename(const char*, const char*);
 extern "C" int __real_open(const char*, int, ...);
 extern "C" int __real_fstat(int, struct stat*);
@@ -200,6 +306,7 @@ extern "C" int __wrap_lstat(const char*, struct stat*) {
 extern "C" int __wrap_open(const char* path, int flags, ...) {
     assert(flags & O_NOFOLLOW);
     ++noFollowOpens;
+    if (!systemRoot.empty() && std::string(path).find(systemRoot) == 0) ++globalNamespaceOpens;
     mode_t permissions = 0;
     if (flags & O_CREAT) {
         va_list arguments; va_start(arguments, flags);
@@ -284,6 +391,7 @@ extern "C" int __wrap_fsync(int fd) {
     return __real_fsync(fd);
 }
 extern "C" int __wrap_close(int fd) {
+    if (fd == borrowedDescriptor) assert(!serverActive);
     int flags = fcntl(fd, F_GETFL);
     std::string path = descriptorPaths[fd];
     int rc = __real_close(fd);
@@ -301,6 +409,16 @@ extern "C" int __wrap_close(int fd) {
     }
     return rc;
 }
+extern "C" int __wrap_fclose(FILE* file) {
+    if (file == borrowedFile) {
+        assert(!serverActive);
+        assert(fileno(file) == borrowedDescriptor && fcntl(borrowedDescriptor, F_GETFD) >= 0);
+        ++sourceCloseCalls; events.push_back(SOURCE_CLOSE);
+        descriptorPaths.erase(borrowedDescriptor);
+        borrowedFile = 0; borrowedDescriptor = -1;
+    }
+    return __real_fclose(file);
+}
 extern "C" int __wrap_rename(const char* from, const char* to) {
     if (mode == COPY_RENAME_FAIL && jailbroken && strstr(from, ".part")) { errno = EIO; return -1; }
     return __real_rename(from, to);
@@ -312,9 +430,14 @@ static void reset(Mode next, bool alias = true) {
     modules = moduleProbes = appInitCalls = appTermCalls = bgftInitCalls = bgftTermCalls = 0;
     registerCalls = startCalls = progressCalls = existsCalls = stopCalls = unregisterCalls = 0;
     jailbreakCalls = restoreCalls = titleCalls = 0;
+    sdkCalls = foregroundUserCalls = storageRegisterCalls = httpRegisterCalls = 0;
+    serverStartCalls = serverStopCalls = sourceCloseCalls = 0;
     jailbroken = nativeStarted = false;
+    assert(!serverActive && !borrowedFile);
+    forceHttp = false; forcedSdkVersion = -1; forcedSdkErrno = 78;
+    borrowedDescriptor = -1; events.clear();
     registeredPath.clear();
-    descriptorPaths.clear(); noFollowOpens = nativeFstatCalls = 0;
+    descriptorPaths.clear(); noFollowOpens = nativeFstatCalls = globalNamespaceOpens = 0;
     block.store(next == BLOCK_PROGRESS || next == STOP_FAIL || next == UNREGISTER_FAIL || next == COPY_CANCEL);
     entered.store(false);
     // Each fault scenario emulates a fresh application process.
@@ -366,6 +489,42 @@ static InstallSnapshot run(Mode next) {
     reset(next, !needsCopy(next));
     assert(startInstall(spec())); return waitDone();
 }
+static void prepareHttp(Mode next, int32_t version = -1, int sdkError = 78) {
+    reset(next, false);
+    forceHttp = true; forcedSdkVersion = version; forcedSdkErrno = sdkError;
+    errno = EINVAL;
+}
+static InstallSnapshot runHttp(Mode next, int32_t version = -1, int sdkError = 78) {
+    prepareHttp(next, version, sdkError);
+    assert(startInstall(spec()));
+    InstallSnapshot value = waitDone();
+    assert(value.mode == INSTALL_MODE_HTTP_LOCAL);
+    assert(value.sdkVersion == (uint32_t)version && value.sdkErrno == sdkError);
+    assert(sdkCalls == 1 && !jailbreakCalls && !restoreCalls && !jailbroken);
+    assert(!storageRegisterCalls && !globalNamespaceOpens);
+    assert(access(copyDirectory.c_str(), F_OK) != 0);
+    assert(!serverActive && !borrowedFile);
+    assert(access((localDirectory + "/apollo.pkg").c_str(), F_OK) == 0);
+    return value;
+}
+static size_t eventIndex(Event event) {
+    for (size_t i = 0; i < events.size(); ++i) if (events[i] == event) return i;
+    assert(!"expected lifecycle event absent"); return events.size();
+}
+static void serverClosedAfterStop() {
+    assert(serverStartCalls == 1 && serverStopCalls == 1 && sourceCloseCalls == 1);
+    assert(eventIndex(SERVER_STOP) < eventIndex(SOURCE_CLOSE));
+}
+static void failedHttp(Mode next, int category, int where, int32_t native) {
+    InstallSnapshot value = runHttp(next);
+    if (value.state != INSTALL_FAILED || value.errorCode != category ||
+        value.stage != where || value.nativeCode != native)
+        fprintf(stderr, "HTTP mode=%d state=%d category=%d stage=%d native=%d (expected %d/%d/%d)\n",
+                next, value.state, value.errorCode, value.stage, value.nativeCode,
+                category, where, native);
+    assert(value.state == INSTALL_FAILED && value.errorCode == category);
+    assert(value.stage == where && value.nativeCode == native);
+}
 static void failed(Mode next, int category, int stageExpected, int32_t native) {
     InstallSnapshot value = run(next);
     if (value.state != INSTALL_FAILED || value.errorCode != category ||
@@ -378,6 +537,93 @@ static void failed(Mode next, int category, int stageExpected, int32_t native) {
     assert(restoreCalls == (jailbreakCalls && next != JAILBREAK_FAIL ? 1 : 0));
     if (next != RESTORE_FAIL) assert(!jailbroken);
     assert(access((localDirectory + "/apollo.pkg").c_str(), F_OK) == 0);
+}
+static void httpFallbackTests() {
+    InstallSnapshot value;
+    for (int sdkError : { 78, 1, 0 }) {
+        value = runHttp(NORMAL, -1, sdkError);
+        assert(value.state == INSTALL_DONE && value.percent == 100 && value.errorCode == 0);
+        assert(httpRegisterCalls == 1 && foregroundUserCalls == 1 && titleCalls == 1);
+        assert(progressCalls == 3 && !stopCalls && !unregisterCalls);
+        serverClosedAfterStop();
+    }
+    value = runHttp(NORMAL, 0x200, 0);
+    assert(value.state == INSTALL_DONE && httpRegisterCalls == 1);
+    serverClosedAfterStop();
+    value = runHttp(DELAY_CONFIRM);
+    assert(value.state == INSTALL_DONE && progressCalls == 5);
+    serverClosedAfterStop();
+    failedHttp(MODULE_FAIL, INSTALL_ERROR_MODULE, INSTALL_STAGE_MODULE_APP, RAW);
+    assert(!appInitCalls && !serverStartCalls);
+    failedHttp(APP_INIT_FAIL, INSTALL_ERROR_SERVICE, INSTALL_STAGE_APP_INIT, RAW);
+    assert(!serverStartCalls && !registerCalls);
+    failedHttp(BGFT_INIT_FAIL, INSTALL_ERROR_SERVICE, INSTALL_STAGE_BGFT_INIT, RAW);
+    assert(!serverStartCalls && !registerCalls);
+    failedHttp(USER_FAIL, INSTALL_ERROR_USER, INSTALL_STAGE_USER, RAW);
+    assert(!bgftInitCalls && !serverStartCalls);
+    failedHttp(USER_INVALID, INSTALL_ERROR_USER, INSTALL_STAGE_USER, EINVAL);
+    assert(!bgftInitCalls && !serverStartCalls);
+    failedHttp(HTTP_PATH_REPLACED, INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, EINVAL);
+    assert(!bgftInitCalls && !serverStartCalls);
+    failedHttp(APP_EXISTS, INSTALL_ERROR_ALREADY_INSTALLED, INSTALL_STAGE_EXISTS, 0);
+    assert(!foregroundUserCalls && !bgftInitCalls && !serverStartCalls && !registerCalls);
+    failedHttp(SELF_APP, INSTALL_ERROR_SELF, INSTALL_STAGE_TITLE, 0);
+    assert(!serverStartCalls && !registerCalls);
+    failedHttp(SERVER_START_FAIL, INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_START, RAW);
+    serverClosedAfterStop(); assert(!registerCalls && !stopCalls && !unregisterCalls);
+    failedHttp(SERVER_EARLY_FAIL, INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_TRANSFER, RAW);
+    serverClosedAfterStop(); assert(!registerCalls && !stopCalls && !unregisterCalls);
+    for (Mode next : { SERVER_URL_INVALID, SERVER_URL_NULL }) {
+        failedHttp(next, INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_START, EINVAL);
+        serverClosedAfterStop(); assert(!registerCalls && !stopCalls && !unregisterCalls);
+    }
+    failedHttp(REGISTER_FAIL, INSTALL_ERROR_TASK, INSTALL_STAGE_REGISTER, RAW);
+    serverClosedAfterStop();
+    assert(!stopCalls && !unregisterCalls && installSnapshot().taskId == -1);
+    failedHttp(REGISTER_EXISTS, INSTALL_ERROR_ALREADY_INSTALLED, INSTALL_STAGE_REGISTER,
+               (int32_t)0x80990088U);
+    serverClosedAfterStop();
+    assert(!stopCalls && !unregisterCalls && installSnapshot().taskId == -1);
+    failedHttp(REGISTER_BUSY, INSTALL_ERROR_BUSY, INSTALL_STAGE_REGISTER, (int32_t)0x80990086U);
+    serverClosedAfterStop(); assert(!stopCalls && !unregisterCalls);
+    for (Mode next : { SERVER_TRANSFER_FAIL, SERVER_LATE_FAIL }) {
+        failedHttp(next, INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_TRANSFER, RAW);
+        assert(installSnapshot().percent < 100 && stopCalls == 1 && unregisterCalls == 1);
+        serverClosedAfterStop();
+        assert(eventIndex(TASK_STOP) < eventIndex(TASK_UNREGISTER));
+        assert(eventIndex(TASK_UNREGISTER) < eventIndex(SERVER_STOP));
+    }
+    failedHttp(START_FAIL, INSTALL_ERROR_TASK, INSTALL_STAGE_START, RAW);
+    serverClosedAfterStop();
+    assert(stopCalls == 1 && unregisterCalls == 1);
+    assert(eventIndex(TASK_UNREGISTER) < eventIndex(SERVER_STOP));
+    failedHttp(PROGRESS_API_FAIL, INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS, RAW);
+    serverClosedAfterStop();
+    failedHttp(PROGRESS_RESULT_FAIL, INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS, RAW);
+    serverClosedAfterStop();
+    failedHttp(CONFIRM_FAIL, INSTALL_ERROR_SERVICE, INSTALL_STAGE_CONFIRM, RAW);
+    serverClosedAfterStop();
+    failedHttp(SERVER_STOP_FAIL, INSTALL_ERROR_CLEANUP, INSTALL_STAGE_SERVER_STOP, RAW);
+    serverClosedAfterStop();
+    assert(installSnapshot().cleanupCode == RAW && !startInstall(spec()));
+    for (Mode next : { BLOCK_PROGRESS, STOP_FAIL, UNREGISTER_FAIL }) {
+        prepareHttp(next); assert(startInstall(spec())); waitEntered();
+        uint32_t generation = installSnapshot().generation;
+        assert(!startInstall(spec()) && installSnapshot().generation == generation);
+        cancelInstall(); assert(installSnapshot().state == INSTALL_RUNNING);
+        block.store(false); value = waitDone();
+        assert(value.mode == INSTALL_MODE_HTTP_LOCAL && value.sdkVersion == 0xffffffffU && value.sdkErrno == 78);
+        assert(!jailbreakCalls && !restoreCalls && !globalNamespaceOpens);
+        assert(stopCalls == 1 && unregisterCalls == 1);
+        serverClosedAfterStop();
+        assert(eventIndex(TASK_STOP) < eventIndex(TASK_UNREGISTER));
+        assert(eventIndex(TASK_UNREGISTER) < eventIndex(SERVER_STOP));
+        if (next == BLOCK_PROGRESS) assert(value.state == INSTALL_CANCELLED);
+        else {
+            assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_CLEANUP);
+            assert(value.cleanupCode == RAW && !startInstall(spec()));
+        }
+    }
 }
 int main() {
     struct stat unavailable;
@@ -418,6 +664,7 @@ int main() {
     assert(__real_close(nativeDescriptor) == 0);
     InstallSnapshot value = run(NORMAL);
     assert(value.state == INSTALL_DONE && value.percent == 100 && value.errorCode == 0);
+    assert(value.mode == INSTALL_MODE_STORAGE && value.sdkVersion == 0x100 && value.sdkErrno == 0);
     assert(value.received == NATIVE_LENGTH && value.total == NATIVE_LENGTH);
     assert(value.progressBits == 0x10203040 && value.localCopyPercent == 100);
     assert(jailbreakCalls == 1 && restoreCalls == 1 && !jailbroken);
@@ -428,7 +675,9 @@ int main() {
     nativeStarted = false; progressCalls = existsCalls = 0;
     assert(startInstall(spec())); value = waitDone(); assert(value.state == INSTALL_DONE);
     value = run(DELAY_CONFIRM); assert(value.state == INSTALL_DONE && progressCalls == 5);
-    failed(NO_SDK, INSTALL_ERROR_SDK, INSTALL_STAGE_SDK, -1);
+    value = run(NO_SDK); assert(value.state == INSTALL_DONE && !jailbreakCalls && !restoreCalls);
+    assert(value.mode == INSTALL_MODE_HTTP_LOCAL && value.sdkVersion == 0xffffffffU && value.sdkErrno == 78);
+    serverClosedAfterStop();
     failed(JAILBREAK_FAIL, INSTALL_ERROR_JAILBREAK, INSTALL_STAGE_JAILBREAK, RAW);
     failed(RESTORE_FAIL, INSTALL_ERROR_RESTORE, INSTALL_STAGE_RESTORE, RAW);
     uint32_t previousGeneration = installSnapshot().generation;
@@ -545,5 +794,7 @@ int main() {
            (value.nativeCode == ELOOP || value.nativeCode == ENOTDIR) && !jailbreakCalls);
     assert(noFollowOpens > 0 && nativeFstatCalls > 0 &&
            unavailableLstatCalls == 0 && unavailablePosixFstatCalls == 0);
-    puts("All native installer ABI, privileges, local path/copy, progress, preservation, errors and cancellation tests passed.");
+    httpFallbackTests();
+    assert(unavailableLstatCalls == 0 && unavailablePosixFstatCalls == 0);
+    puts("All native installer ABI, SDK/storage and HTTP fallback, lifetime, progress, preservation, errors and cancellation tests passed.");
 }

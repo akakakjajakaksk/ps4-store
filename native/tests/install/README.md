@@ -5,7 +5,7 @@ Run from `native/`:
 ```sh
 g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
   -Itests/install/stubs tests/install/install_test.cpp \
-  -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=close -Wl,--wrap=rename \
+  -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=close -Wl,--wrap=fclose -Wl,--wrap=rename \
   -Wl,--wrap=lstat -Wl,--wrap=open -Wl,--wrap=__open_2 -Wl,--wrap=fstat \
   -o /tmp/peppy-install-tests
 /tmp/peppy-install-tests
@@ -20,6 +20,30 @@ success until BGFT completion and installed availability; cancellation and
 native cleanup; unsafe-context retry rejection; repeated clean installations;
 detached-thread startup failures; request generations; and failed registration
 outputs that refer to an unowned existing task. Console behavior remains unverified.
+
+The HTTP fallback cases replace `PkgServer` with a transport mock via
+`PEPPY_PKG_SERVER_HEADER`. They cover unavailable SDK probes with errno 78, 1,
+or 0, an unknown SDK version, and unchanged credentials with no global-path
+copy. The suite checks the foreground user and native HTTP registration
+parameters; preserves AppInstUtil/BGFT/registration errors; rejects a changed
+source inode and invalid server URLs; observes startup, transfer and shutdown
+errors; and requires native completion plus installed-app confirmation before
+success. A failed registration may return another task's ID without permitting
+stop/unregister calls against it. Cancellation checks the order of owned task
+stop, unregister, quiescent server shutdown and source `fclose`, including
+cleanup failures. The source remains readable until server shutdown even when
+shutdown reports an error. The real server's socket/HTTP behavior is tested
+separately in its own suite.
+
+HTTP registration uses the native `sceBgftServiceIntDownloadRegisterTask`
+export with a 104-byte parameter structure and 64-bit package size at offset
+96. The checked foreground-user query returns a signed native status.
+[ezRemote's loopback installer](https://github.com/cy33hc/ps4-ezremote-client/blob/master/source/installer.cpp#L933)
+provides precedent for a direct PKG URL; a JSON manifest is not required for
+that flow. SDK version `0x100` retains scoped GoldHEN elevation and storage
+registration. An unavailable or unknown SDK selects HTTP with unchanged
+credentials; a failed jailbreak attempt remains a hard failure. This path
+adds no firmware-specific kernel writes or assumed credential offsets.
 
 All installer cases run with `lstat` forced to `ENOSYS`, matching
 [OpenOrbis musl's PS4 fstatat stub](https://github.com/OpenOrbis/musl/blob/master/src/stat/fstatat.c).

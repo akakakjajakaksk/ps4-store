@@ -10,7 +10,7 @@ TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
 INTDIR := build
 
-CPPFILES := boot_test.cpp downloads.cpp install.cpp goldhen_bridge.cpp music.cpp
+CPPFILES := boot_test.cpp downloads.cpp install.cpp pkg_server.cpp goldhen_bridge.cpp music.cpp
 OBJS := $(CPPFILES:%.cpp=$(INTDIR)/%.o)
 MUSIC_ASSETS := assets/music/fight.wav assets/music/acendaofarol.wav
 
@@ -70,7 +70,8 @@ $(MUSIC_ASSETS): ../fight-ps4.mp3 ../acendaofarol-ps4.mp3 scripts/prepare-music.
 
 $(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h downloads.h install.h music.h
 $(INTDIR)/downloads.o: downloads.h
-$(INTDIR)/install.o: install.h
+$(INTDIR)/install.o: install.h pkg_server.h
+$(INTDIR)/pkg_server.o: pkg_server.h
 $(INTDIR)/music.o: music.h
 $(INTDIR)/goldhen_bridge.o: third_party/goldhen/GoldHEN.h
 

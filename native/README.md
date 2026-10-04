@@ -30,11 +30,20 @@ O instalador abre os arquivos com `O_NOFOLLOW` e verifica o descritor com
 da biblioteca musl para PS4 não está implementada
 e retornava `ENOSYS` (`0x4E`) antes de iniciar a instalação.
 
-A integração exige o SDK público do GoldHEN, versão 1.00. A loja consulta essa
-versão antes de usar os comandos oficiais de permissões e restaura o contexto
-original ao terminar. Ela não substitui aplicativos já instalados nem a si mesma.
-Se o SDK ou o serviço nativo não estiver disponível, mostra o código da falha
-e mantém o PKG. Uma falha de encerramento exige reabrir a loja antes de continuar.
+A integração consulta o SDK público do GoldHEN, registrando o retorno e o
+`errno` imediatamente. Com a interface 1.00 disponível, usa os comandos
+oficiais de permissões para instalar por arquivo global e restaura o contexto
+original ao terminar. Se essa interface não estiver disponível, tenta o
+instalador nativo com as permissões atuais, por HTTP em `127.0.0.1`.
+Esse servidor temporário fornece o PKG já validado pelo descritor aberto,
+com suporte a intervalos de bytes. Ele não aceita conexões de outros aparelhos
+e termina antes de fechar o arquivo. Não é necessário baixar o PKG novamente.
+
+O caminho alternativo não depende de offsets de kernel nem altera permissões.
+O serviço nativo ainda pode recusar a instalação; nesse caso a loja mostra a
+etapa e o código real e mantém o PKG. Ela não substitui aplicativos já
+instalados nem a si mesma. Uma falha de encerramento exige reabrir a loja
+antes de continuar.
 O log de instalação fica em `/data/peppy-store/downloads/install.log`.
 
 A conexão HTTPS valida os certificados e pode falhar caso o relógio,
@@ -99,13 +108,15 @@ g++ -std=c++11 -O2 native/scripts/preview-ui.cpp -o /tmp/peppy-preview
 O programa gera arquivos PPM para biblioteca e detalhes de todos os itens
 e categorias, além dos estados de download, usando o renderizador nativo.
 
-Os testes de transferência, instalação e música em `tests/downloads/`,
-`tests/install/` e `tests/music/` também são executados na workflow antes da
+Os testes de transferência, instalação, entrega local e música em `tests/downloads/`,
+`tests/install/`, `tests/pkg_server/` e `tests/music/` também são executados na workflow antes da
 compilação nativa. Os mocks verificam controle e falhas; instalação e áudio
 reais ainda precisam de teste no PS4 com o GoldHEN ativo.
 
 Fontes da integração: [GoldHEN SDK](https://github.com/GoldHEN/GoldHEN_Plugins_SDK),
 [ABI BGFT](https://github.com/flatz/ps4_stub_lib_maker_v2/blob/master/include/bgft.h)
-e instalação local em [ezRemote](https://github.com/cy33hc/ps4-ezremote-client).
+e instalação por HTTP local em
+[ezRemote](https://github.com/cy33hc/ps4-ezremote-client/blob/master/source/installer.cpp#L933),
+com [resposta binária e intervalos](https://github.com/cy33hc/ps4-ezremote-client/blob/master/source/server/http_server.cpp#L1046).
 
 O funcionamento no console depende de teste real no PS4/GoldHEN.

@@ -474,6 +474,8 @@ static const char* installErrorText(int code) {
     case INSTALL_ERROR_GLOBAL_PATH: return "O PS4 não encontrou o PKG no caminho de instalação.";
     case INSTALL_ERROR_COPY: return "Não foi possível preparar o PKG para a instalação.";
     case INSTALL_ERROR_RESTORE: return "Não foi possível encerrar a preparação de instalação.";
+    case INSTALL_ERROR_SERVER: return "Não foi possível entregar o PKG ao instalador.";
+    case INSTALL_ERROR_USER: return "Não foi possível identificar o usuário do PS4 para instalar.";
     default: return "A instalação não foi concluída.";
     }
 }
@@ -637,7 +639,13 @@ static void drawDetails(uint32_t* p, int selected) {
         snprintf(diagnostic, sizeof(diagnostic), "%s | 0x%08X | tarefa %d | limpeza 0x%08X",
                  installStageName(install.stage), (unsigned)install.nativeCode,
                  install.taskId, (unsigned)install.cleanupCode);
-        textElided(p, 708, 926, diagnostic, FONT_SMALL, BLUE, 1140);
+        textElided(p, 708, 918, diagnostic, FONT_SMALL, BLUE, 1140);
+        if (install.mode != INSTALL_MODE_NONE) {
+            snprintf(diagnostic, sizeof(diagnostic), "%s | SDK 0x%08X | errno %d",
+                     install.mode == INSTALL_MODE_HTTP_LOCAL ? "HTTP local" : "Arquivo global",
+                     (unsigned)install.sdkVersion, install.sdkErrno);
+            textElided(p, 708, 947, diagnostic, FONT_SMALL, MUTED, 1140);
+        }
     } else if (mine && status.state == FAILED && !downloadedBytes[index]) {
         char diagnostic[160];
         int used = snprintf(diagnostic, sizeof(diagnostic), "%s | 0x%08X | rede %d",
@@ -729,7 +737,8 @@ int main(void){
       install.errorCode!=previousInstall.errorCode || install.nativeCode!=previousInstall.nativeCode ||
       install.preparingPercent!=previousInstall.preparingPercent || install.localCopyPercent!=previousInstall.localCopyPercent ||
       install.cleanupCode!=previousInstall.cleanupCode || install.cleanupStage!=previousInstall.cleanupStage ||
-      install.generation!=previousInstall.generation) changed=true;
+      install.generation!=previousInstall.generation || install.mode!=previousInstall.mode ||
+      install.sdkVersion!=previousInstall.sdkVersion || install.sdkErrno!=previousInstall.sdkErrno) changed=true;
    previousInstall=install;
    MusicSnapshot music=musicSnapshot();
    if(music.state!=previousMusic.state || music.track!=previousMusic.track || music.volume!=previousMusic.volume ||
