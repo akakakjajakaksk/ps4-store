@@ -117,7 +117,7 @@ extern "C" int32_t peppyInstallRestore(PeppyJailbreakBackup*) __asm__("sys_sdk_u
 namespace {
 const size_t NAME_CAP = 96, TITLE_CAP = 256, PATH_CAP = 512;
 const uint64_t MAX_PACKAGE_BYTES = 4ULL * 1024 * 1024 * 1024;
-const size_t HEADER_BYTES = 0x438, CONTENT_ID_BYTES = 36;
+const size_t HEADER_BYTES = 0x438, CONTENT_ID_OFFSET = 0x30, CONTENT_ID_BYTES = 36;
 const size_t BGFT_HEAP_BYTES = 1024 * 1024;
 const unsigned POLL_US = 250000;
 const unsigned MAX_POLLS = 30 * 60 * 1000000U / POLL_US;
@@ -397,7 +397,7 @@ int runInstall() {
     if (memcmp(header, magic, sizeof(magic)))
         return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
     char contentId[CONTENT_ID_BYTES + 1];
-    memcpy(contentId, header + 0x40, CONTENT_ID_BYTES);
+    memcpy(contentId, header + CONTENT_ID_OFFSET, CONTENT_ID_BYTES);
     contentId[CONTENT_ID_BYTES] = 0;
     for (size_t i = 0; i < CONTENT_ID_BYTES; ++i) {
         char c = contentId[i];
