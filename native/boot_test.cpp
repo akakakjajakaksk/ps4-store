@@ -126,7 +126,7 @@ int main(void){
    prev=now;
    if(changed){
     front=1-front;
-    drawStore(fb[front],selected);
+    drawStore(fb[front],selected,(pad>=0)?1:0);
     sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
    }
   }
