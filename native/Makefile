@@ -3,7 +3,7 @@ VERSION := 01.00
 TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
-LIBS := -lc -lkernel -lc++
+LIBS := -lc -lkernel -lSceVideoOut -lc++
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
