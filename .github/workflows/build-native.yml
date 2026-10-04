@@ -92,6 +92,28 @@ jobs:
           test -f native/IV0000-BREW00001_00-ORBISSTORE000001.pkg
           ls -lh native/IV0000-BREW00001_00-ORBISSTORE000001.pkg
 
+      - name: Validate generated PKG
+        run: |
+          rm -rf native/pkg-check
+          mkdir -p native/pkg-check
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/native \
+            -e DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
+            ubuntu:20.04 bash -lc '
+              apt-get update &&
+              DEBIAN_FRONTEND=noninteractive apt-get install -y libssl1.1 &&
+              chmod +x "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" &&
+              "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" pkg_extract IV0000-BREW00001_00-ORBISSTORE000001.pkg pkg-check
+            '
+          find native/pkg-check -maxdepth 4 -type f -printf "%p %s bytes\\n" | sort
+          test -s native/pkg-check/eboot.bin
+          test -s native/pkg-check/sce_sys/param.sfo
+          test -s native/pkg-check/sce_sys/about/right.sprx
+          cmp native/eboot.bin native/pkg-check/eboot.bin
+          cmp native/sce_sys/param.sfo native/pkg-check/sce_sys/param.sfo
+          sha256sum native/IV0000-BREW00001_00-ORBISSTORE000001.pkg native/eboot.bin native/pkg-check/eboot.bin
+
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
         with:
