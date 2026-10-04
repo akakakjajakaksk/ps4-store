@@ -14,13 +14,30 @@
 #include <orbis/Bgft.h>
 
 #if defined(__FreeBSD__) || defined(PS4)
-// These are the PS4 musl/libkernel ABI, not the host's Linux open flags/stat.
-// The dedicated PS4 fstat wrapper forwards to libkernel's _fstat export.
+// These are PS4 open flags, rather than the host's Linux values.
 static_assert(O_NOFOLLOW == 0x100 && O_DIRECTORY == 0x20000, "PS4 open flags ABI");
-static_assert(sizeof(struct stat) == 120 && offsetof(struct stat, st_mode) == 8 &&
-              offsetof(struct stat, st_ino) == 4 && offsetof(struct stat, st_size) == 72,
-              "PS4 fstat ABI");
 #endif
+
+// The packaged musl stat uses a 32-bit mode_t, placing st_size at offset 80.
+// The PS4 kernel writes a 16-bit mode and st_size at offset 72. Keep its layout
+// explicit; passing the incompatible POSIX struct would read the block count
+// as the file size. The native export uses this 120-byte FreeBSD layout.
+struct PeppyFileInfo {
+    uint32_t st_dev, st_ino;
+    uint16_t st_mode, st_nlink;
+    uint32_t st_uid, st_gid, st_rdev;
+    int64_t accessTime[2], modificationTime[2], changeTime[2];
+    int64_t st_size, st_blocks;
+    int32_t st_blksize;
+    uint32_t st_flags, st_gen;
+    int32_t st_lspare;
+    int64_t birthTime[2];
+};
+static_assert(sizeof(PeppyFileInfo) == 120 && offsetof(PeppyFileInfo, st_dev) == 0 &&
+              offsetof(PeppyFileInfo, st_ino) == 4 && offsetof(PeppyFileInfo, st_mode) == 8 &&
+              offsetof(PeppyFileInfo, st_size) == 72 && offsetof(PeppyFileInfo, st_blocks) == 80,
+              "PS4 native file metadata ABI");
+extern "C" int32_t peppyInstallFstat(int32_t, PeppyFileInfo*) __asm__("sceKernelFstat");
 
 // OpenOrbis 0.5.4 BGFT counters/packageSize are uint32_t. The native ABI
 // uses unsigned long (64 bits on PS4), documented by flatz and Itemzflow:
@@ -222,30 +239,30 @@ struct InstallResources {
 
 // OpenOrbis musl lstat calls fstatat, whose PS4 implementation always returns
 // ENOSYS. Atomically refuse symlinks with O_NOFOLLOW, then inspect the opened
-// object with PS4's implemented fstat; never substitute a following stat call.
+// object with sceKernelFstat's native layout; never substitute a following stat call.
 // https://github.com/OpenOrbis/musl/blob/master/src/stat/fstatat.c
 // https://github.com/OpenOrbis/musl/blob/master/arch/ps4/bits/fcntl.h
-int pathInfo(const char* path, bool directory, struct stat& info) {
+int pathInfo(const char* path, bool directory, PeppyFileInfo& info) {
     int flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK;
     if (directory) flags |= O_DIRECTORY;
     int descriptor = open(path, flags);
     if (descriptor < 0) return errno;
-    int error = fstat(descriptor, &info) ? errno : 0;
+    int error = peppyInstallFstat(descriptor, &info);
     if (close(descriptor) && !error) error = errno;
     if (!error && directory && !S_ISDIR(info.st_mode)) error = ENOTDIR;
     return error;
 }
 int checkedDirectory(const char* path) {
     if (mkdir(path, 0755) && errno != EEXIST) return errno;
-    struct stat info;
+    PeppyFileInfo info;
     return pathInfo(path, true, info);
 }
-bool sameFile(const struct stat& a, const struct stat& b) {
+bool sameFile(const PeppyFileInfo& a, const PeppyFileInfo& b) {
     return S_ISREG(b.st_mode) && a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size;
 }
-int systemFile(InstallResources& owned, const struct stat& source, char* destination, size_t capacity) {
+int systemFile(InstallResources& owned, const PeppyFileInfo& source, char* destination, size_t capacity) {
     stage(INSTALL_STAGE_GLOBAL_PATH);
-    struct stat global;
+    PeppyFileInfo global;
     int aliasError = pathInfo(destination, false, global);
     if (!aliasError && sameFile(source, global)) return 0;
     // Only a missing path, a different inode/type or a refused symlink can
@@ -272,8 +289,8 @@ int systemFile(InstallResources& owned, const struct stat& source, char* destina
         owned.partialPath[0] = 0; // Do not remove a preexisting file we never owned.
         return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
     }
-    struct stat created, copiedInfo;
-    int error = fstat(output, &created) ? errno : 0;
+    PeppyFileInfo created, copiedInfo;
+    int error = peppyInstallFstat(output, &created);
     if (!error && !S_ISREG(created.st_mode)) error = EINVAL;
     if (!error && fseek(owned.file, 0, SEEK_SET)) error = errno ? errno : EIO;
     unsigned char buffer[64 * 1024];
@@ -297,14 +314,15 @@ int systemFile(InstallResources& owned, const struct stat& source, char* destina
         }
     }
     if (!error && !cancelled() && fsync(output)) error = errno;
-    if (!error && !cancelled() && fstat(output, &copiedInfo)) error = errno;
+    if (!error && !cancelled()) error = peppyInstallFstat(output, &copiedInfo);
     if (!error && !cancelled() && (!S_ISREG(copiedInfo.st_mode) ||
         created.st_dev != copiedInfo.st_dev || created.st_ino != copiedInfo.st_ino ||
         copiedInfo.st_size != source.st_size)) error = EINVAL;
     if (close(output) && !error) error = errno;
     if (error) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, error);
     if (cancelled()) return 0;
-    if (fstat(fileno(owned.file), &global)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, errno);
+    int metadataError = peppyInstallFstat(fileno(owned.file), &global);
+    if (metadataError) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, metadataError);
     if (!sameFile(source, global)) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EINVAL);
     error = pathInfo(owned.partialPath, false, global);
     if (error) return fail(INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, error);
@@ -328,12 +346,12 @@ int runInstall() {
         systemLength < 0 || (size_t)systemLength >= sizeof(systemPath))
         return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, ENAMETOOLONG);
     stage(INSTALL_STAGE_FILE);
-    struct stat directoryInfo, after;
+    PeppyFileInfo directoryInfo, after;
     int directoryError = pathInfo(PEPPY_DOWNLOAD_DIRECTORY, true, directoryInfo);
     if (directoryError) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, directoryError);
     int descriptor = open(localPath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     if (descriptor < 0) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
-    int fileError = fstat(descriptor, &after) ? errno : 0;
+    int fileError = peppyInstallFstat(descriptor, &after);
     if (!fileError && !S_ISREG(after.st_mode)) fileError = EINVAL;
     if (fileError) {
         if (close(descriptor)) cleanupError(INSTALL_STAGE_FILE, errno);

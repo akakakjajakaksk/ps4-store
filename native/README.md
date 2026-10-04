@@ -26,7 +26,8 @@ para AppInstUtil/BGFT, o instalador do PS4, sem precisar abrir outro aplicativo.
 A loja acompanha a tarefa e só informa sucesso após confirmar a instalação.
 Uma falha permite tentar instalar novamente o arquivo já baixado.
 O instalador abre os arquivos com `O_NOFOLLOW` e verifica o descritor com
-`fstat`. A chamada `lstat` da biblioteca musl para PS4 não está implementada
+`sceKernelFstat`, usando a estrutura nativa de 120 bytes. A chamada `lstat`
+da biblioteca musl para PS4 não está implementada
 e retornava `ENOSYS` (`0x4E`) antes de iniciar a instalação.
 
 A integração exige o SDK público do GoldHEN, versão 1.00. A loja consulta essa

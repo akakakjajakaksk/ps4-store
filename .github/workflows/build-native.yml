@@ -111,33 +111,6 @@ jobs:
       - name: Build Peppy Store files
         run: |
           cd native
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          sdk = Path(os.environ["OO_PS4_TOOLCHAIN"])
-          for relative in ("include/bits/stat.h", "include/bits/alltypes.h"):
-              path = sdk / relative
-              if path.is_file():
-                  print(f"SDK header: {relative}")
-                  lines = path.read_text().splitlines()
-                  if relative.endswith("alltypes.h"):
-                      fields = ("dev_t", "ino_t", "mode_t", "nlink_t", "blksize_t", "off_t", "blkcnt_t", "timespec")
-                      lines = [line for line in lines if any(field in line for field in fields)]
-                  print("\n".join(lines))
-          PY
-          cat > /tmp/peppy-stat-layout.cpp <<'CPP'
-          #include <stddef.h>
-          #include <sys/stat.h>
-          #include <orbis/libkernel.h>
-          struct stat peppyPosixStat;
-          OrbisKernelStat peppyKernelStat;
-          int peppyStatSizes[] = {sizeof(peppyPosixStat), sizeof(peppyKernelStat)};
-          CPP
-          clang++ --target=x86_64-pc-freebsd12-elf \
-            -isysroot "$OO_PS4_TOOLCHAIN" -isystem "$OO_PS4_TOOLCHAIN/include" \
-            -isystem "$OO_PS4_TOOLCHAIN/include/c++/v1" \
-            -Xclang -fdump-record-layouts -c /tmp/peppy-stat-layout.cpp \
-            -o /tmp/peppy-stat-layout.o
           make pkg.gp4
           cat pkg.gp4
 

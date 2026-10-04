@@ -37,8 +37,9 @@ static bool jailbroken, nativeStarted;
 static std::atomic<bool> block(false), entered(false);
 static std::string registeredPath;
 static std::map<int, std::string> descriptorPaths;
-static int unavailableLstatCalls, noFollowOpens;
+static int unavailableLstatCalls, unavailablePosixFstatCalls, nativeFstatCalls, noFollowOpens;
 static const int32_t RAW = (int32_t)0x8099ee01U;
+static const int32_t RAW_ENOSYS = (int32_t)0x8002004eU;
 static const uint64_t NATIVE_LENGTH = 5ULL * 1024 * 1024 * 1024;
 static bool needsCopy(Mode value) {
     return (value >= ALIAS_COPY && value <= BAD_GLOBAL_ROOT) ||
@@ -214,15 +215,61 @@ extern "C" int __wrap___open_2(const char* path, int flags) {
     assert(!(flags & O_CREAT));
     return __wrap_open(path, flags);
 }
-extern "C" int __wrap_fstat(int descriptor, struct stat* info) {
+extern "C" int __wrap_fstat(int, struct stat*) {
+    // POSIX metadata has an incompatible ABI in the packaged PS4 SDK.
+    // Every production metadata check must use sceKernelFstat instead.
+    ++unavailablePosixFstatCalls;
+    errno = ENOSYS;
+    return -1;
+}
+template<typename T> static void nativeField(unsigned char* bytes, size_t offset, T value) {
+    assert(offset + sizeof(value) <= 120);
+    memcpy(bytes + offset, &value, sizeof(value));
+}
+static void encodeNativeStat(void* nativeInfo, const struct stat& host) {
+    // Offsets are independent of PeppyFileInfo and the host's struct stat.
+    // PS4 is little-endian x86-64. Write precisely the kernel's 120 bytes.
+    unsigned char* bytes = static_cast<unsigned char*>(nativeInfo);
+    memset(bytes, 0, 120);
+    nativeField<uint32_t>(bytes, 0, (uint32_t)host.st_dev);
+    nativeField<uint32_t>(bytes, 4, (uint32_t)host.st_ino);
+    nativeField<uint16_t>(bytes, 8, (uint16_t)host.st_mode);
+    nativeField<uint16_t>(bytes, 10, (uint16_t)host.st_nlink);
+    nativeField<uint32_t>(bytes, 12, (uint32_t)host.st_uid);
+    nativeField<uint32_t>(bytes, 16, (uint32_t)host.st_gid);
+    nativeField<uint32_t>(bytes, 20, (uint32_t)host.st_rdev);
+    nativeField<int64_t>(bytes, 24, host.st_atim.tv_sec);
+    nativeField<int64_t>(bytes, 32, host.st_atim.tv_nsec);
+    nativeField<int64_t>(bytes, 40, host.st_mtim.tv_sec);
+    nativeField<int64_t>(bytes, 48, host.st_mtim.tv_nsec);
+    nativeField<int64_t>(bytes, 56, host.st_ctim.tv_sec);
+    nativeField<int64_t>(bytes, 64, host.st_ctim.tv_nsec);
+    nativeField<int64_t>(bytes, 72, host.st_size);
+    nativeField<int64_t>(bytes, 80, host.st_blocks);
+    nativeField<int32_t>(bytes, 88, (int32_t)host.st_blksize);
+    nativeField<uint32_t>(bytes, 92, 0x12345678U);
+    nativeField<uint32_t>(bytes, 96, 0x23456789U);
+    nativeField<int32_t>(bytes, 100, 0x34567890);
+    nativeField<int64_t>(bytes, 104, 0x0123456789abcdefLL);
+    nativeField<int64_t>(bytes, 112, 987654321);
+}
+extern "C" int32_t sceKernelFstat(int32_t descriptor, void* nativeInfo) {
+    ++nativeFstatCalls;
+    assert(nativeInfo);
     const std::string& path = descriptorPaths[descriptor];
     if ((mode == SOURCE_STAT_FAIL && path == localDirectory + "/apollo.pkg") ||
         (mode == GLOBAL_STAT_FAIL && path == systemDirectory + "/apollo.pkg") ||
         (mode == COPY_STAT_FAIL && path == copyDirectory + "/apollo.pkg.part")) {
-        errno = ENOSYS;
-        return -1;
+        // Unlike the libc wrapper, the native export returns the SCE code.
+        // Leave errno stale to catch accidental native-error conversion.
+        errno = EINVAL;
+        return RAW_ENOSYS;
     }
-    return __real_fstat(descriptor, info);
+    struct stat host;
+    if (__real_fstat(descriptor, &host))
+        return (int32_t)(0x80020000U | (uint32_t)errno);
+    encodeNativeStat(nativeInfo, host);
+    return 0;
 }
 extern "C" ssize_t __wrap_write(int fd, const void* bytes, size_t size) {
     if (mode == COPY_ENOSPC && jailbroken) { errno = ENOSPC; return -1; }
@@ -267,7 +314,7 @@ static void reset(Mode next, bool alias = true) {
     jailbreakCalls = restoreCalls = titleCalls = 0;
     jailbroken = nativeStarted = false;
     registeredPath.clear();
-    descriptorPaths.clear(); noFollowOpens = 0;
+    descriptorPaths.clear(); noFollowOpens = nativeFstatCalls = 0;
     block.store(next == BLOCK_PROGRESS || next == STOP_FAIL || next == UNREGISTER_FAIL || next == COPY_CANCEL);
     entered.store(false);
     // Each fault scenario emulates a fresh application process.
@@ -336,6 +383,39 @@ int main() {
     struct stat unavailable;
     assert(lstat("/tmp", &unavailable) == -1 && errno == ENOSYS);
     assert(unavailableLstatCalls == 1); unavailableLstatCalls = 0;
+    // Exercise the native alias with a file larger than UINT32_MAX. Its size
+    // lives at offset 72; offset 80 holds a distinct block count. A libc stat
+    // cast would decode the wrong value and would also overwrite the canary.
+    reset(NORMAL);
+    int nativeDescriptor = __real_open((localDirectory + "/native-layout.bin").c_str(),
+                                       O_CREAT | O_RDWR | O_EXCL, 0600);
+    assert(nativeDescriptor >= 0);
+    assert(ftruncate(nativeDescriptor, (off_t)(NATIVE_LENGTH + 123)) == 0);
+    struct stat hostInfo;
+    assert(__real_fstat(nativeDescriptor, &hostInfo) == 0);
+    struct {
+        uint64_t before;
+        PeppyFileInfo info;
+        uint64_t after;
+    } guarded = { 0x1122334455667788ULL, {}, 0x8877665544332211ULL };
+    assert(peppyInstallFstat(nativeDescriptor, &guarded.info) == 0);
+    assert(guarded.before == 0x1122334455667788ULL && guarded.after == 0x8877665544332211ULL);
+    assert(guarded.info.st_dev == (uint32_t)hostInfo.st_dev &&
+           guarded.info.st_ino == (uint32_t)hostInfo.st_ino);
+    assert(guarded.info.st_mode == (uint16_t)hostInfo.st_mode &&
+           guarded.info.st_nlink == (uint16_t)hostInfo.st_nlink);
+    assert(guarded.info.st_uid == (uint32_t)hostInfo.st_uid &&
+           guarded.info.st_gid == (uint32_t)hostInfo.st_gid &&
+           guarded.info.st_rdev == (uint32_t)hostInfo.st_rdev);
+    assert(guarded.info.st_size == (int64_t)(NATIVE_LENGTH + 123) &&
+           guarded.info.st_blocks == hostInfo.st_blocks &&
+           guarded.info.st_size != guarded.info.st_blocks);
+    assert(guarded.info.st_blksize == hostInfo.st_blksize &&
+           guarded.info.st_flags == 0x12345678U && guarded.info.st_gen == 0x23456789U &&
+           guarded.info.st_lspare == 0x34567890);
+    assert(guarded.info.birthTime[0] == 0x0123456789abcdefLL &&
+           guarded.info.birthTime[1] == 987654321);
+    assert(__real_close(nativeDescriptor) == 0);
     InstallSnapshot value = run(NORMAL);
     assert(value.state == INSTALL_DONE && value.percent == 100 && value.errorCode == 0);
     assert(value.received == NATIVE_LENGTH && value.total == NATIVE_LENGTH);
@@ -408,11 +488,11 @@ int main() {
     assert(registeredPath == copyDirectory + "/apollo.pkg");
     value = run(ALIAS_SYMLINK); assert(value.state == INSTALL_DONE);
     assert(registeredPath == copyDirectory + "/apollo.pkg");
-    failed(SOURCE_STAT_FAIL, INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, ENOSYS);
+    failed(SOURCE_STAT_FAIL, INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, RAW_ENOSYS);
     assert(!jailbreakCalls && !registerCalls);
-    failed(GLOBAL_STAT_FAIL, INSTALL_ERROR_GLOBAL_PATH, INSTALL_STAGE_GLOBAL_PATH, ENOSYS);
+    failed(GLOBAL_STAT_FAIL, INSTALL_ERROR_GLOBAL_PATH, INSTALL_STAGE_GLOBAL_PATH, RAW_ENOSYS);
     assert(!registerCalls && access(copyDirectory.c_str(), F_OK) != 0);
-    failed(COPY_STAT_FAIL, INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, ENOSYS);
+    failed(COPY_STAT_FAIL, INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, RAW_ENOSYS);
     assert(!registerCalls && access((copyDirectory + "/apollo.pkg.part").c_str(), F_OK) != 0);
     failed(COPY_REPLACED_PATH, INSTALL_ERROR_COPY, INSTALL_STAGE_COPY, EINVAL);
     assert(!registerCalls);
@@ -463,6 +543,7 @@ int main() {
     assert(startInstall(spec())); value = waitDone();
     assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_FILE &&
            (value.nativeCode == ELOOP || value.nativeCode == ENOTDIR) && !jailbreakCalls);
-    assert(noFollowOpens > 0 && unavailableLstatCalls == 0);
+    assert(noFollowOpens > 0 && nativeFstatCalls > 0 &&
+           unavailableLstatCalls == 0 && unavailablePosixFstatCalls == 0);
     puts("All native installer ABI, privileges, local path/copy, progress, preservation, errors and cancellation tests passed.");
 }

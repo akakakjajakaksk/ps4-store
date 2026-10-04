@@ -24,8 +24,19 @@ outputs that refer to an unowned existing task. Console behavior remains unverif
 All installer cases run with `lstat` forced to `ENOSYS`, matching
 [OpenOrbis musl's PS4 fstatat stub](https://github.com/OpenOrbis/musl/blob/master/src/stat/fstatat.c).
 The installer instead opens with `O_NOFOLLOW` and checks the same descriptor
-using [PS4's dedicated fstat wrapper](https://github.com/OpenOrbis/musl/blob/master/src/stat/fstat.c).
+using the native `sceKernelFstat` export and an explicit 120-byte kernel layout.
+The packaged PS4 libc has a 32-bit `mode_t`, making its POSIX `struct stat`
+128 bytes with `st_size` at offset 80. The native kernel uses a 16-bit mode
+and puts size at offset 72, as defined in
+[OpenOrbis' native kernel types](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/v0.5.4/include/orbis/_types/kernel.h).
+The conflicting mode width comes from
+[musl's PS4 architecture types](https://github.com/OpenOrbis/musl/blob/master/arch/ps4/bits/alltypes.h.in).
+Passing the libc structure would read the block
+count as file size. The mock writes exactly 120 bytes by independent offsets;
+a guarded alias probe checks all key fields and a sparse file larger than 4 GiB.
+The suite also forces POSIX `fstat` to `ENOSYS` and verifies it is never called.
+Injected native failures preserve the raw `0x8002004E` code even with stale errno.
 [PS4 flags](https://github.com/OpenOrbis/musl/blob/master/arch/ps4/bits/fcntl.h)
-are checked at native compile time, along with the 120-byte stat ABI. Tests also
+are checked at native compile time, along with the explicit native stat ABI. Tests also
 refuse source/directory symlinks and FIFOs, preserve fstat failures, safely copy
 different or symlinked global aliases, and reject a replaced partial-copy inode.
