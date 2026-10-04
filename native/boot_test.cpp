@@ -69,7 +69,7 @@ static void drawStore(uint32_t*p,int selected,int padState){
  fill(p,bg);
  rect(p,0,0,W,108,nav);rect(p,0,104,W,4,accent);
  rect(p,58,25,62,62,accent);rect(p,72,39,34,34,bg);
- text(p,150,28,"ORBIS STORE",7,white);text(p,151,82,"PS4 HOME",2,muted);
+ text(p,150,28,"PEPPY STORE",7,white);text(p,151,82,"PS4 HOME",2,muted);
  if(padState==2){rect(p,1180,36,190,38,0x8014352B);text(p,1205,46,"PAD READ",3,0x8060FF90);}
 
  rect(p,1430,28,420,56,panel);border(p,1430,28,420,56,2,0x80364A68);text(p,1470,45,"SEARCH",3,muted);
@@ -81,7 +81,7 @@ static void drawStore(uint32_t*p,int selected,int padState){
 
  rect(p,405,145,1460,292,shadow);rect(p,413,137,1460,292,0x8014243C);
  rect(p,413,137,14,292,accent);
- text(p,475,185,"ORBIS STORE",8,white);text(p,478,260,"HOME FOR PS4 APPS",4,muted);
+ text(p,475,185,"PEPPY STORE",8,white);text(p,478,260,"HOME FOR PS4 APPS",4,muted);
  rect(p,478,337,250,58,accent);text(p,530,352,"OPEN",4,white);
  rect(p,1510,185,250,150,0x801C3456);border(p,1510,185,250,150,3,glow);
  rect(p,1580,215,110,90,accent);rect(p,1603,238,64,44,0x8014243C);
@@ -106,12 +106,12 @@ static void drawDetails(uint32_t*p,int selected){
  const char*names[4]={"APOLLO","ITEMZ","XPLORER","HOMEBREW"};
  const uint32_t covers[4]={0x80304D82,0x80513B68,0x802E6255,0x80604D32};
  fill(p,bg);rect(p,0,0,W,108,nav);rect(p,0,104,W,4,accent);
- rect(p,58,25,62,62,accent);rect(p,72,39,34,34,bg);text(p,150,28,"ORBIS STORE",7,white);
+ rect(p,58,25,62,62,accent);rect(p,72,39,34,34,bg);text(p,150,28,"PEPPY STORE",7,white);
  rect(p,100,165,540,650,panel);coverArt(p,125,190,490,390,selected,covers[selected],accent,white);border(p,125,190,490,390,4,glow);
  text(p,720,190,names[selected],8,white);text(p,724,285,"PS4 HOMEBREW",4,muted);
  text(p,724,365,"READY FOR STORE",4,white);text(p,724,425,"DETAIL PAGE",3,muted);
  rect(p,724,525,300,70,accent);text(p,790,544,"INSTALL",4,white);
- rect(p,100,900,1720,80,nav);text(p,145,925,"BACK",4,white);text(p,400,925,"ORBIS STORE",3,muted);
+ rect(p,100,900,1720,80,nav);text(p,145,925,"BACK",4,white);text(p,400,925,"PEPPY STORE",3,muted);
 }
 
 int main(void){
