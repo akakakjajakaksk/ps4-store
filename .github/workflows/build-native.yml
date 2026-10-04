@@ -107,12 +107,12 @@ jobs:
               "/workspace/openorbis/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core" pkg_extract IV0000-BREW00001_00-ORBISSTORE000001.pkg pkg-check
             '
           find native/pkg-check -maxdepth 4 -type f -printf "%p %s bytes\\n" | sort
-          test -s native/pkg-check/eboot.bin
-          test -s native/pkg-check/sce_sys/param.sfo
-          test -s native/pkg-check/sce_sys/about/right.sprx
-          cmp native/eboot.bin native/pkg-check/eboot.bin
-          cmp native/sce_sys/param.sfo native/pkg-check/sce_sys/param.sfo
-          sha256sum native/IV0000-BREW00001_00-ORBISSTORE000001.pkg native/eboot.bin native/pkg-check/eboot.bin
+          test -s native/pkg-check/uroot/eboot.bin
+          test -s native/pkg-check/uroot/sce_sys/param.sfo
+          test -s native/pkg-check/uroot/sce_sys/about/right.sprx
+          cmp native/eboot.bin native/pkg-check/uroot/eboot.bin
+          cmp native/sce_sys/param.sfo native/pkg-check/uroot/sce_sys/param.sfo
+          sha256sum native/IV0000-BREW00001_00-ORBISSTORE000001.pkg native/eboot.bin native/pkg-check/uroot/eboot.bin
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
