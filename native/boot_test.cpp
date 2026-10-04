@@ -4,7 +4,7 @@
 
 int main(void)
 {
-    // Minimal VideoOut probe: no Scene2D, no framebuffer allocation.
+    // Minimal VideoOut probe: no Scene2D, no framebuffer allocation. CI rebuild probe.
     // If this stays alive, the crash is later in graphics initialization.
     int video = sceVideoOutOpen(ORBIS_VIDEO_USER_MAIN, ORBIS_VIDEO_OUT_BUS_MAIN, 0, 0);
 
