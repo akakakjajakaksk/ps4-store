@@ -94,8 +94,8 @@ jobs:
         run: |
           cd native
           g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
-            -Itests/music/stubs tests/music/music_test.cpp -o /tmp/peppy-music-tests
-          /tmp/peppy-music-tests
+            -Itests/music/stubs tests/music/music_test.cpp -o /tmp/peppy-music-tests-bin
+          /tmp/peppy-music-tests-bin
 
       - name: Test store controller handoff on host
         run: |
