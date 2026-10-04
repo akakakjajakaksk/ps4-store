@@ -1,4 +1,5 @@
 name: Build Orbis Store Native
+# CI trigger refresh for native VideoOut diagnostic
 
 on:
   workflow_dispatch:
