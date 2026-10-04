@@ -103,18 +103,29 @@ int main(void){
  if(rc<0)for(;;)sceKernelUsleep(1000000);
  sceVideoOutSetFlipRate(video,0);
 
- // Diagnostic: explicitly load libScePad before initializing Pad.
- volatile int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
- volatile int32_t padInit=(padModule>=0)?scePadInit():padModule;
- (void)padModule;
- (void)padInit;
+ int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
+ int32_t padInit=(padModule>=0)?scePadInit():padModule;
+ int32_t pad=(padInit==0)?scePadOpen(ORBIS_VIDEO_USER_MAIN,0,0,0):-1;
 
- int selected=0,front=0;int64_t frame=1;
+ int selected=0,front=0;uint32_t prev=0;int64_t frame=1;
  drawStore(fb[front],selected);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
  for(;;){
-  sceKernelUsleep(1000000);
+  OrbisPadData pd;
+  if(pad>=0 && scePadReadState(pad,&pd)>=0){
+   uint32_t now=pd.buttons;
+   bool changed=false;
+   if((now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%4;changed=true;}
+   if((now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+3)%4;changed=true;}
+   prev=now;
+   if(changed){
+    front=1-front;
+    drawStore(fb[front],selected);
+    sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
+   }
+  }
+  sceKernelUsleep(16000);
  }
  return 0;
 }
