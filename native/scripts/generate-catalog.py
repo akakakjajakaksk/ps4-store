@@ -22,6 +22,12 @@ CATEGORIES = {
 }
 MAX_PACKAGE_BYTES = 256 * 1024 ** 3
 CONTENT_ID_RE = re.compile(r"[A-Z]{2}[0-9]{4}-((?:CUSA|SLES|SLUS)[0-9]{5})_[0-9]{2}-[A-Z0-9]{16}")
+CUSA_CONTENT_ID_RE = re.compile(r"[A-Z]{2}[0-9]{4}-(CUSA[0-9]{5})_[0-9]{2}-[A-Z0-9]{16}")
+ARCHIVE_ITEM = "ps4-fpkg-collection-english-h"
+ARCHIVE_SOURCE_URL = "https://archive.org/details/" + ARCHIVE_ITEM
+GAMEBATO_SOURCE_URL = "https://gamebatoapp.ir/home/en/"
+GAMEBATO_DOWNLOAD_URL = "https://gamebatoapp.ir/home/app.pkg"
+GAMEBATO_CONTENT_ID = "XX0000-GBTX00001_00-GBTXXXXXXXXXXXXX"
 REMOTE_CONTENT_ID_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}[0-9]{4}-[A-Z]{4}[0-9]{5}_[0-9]{2}-[A-Z0-9]{16}(?![A-Z0-9_])")
 REMOTE_TITLE_ID_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{4}[0-9]{5}(?![A-Z0-9])")
 
@@ -36,6 +42,11 @@ VERIFIED_REPOSITORIES = frozenset({
     "gen04177/rarch-ps4",
     "buckethatboy3/pplay-Ps4-Media-Player",
     "Cpasjuste/pemu",
+    "ItsJokerZz/FPKGi",
+    "bucanero/PS4CheatsManager",
+    "EmiiBytee/np2kai-ps4",
+    "bizkut/ps4-mgba",
+    "Mayo1970/ioQuake3-PS4",
 })
 
 TEXT_FIELDS = (
@@ -118,15 +129,23 @@ def validate_official(entry: dict) -> None:
     entry["source_badge"] = "PKG / FONTE OFICIAL"
 
 
-def validate_mediafire(entry: dict) -> None:
+def validate_reviewed_base(entry: dict, legacy_title_ids: bool = True,
+                          required_content_id: str | None = None) -> str:
+    """Validate catalog header evidence without claiming a full PKG check."""
+    source_kind = entry["source_kind"]
     if entry.get("platform") != "PS4" or entry.get("package_kind") != "base":
-        raise ValueError("external_mediafire requires a PS4 base package")
+        raise ValueError(f"{source_kind} requires a PS4 base package")
     content_id = text_field(entry, "content_id")
-    if not CONTENT_ID_RE.fullmatch(content_id):
-        raise ValueError("external_mediafire content_id must be a canonical CUSA, SLES, or SLUS Content ID")
+    content_id_re = CONTENT_ID_RE if legacy_title_ids else CUSA_CONTENT_ID_RE
+    if required_content_id is not None:
+        if content_id != required_content_id:
+            raise ValueError(f"{source_kind} content_id must match the reviewed provider's exact Content ID")
+    elif not content_id_re.fullmatch(content_id):
+        prefixes = "CUSA, SLES, or SLUS" if legacy_title_ids else "CUSA"
+        raise ValueError(f"{source_kind} content_id must be a canonical {prefixes} Content ID")
     proof = entry.get("header_verification")
     if not isinstance(proof, dict):
-        raise ValueError("external_mediafire requires explicit reviewed PKG header_verification")
+        raise ValueError(f"{source_kind} requires explicit reviewed PKG header_verification")
     if (proof.get("magic") != "7f434e54" or type(proof.get("content_type")) is not int
             or proof["content_type"] != 0x1A or type(proof.get("content_flags")) is not int
             or proof["content_flags"] not in (0x0A000000, 0x0E000000)):
@@ -137,6 +156,25 @@ def validate_mediafire(entry: dict) -> None:
     filename = entry["filename"]
     if not filename.startswith(content_id) or not re.fullmatch(re.escape(content_id) + r"(?:-[A-Za-z0-9_.-]+)?\.pkg", filename):
         raise ValueError("external filename must begin with its declared Content ID")
+    return content_id
+
+
+def validate_remote_identity(remote_name: str, content_id: str) -> None:
+    """Filename identities cannot contradict the reviewed binary header."""
+    remote_ids = REMOTE_CONTENT_ID_RE.findall(remote_name)
+    if remote_ids:
+        if any(value != content_id for value in remote_ids):
+            raise ValueError("remote PKG basename contains a different Content ID")
+    else:
+        remote_titles = REMOTE_TITLE_ID_RE.findall(remote_name)
+        if any(value != content_id[7:16] for value in remote_titles):
+            raise ValueError("remote PKG basename contains a different Title ID")
+        # Generic names require the reviewed header evidence; the emitted
+        # contentId also pins the binary header during the native download.
+
+
+def validate_mediafire(entry: dict) -> None:
+    content_id = validate_reviewed_base(entry)
     label = text_field(entry, "source_label")
     if len(label) > 30 or any(ord(char) < 32 for char in label) or re.search(r"\b(?:oficial|official)\b", label, re.IGNORECASE):
         raise ValueError("external source_label must be a single line of at most 30 characters without an official-source claim")
@@ -158,20 +196,57 @@ def validate_mediafire(entry: dict) -> None:
     if (not remote_name.endswith(".pkg") or any(ord(char) < 32 or ord(char) == 127 for char in remote_name)
             or "/" in remote_name or "\\" in remote_name):
         raise ValueError("MediaFire page must name one complete PKG, not HTML or an archive")
-    remote_ids = REMOTE_CONTENT_ID_RE.findall(remote_name)
-    if remote_ids:
-        if any(value != content_id for value in remote_ids):
-            raise ValueError("MediaFire PKG basename contains a different Content ID")
-    else:
-        remote_titles = REMOTE_TITLE_ID_RE.findall(remote_name)
-        if any(value != content_id[7:16] for value in remote_titles):
-            raise ValueError("MediaFire PKG basename contains a different Title ID")
-        # A generic remote basename is allowed only with the header proof
-        # above. The generated contentId also lets the downloader compare
-        # the received PKG header with this reviewed catalog identity.
+    validate_remote_identity(remote_name, content_id)
     entry["source_badge"] = "PKG / " + label
     if len(entry["source_badge"]) > 52:
         raise ValueError("source badge must contain at most 52 characters")
+
+
+def validate_archive_direct(entry: dict) -> None:
+    """Allow only the reviewed archive collection route and base CUSA headers."""
+    content_id = validate_reviewed_base(entry, legacy_title_ids=False)
+    if (text_field(entry, "source") != "archive.org"
+            or text_field(entry, "source_label") != "INTERNET ARCHIVE"
+            or text_field(entry, "source_url") != ARCHIVE_SOURCE_URL
+            or entry["release_url"] != ARCHIVE_SOURCE_URL or "repository" in entry):
+        raise ValueError("archive provenance must use the reviewed collection and INTERNET ARCHIVE label without an official repository claim")
+    parsed = plain_https_url(entry["url"], "url")
+    if parsed.netloc != "archive.org" or "?" in entry["url"]:
+        raise ValueError("archive URL must be plain HTTPS archive.org without a query")
+    parts = parsed.path.split("/")
+    if len(parts) != 4 or parts[:3] != ["", "download", ARCHIVE_ITEM]:
+        raise ValueError("archive URL must name one PKG directly in the reviewed collection")
+    remote_name = unquote(parts[3], errors="strict")
+    if (not remote_name.endswith(".pkg") or len(remote_name) <= 4 or ".." in remote_name
+            or any(ord(char) < 32 or ord(char) >= 127 or char in "/\\%?#" for char in remote_name)):
+        raise ValueError("archive URL must name a complete ASCII PKG basename without traversal or encoded separators")
+    validate_remote_identity(remote_name, content_id)
+    entry["source_badge"] = "PKG / INTERNET ARCHIVE"
+
+
+def validate_gamebato_direct(entry: dict) -> None:
+    """Pin the reviewed mutable site installer by exact URL, CID and SHA-256."""
+    validate_reviewed_base(entry, required_content_id=GAMEBATO_CONTENT_ID)
+    if (text_field(entry, "source") != "gamebatoapp.ir"
+            or text_field(entry, "source_label") != "GAMEBATO"
+            or text_field(entry, "source_url") != GAMEBATO_SOURCE_URL
+            or entry["release_url"] != GAMEBATO_SOURCE_URL
+            or entry["url"] != GAMEBATO_DOWNLOAD_URL or "repository" in entry):
+        raise ValueError("gamebato provenance and download must match the reviewed site installer exactly, without an official repository claim")
+    digest = entry.get("sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+        raise ValueError("gamebato's mutable URL requires a checked 64-character SHA-256 digest")
+    entry["source_badge"] = "PKG / GAMEBATO"
+
+
+def validate_reviewed_direct(entry: dict) -> None:
+    provider = entry.get("provider")
+    if provider == "archive":
+        validate_archive_direct(entry)
+    elif provider == "gamebato":
+        validate_gamebato_direct(entry)
+    else:
+        raise ValueError("reviewed_direct requires an explicitly reviewed archive or gamebato provider")
 
 
 def validate_entry(entry: dict, index: int, seen_ids: set[str], seen_filenames: set[str] | None = None) -> dict:
@@ -179,10 +254,10 @@ def validate_entry(entry: dict, index: int, seen_ids: set[str], seen_filenames: 
         raise ValueError(f"entry {index} must be an object")
     entry = dict(entry)
     source_kind = entry.get("source_kind", "official")
-    if source_kind not in ("official", "external_mediafire"):
+    if source_kind not in ("official", "external_mediafire", "reviewed_direct"):
         raise ValueError(f"unsupported source_kind: {source_kind!r}")
     entry["source_kind"] = source_kind
-    if source_kind == "external_mediafire":
+    if source_kind != "official":
         entry.setdefault("release_url", entry.get("source_url"))
     else:
         entry.setdefault("content_id", "")
@@ -210,8 +285,10 @@ def validate_entry(entry: dict, index: int, seen_ids: set[str], seen_filenames: 
 
     if source_kind == "official":
         validate_official(entry)
-    else:
+    elif source_kind == "external_mediafire":
         validate_mediafire(entry)
+    else:
+        validate_reviewed_direct(entry)
 
     size = entry.get("size_bytes")
     if type(size) is not int or not 0x438 <= size <= MAX_PACKAGE_BYTES:

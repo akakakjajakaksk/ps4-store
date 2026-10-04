@@ -63,3 +63,68 @@ específico antes de disponibilizar a instalação.
 A conferência do cabeçalho não valida a assinatura ou todas as estruturas
 internas, e não comprova instalação no firmware 13.52. A transferência
 completa continua verificando tamanho, magic e SHA-256 quando disponível.
+
+## Fontes adicionais da Build 102
+
+| Fonte indicada | Resultado da conferência de 2026-10-04 |
+| --- | --- |
+| [PKG-Zone](https://pkg-zone.com/) | Página e catálogo `api.pkg-zone.com/store.db` retornaram HTTP 500, inclusive com o User-Agent documentado da HB-Store. A HB-Store já está no catálogo por release oficial no GitHub. Itemzflow e PS4-Xplorer não foram adicionados: os espelhos consultados retornaram HTTP 403. |
+| [Brewology](https://brewology.com/) | A página consultada prioriza homebrews de outras plataformas. IRISMAN, webMAN MOD e CFW/HFW de PS3 não são pacotes instaláveis neste aplicativo PS4. |
+| [PSX-Place](https://www.psx-place.com/resources/categories/ps4-homebrew.42/) | O recurso [ioQuake3 PS4](https://www.psx-place.com/resources/ioquake3-ps4.1717/) aponta para o autor Mayo1970. Foram incluídas cinco builds da release 1.8, com dados de jogo externos explicitados. |
+| [FPKGi](https://github.com/ItsJokerZz/FPKGi/releases/tag/v1.10.0) | Aplicativo PS4/PS5 do autor, release fixa v1.10.0, incluído por pacote PS4 conferido. Esta entrada instala o cliente; suas listas de jogos não foram importadas. |
+| [GameBaTo](https://gamebatoapp.ir/home/en/) | Cliente PS4 incluído a partir do link público `/home/app.pkg`. O site anuncia firmware 5.05 a 12.0, sem comprovar 13.52. A página não publica versão/checksum: o catálogo mostra “site sem versão” e fixa o SHA256 calculado nesta revisão. |
+| PKGi / NoPayStation | As opções indicadas para PS3, PS Vita e PSP ficam fora do catálogo PS4. A Peppy não integra downloads de servidores da PlayStation. |
+| [Vimm's Lair](https://vimm.net/vault/PS4) | O endereço PS4 consultado retornou HTTP 404. Discos, ISOs e pastas de PS3 não são PKGs base instaláveis de PS4. |
+| [Internet Archive](https://archive.org/details/ps4-fpkg-collection-english-h) | Incluídos três arquivos da coleção H após conferir metadados e cabeçalhos. A coleção declara releases modificadas, com atualizações mescladas e conteúdo removido; também avisa possíveis limitações no PS4 Pro. Esses avisos aparecem nas entradas. |
+| [Romsfun](https://romsfun.com/download/sonic-mania-40290) | Sonic Mania leva a uma página 1fichier com link temporário. Nenhum binário direto foi conferido; não foi incluído como PKG instalável. |
+| [Romspure](https://romspure.cc/roms/sony-playstation-4/) | O exemplo Puyo Puyo Tetris anuncia PKG, mas a página consultada não fornece um arquivo direto verificável. |
+
+As quatro novas releases oficiais iniciais são FPKGi, PS4 Cheats Manager,
+NP2kai PS4 e mGBA PS4. Os arquivos vieram dos repositórios dos próprios
+autores, com tag fixa; Cheats Manager não publica SHA256, enquanto as outras
+três releases publicam. NP2kai e mGBA precisam de dados externos descritos
+nas respectivas entradas. Firmware 13.52 permanece sem teste no console.
+
+| Arquivo adicionado | Title ID conferido | Tamanho em bytes |
+| --- | --- | --- |
+| FPKGi v1.10.0 | PKGI13337 | 85.458.944 |
+| PS4 Cheats Manager v1.2.2 | CHTM00777 | 19.202.048 |
+| NP2kai v1.0 | BREW00984 | 9.109.504 |
+| mGBA ps4-v0.1.0 | MGBA00001 | 6.619.136 |
+| ioQuake3: Quake III Arena 1.8 | QUAK03000 | 13.762.560 |
+| ioQuake3: Team Arena 1.8 | QUAK03001 | 13.762.560 |
+| ioQuake3: Open Arena 1.8 | QUAK03002 | 13.762.560 |
+| ioQuake3: Classic 1.8 | QUAK03003 | 13.107.200 |
+| ioQuake3: Elite Force 1.8 | QUAK03004 | 13.762.560 |
+| GameBaTo, arquivo do site em 2026-10-04 | GBTX00001 | 23.068.672 |
+| Hotline Miami, versão modificada 1.01 | CUSA00486 | 161.939.456 |
+| Hotline Miami 2, versão modificada 1.01 | CUSA00368 | 391.512.064 |
+| Hollow Knight, versão modificada 1.02 | CUSA13285 | 1.237.516.288 |
+
+Todos esses cabeçalhos têm magic `7f434e54`, tipo `0x1A`, flags
+`0x0A000000` e tamanho declarado igual ao total de HTTP Range. A fonte e
+o formato PS4 também foram conferidos; o instalador não aceita atualizações
+ou DLCs como pacotes base.
+
+As cinco builds de ioQuake3 não incluem os arquivos `.pk3` dos jogos. O
+autor documenta os diretórios em
+[INSTALLATION.md da tag 1.8](https://github.com/Mayo1970/ioQuake3-PS4/blob/1.8/INSTALLATION.md).
+Open Arena usa dados gratuitos, também fornecidos à parte. As outras builds
+precisam dos dados correspondentes; instalar o motor sozinho não basta.
+
+Somente o cliente GameBaTo foi baixado integralmente para calcular SHA256:
+`529a33a55722c2488c9b190da6eb6132997903c3253091e576538785d3c937bb`.
+Nenhum jogo completo foi baixado nesta revisão. Como `app.pkg` é mutável,
+uma mudança no arquivo do servidor exige atualizar a evidência e o hash.
+
+Internet Archive mantém URLs estáveis da coleção. Os destinos observados
+foram `ia800705.us.archive.org`, `dn721707.ca.archive.org` e
+`dn760105.eu.archive.org`; somente esses hosts e `archive.org` são aceitos,
+com rota limitada à coleção revisada e um único basename `.pkg`.
+Um novo CDN exige nova revisão. GameBaTo aceita somente o endereço exato do
+cliente. Cada provedor permanece isolado nos redirecionamentos HTTPS.
+
+O catálogo final contém 36 entradas: 24 releases oficiais, oito pacotes
+MediaFire, três pacotes Internet Archive e um cliente GameBaTo do site.
+Não é uma importação completa dos sites. Nenhum PKG enviado pelo usuário foi
+incluído nesta revisão, pois os anexos recebidos até agora são fotografias.

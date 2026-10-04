@@ -31,13 +31,13 @@ struct SourceResponse {
     std::string url;
     std::vector<uint8_t> body;
     std::string headers;
-    int status, statusRc, sendRc, lengthRc, lengthType, readRc, sslCode;
+    int status, statusRc, sendRc, headersRc, lengthRc, lengthType, readRc, sslCode;
     uint32_t sslDetail;
     uint64_t length;
     size_t readFailureAfter, blockAfter, fragment;
     bool page, overrideLength;
     SourceResponse(const char* expectedUrl, bool sourcePage = false)
-        : url(expectedUrl), status(200), statusRc(0), sendRc(0), lengthRc(0),
+        : url(expectedUrl), status(200), statusRc(0), sendRc(0), headersRc(0), lengthRc(0),
           lengthType(ORBIS_HTTP_CONTENTLEN_EXIST), readRc(0), sslCode(0),
           sslDetail(0), length(0), readFailureAfter(SIZE_MAX), blockAfter(SIZE_MAX),
           fragment(3), page(sourcePage), overrideLength(false) {}
@@ -97,7 +97,7 @@ extern "C" int32_t sceHttpAddRequestHeader(int32_t,const char*,const char*,int32
 extern "C" int32_t sceHttpSendRequest(int32_t,const void*,size_t){assert(secure&&manual);if(mode==MODE_MEDIAFIRE)return sourceResponse().sendRc;if(mode==6){blocked=true;while(!aborted.load())sceKernelUsleep(1000);return -1;}if(mode==7)return -1;size_t headers=mode==29?65537:mode==28?8000:500;if(headers>connectionHeaderCap)return (int32_t)0x80431073;return 0;}
 extern "C" int32_t sceHttpGetStatusCode(int32_t,int32_t* out){if(mode==MODE_MEDIAFIRE){*out=sourceResponse().status;return sourceResponse().statusRc;}*out=((mode==1||mode==28)&&requests==1)||mode==2||mode==8?302:mode==3?404:200;return 0;}
 extern "C" int32_t sceHttpGetLastErrno(int32_t,int32_t* out){*out=mode==29?(int32_t)0x80431073:netError;return 0;}
-extern "C" int32_t sceHttpGetAllResponseHeaders(int32_t,char** out,size_t* n){static char good[]="HTTP/1.1 302 Found\r\nLocation: https://release-assets.githubusercontent.com/file.pkg?token=abc\r\n\r\n";static char evil[]="Location: https://github.com.evil.example/file.pkg\r\n";static char empty[]="";static std::string large;if(mode==MODE_MEDIAFIRE){std::string& headers=sourceResponse().headers;*out=headers.empty()?empty:&headers[0];*n=headers.size();return 0;}if(mode==28){large=std::string(good)+"X-Security: "+std::string(8000,'a')+"\r\n";*out=&large[0];*n=large.size();}else{*out=mode==2?evil:good;*n=strlen(*out);}return 0;}
+extern "C" int32_t sceHttpGetAllResponseHeaders(int32_t,char** out,size_t* n){static char good[]="HTTP/1.1 302 Found\r\nLocation: https://release-assets.githubusercontent.com/file.pkg?token=abc\r\n\r\n";static char evil[]="Location: https://github.com.evil.example/file.pkg\r\n";static char empty[]="";static std::string large;if(mode==MODE_MEDIAFIRE){SourceResponse& response=sourceResponse();std::string& headers=response.headers;*out=headers.empty()?empty:&headers[0];*n=headers.size();return response.headersRc;}if(mode==28){large=std::string(good)+"X-Security: "+std::string(8000,'a')+"\r\n";*out=&large[0];*n=large.size();}else{*out=mode==2?evil:good;*n=strlen(*out);}return 0;}
 extern "C" int32_t sceHttpGetResponseContentLength(int32_t,int32_t* type,size_t* n){++contentLengthCalls;if(mode==MODE_MEDIAFIRE){SourceResponse& value=sourceResponse();*type=value.lengthType;*n=(size_t)(value.overrideLength?value.length:value.body.size());return value.lengthRc;}*type=mode==14?1:ORBIS_HTTP_CONTENTLEN_EXIST;*n=advertisedLength?(size_t)advertisedLength:mode==9||mode==10?8:payload.size()+(mode==4?1:0);return 0;}
 extern "C" int32_t sceHttpReadData(int32_t,void* out,uint32_t max){
     if(mode==MODE_MEDIAFIRE){
@@ -565,6 +565,273 @@ void contentIdTransferTests() {
 }
 void contentIdTests() { contentIdSpecTests(); contentIdTransferTests(); }
 
+static const char* ARCHIVE_COLLECTION = "ps4-fpkg-collection-english-h";
+static const char* ARCHIVE_TEST_CID = "UP3643-CUSA00486_00-HOTLINEMIAMIPS40";
+static const char* ARCHIVE_TEST_URL = "https://archive.org/download/ps4-fpkg-collection-english-h/Hotline%20Miami.pkg";
+static const char* ARCHIVE_TEST_CDN = "https://dn721707.ca.archive.org/0/items/ps4-fpkg-collection-english-h/Hotline%20Miami.pkg";
+static const char* ARCHIVE_OTHER_CDN = "https://dn760105.eu.archive.org/0/items/ps4-fpkg-collection-english-h/Hotline%20Miami.pkg";
+// Only the exact ia800705 host is allowed. This numeric path is a syntax fixture,
+// while transfer mocks below use the two observed DN hosts and their /0/ path.
+static const char* ARCHIVE_IA_FIXTURE = "https://ia800705.us.archive.org/0/items/ps4-fpkg-collection-english-h/Hotline%20Miami.pkg";
+static const char* GAMEBATO_TEST_URL = "https://gamebatoapp.ir/home/app.pkg";
+static const char* GAMEBATO_TEST_CID = "XX0000-GBTX00001_00-GBTXXXXXXXXXXXXX";
+
+DownloadSpec binarySourceSpec(const char* url, uint64_t bytes = CID_TEST_HEADER) {
+    DownloadSpec spec = { url, "sample.pkg", bytes, 0 };
+    return spec;
+}
+void resetBinarySource(const char* url, const char* cid) {
+    reset(MODE_MEDIAFIRE);
+    payload = contentIdPackage(CID_TEST_HEADER, 0x0a000000, cid);
+    sourceResponses.push_back(sourcePackage(url));
+}
+void resetBinaryRedirect(const char* from, const char* to, const char* cid) {
+    resetBinarySource(from, cid);
+    sourceResponses[0] = sourceRedirect(from, to, false);
+    sourceResponses.push_back(sourcePackage(to));
+}
+void checkBinaryFailure(const DownloadSpec& spec, const char* cid, int category,
+                        int where, int32_t native = 0, int expectedRequests = 1) {
+    seedPrevious(); assert(startDownload(spec, cid)); DownloadSnapshot value = finished();
+    assert(value.state == FAILED && value.errorCode == category);
+    assert(value.stage == where && value.nativeCode == native);
+    assert(requests == expectedRequests); cleanHandles(); checkPrevious();
+}
+void checkRejectedSource(const std::string& url, const char* cid) {
+    assert(!safeUrl(url.c_str())); reset(MODE_MEDIAFIRE); seedPrevious();
+    DownloadSpec spec = binarySourceSpec(url.c_str());
+    assert(!startDownload(spec, cid)); DownloadSnapshot value = downloadSnapshot();
+    assert(value.state == FAILED && value.errorCode == DOWNLOAD_ERROR_SPEC);
+    assert(value.stage == DOWNLOAD_STAGE_SPEC && !requests && !moduleLoads && !contentLengthCalls);
+    assert(access(outputPath(true).c_str(), F_OK) != 0); checkPrevious();
+}
+void checkBinarySuccess(const DownloadSpec& spec, const char* cid, int expectedRequests) {
+    seedPrevious(); assert(startDownload(spec, cid)); DownloadSnapshot value = finished();
+    assert(value.state == DONE && value.received == CID_TEST_HEADER && value.total == CID_TEST_HEADER);
+    assert(requests == expectedRequests && templateCreates == 1 && tlsEnables == 1);
+    assert(!sourceReadCalls && !sourceBytes && packageReadCalls >= (CID_TEST_HEADER + 2) / 3);
+    cleanHandles(); checkPackageOutput(payload);
+}
+void archiveUrlTests() {
+    const char* allowed[] = { ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_OTHER_CDN, ARCHIVE_IA_FIXTURE,
+        "https://ia800705.us.archive.org/1234567890/items/ps4-fpkg-collection-english-h/Hotline%20Miami.pkg",
+        "https://archive.org/download/ps4-fpkg-collection-english-h/Hotline%20Miami%20%5BCUSA00486%5D.pkg" };
+    for (const char* url : allowed) {
+        size_t origin = 0; assert(safeUrl(url, &origin));
+        assert(origin > 8 && url[origin] == '/');
+    }
+    const char* prefixes[] = {
+        "https://archive.org/download/ps4-fpkg-collection-english-h/",
+        "https://dn721707.ca.archive.org/0/items/ps4-fpkg-collection-english-h/",
+        "https://dn760105.eu.archive.org/0/items/ps4-fpkg-collection-english-h/",
+        "https://ia800705.us.archive.org/0/items/ps4-fpkg-collection-english-h/"
+    };
+    const char* invalidNames[] = { "", ".pkg", "Hotline.zip", "Hotline.pkg/extra", "sub/Hotline.pkg",
+        "../Hotline.pkg", "%2e%2e.pkg", "Hotline..pkg", "Hotline%2fMiami.pkg", "Hotline%2FMiami.pkg",
+        "Hotline%5cMiami.pkg", "Hotline%00Miami.pkg", "Hotline%0aMiami.pkg", "Hotline%7fMiami.pkg",
+        "Hotline%80Miami.pkg", "Hotline%3fMiami.pkg", "Hotline%23Miami.pkg", "Hotline%252fMiami.pkg",
+        "Hotline%GGMiami.pkg", "Hotline%2.pkg", "Hotline%.pkg", "Hotline Miami.pkg",
+        "Hotline\tMiami.pkg", "Hotline\nMiami.pkg",
+        "Hotline.pkg?token=x", "Hotline.pkg#fragment" };
+    for (const char* prefix : prefixes) for (const char* name : invalidNames)
+        checkRejectedSource(std::string(prefix) + name, ARCHIVE_TEST_CID);
+    checkRejectedSource(std::string(prefixes[0]) + std::string(URL_CAP, 'a') + ".pkg", ARCHIVE_TEST_CID);
+    const char* invalid[] = {
+        "http://archive.org/download/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://archive.org.evil.example/download/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://archive.org@evil.example/download/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://archive.org:443/download/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://www.archive.org/download/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://archive.org/download/ps4-fpkg-collection-english-g/Hotline.pkg",
+        "https://archive.org/download/ps4-fpkg-collection-english-h-extra/Hotline.pkg",
+        "https://archive.org/details/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://archive.org/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://dn721707.ca.archive.org.evil.example/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://dn721707.ca.archive.org:443/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://dn721707.ca.archive.org@evil.example/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://dn760106.eu.archive.org/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia600705.us.archive.org/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia800705.us.archive.org.evil.example/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia800705.us.archive.org:443/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia800705.us.archive.org/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia800705.us.archive.org//items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia800705.us.archive.org/a/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia800705.us.archive.org/-1/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia800705.us.archive.org/12345678901/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://ia800705.us.archive.org/0/1/items/ps4-fpkg-collection-english-h/Hotline.pkg",
+        "https://dn721707.ca.archive.org/0/items/ps4-fpkg-collection-english-g/Hotline.pkg",
+        "https://dn721707.ca.archive.org/0/items/ps4-fpkg-collection-english-h/extra/Hotline.pkg"
+    };
+    for (const char* url : invalid) checkRejectedSource(url, ARCHIVE_TEST_CID);
+}
+void archiveRedirectTests() {
+    DownloadSpec spec = binarySourceSpec(ARCHIVE_TEST_URL);
+    resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+    checkBinarySuccess(spec, ARCHIVE_TEST_CID, 2);
+    assert(sourceRequestUrls[0] == ARCHIVE_TEST_URL && sourceRequestUrls[1] == ARCHIVE_TEST_CDN);
+
+    resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+    sourceResponses[1] = sourceRedirect(ARCHIVE_TEST_CDN, ARCHIVE_OTHER_CDN, false);
+    sourceResponses.push_back(sourcePackage(ARCHIVE_OTHER_CDN));
+    checkBinarySuccess(spec, ARCHIVE_TEST_CID, 3);
+
+    // Origin-relative redirects must remain inside the same approved collection.
+    std::string relative = std::string("/download/") + ARCHIVE_COLLECTION + "/Hotline%20Miami.pkg";
+    resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_URL, ARCHIVE_TEST_CID);
+    sourceResponses[0].headers = "Location: " + relative + "\r\n";
+    checkBinarySuccess(spec, ARCHIVE_TEST_CID, 2);
+    relative = std::string("/0/items/") + ARCHIVE_COLLECTION + "/Hotline%20Miami.pkg";
+    resetBinaryRedirect(ARCHIVE_TEST_CDN, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+    sourceResponses[0].headers = "Location: " + relative + "\r\n";
+    checkBinarySuccess(binarySourceSpec(ARCHIVE_TEST_CDN), ARCHIVE_TEST_CID, 2);
+
+    const char* forbidden[] = { CID_GITHUB_URL, SOURCE_PAGE_URL, SOURCE_CDN_URL, GAMEBATO_TEST_URL,
+        "https://store.playstation.com/Hotline.pkg",
+        "https://archive.org/download/ps4-fpkg-collection-english-g/Hotline.pkg",
+        "https://dn721707.ca.archive.org.evil.example/0/items/ps4-fpkg-collection-english-h/Hotline.pkg" };
+    for (const char* from : { ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN }) for (const char* to : forbidden) {
+        resetBinaryRedirect(from, to, ARCHIVE_TEST_CID);
+        checkBinaryFailure(binarySourceSpec(from), ARCHIVE_TEST_CID,
+                           DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS);
+        assert(!packageReadCalls && downloadSnapshot().received == 0);
+    }
+    for (const char* from : { CID_GITHUB_URL, SOURCE_PAGE_URL, SOURCE_CDN_URL, GAMEBATO_TEST_URL }) {
+        for (const char* to : { ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN }) {
+            resetBinaryRedirect(from, to, ARCHIVE_TEST_CID);
+            checkBinaryFailure(binarySourceSpec(from), ARCHIVE_TEST_CID,
+                               DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS);
+        }
+    }
+    for (const char* location : { "/download/ps4-fpkg-collection-english-g/Hotline.pkg",
+                                "//archive.org/download/ps4-fpkg-collection-english-h/Hotline.pkg",
+                                "/download/ps4-fpkg-collection-english-h/Hotline%2fMiami.pkg" }) {
+        resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_URL, ARCHIVE_TEST_CID);
+        sourceResponses[0].headers = std::string("Location: ") + location + "\r\n";
+        checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS);
+    }
+    resetBinarySource(ARCHIVE_TEST_URL, ARCHIVE_TEST_CID); sourceResponses.clear();
+    for (int i = 0; i < 6; ++i) sourceResponses.push_back(sourceRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_URL, false));
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, 0, 6);
+    assert(!packageReadCalls && !contentLengthCalls);
+}
+void archiveTransferTests() {
+    for (const char* url : { ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_OTHER_CDN }) {
+        resetBinarySource(url, ARCHIVE_TEST_CID);
+        DownloadSpec spec = binarySourceSpec(url);
+        std::string digest = hashText(std::string((char*)payload.data(), payload.size()));
+        spec.sha256 = digest.c_str(); checkBinarySuccess(spec, ARCHIVE_TEST_CID, 1);
+    }
+    DownloadSpec spec = binarySourceSpec(ARCHIVE_TEST_URL);
+    resetBinarySource(ARCHIVE_TEST_URL, ARCHIVE_TEST_CID); sourceResponses[0].body[0x40] = 'E';
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE);
+    resetBinarySource(ARCHIVE_TEST_URL, ARCHIVE_TEST_CID); fixtureBe32(sourceResponses[0].body, 0x78, 0x62300000);
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE);
+
+    // Advertise the actual catalog length but stream only the validated header.
+    resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+    const uint64_t actualBytes = 161939456ULL;
+    fixtureBe64(sourceResponses[1].body, 0x430, actualBytes);
+    sourceResponses[1].overrideLength = true; sourceResponses[1].length = actualBytes;
+    sourceResponses[1].readFailureAfter = CID_TEST_HEADER; sourceResponses[1].readRc = LARGE_READ_ERROR;
+    spec.expectedBytes = actualBytes;
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_READ, LARGE_READ_ERROR, 2);
+    assert(downloadSnapshot().received == CID_TEST_HEADER && downloadSnapshot().total == actualBytes);
+    assert(sourceResponses[1].body.size() == CID_TEST_HEADER);
+
+    resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+    sourceResponses[1].blockAfter = 3; spec.expectedBytes = CID_TEST_HEADER;
+    seedPrevious(); assert(startDownload(spec, ARCHIVE_TEST_CID));
+    for (int attempt = 0; !blocked.load() && attempt < 5000; ++attempt) sceKernelUsleep(1000);
+    assert(blocked.load() && downloadSnapshot().stage == DOWNLOAD_STAGE_READ);
+    assert(downloadSnapshot().received == 3 && access(outputPath(true).c_str(), F_OK) == 0);
+    assert(!startDownload(spec, ARCHIVE_TEST_CID)); cancelDownload();
+    DownloadSnapshot value = finished();
+    assert(value.state == CANCELLED && aborted.load() && requests == 2);
+    cleanHandles(); checkPrevious();
+}
+void archiveNativeErrorTests() {
+    DownloadSpec spec = binarySourceSpec(ARCHIVE_TEST_URL);
+    resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+    sourceResponses[0].headersRc = SOURCE_NATIVE_ERROR;
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, SOURCE_NATIVE_ERROR);
+    resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+    sourceResponses[0].headers.resize(RESPONSE_HEADER_CAP + 1, 'x');
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_RESPONSE_HEADERS, DOWNLOAD_STAGE_HEADERS);
+    resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+    sourceResponses[0].headers += std::string("Location: ") + ARCHIVE_OTHER_CDN + "\r\n";
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS);
+    for (bool tls : { false, true }) {
+        resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+        sourceResponses[1].sendRc = SOURCE_NATIVE_ERROR; sourceResponses[1].sslCode = tls ? 11 : 0;
+        netError = 451;
+        checkBinaryFailure(spec, ARCHIVE_TEST_CID, tls ? DOWNLOAD_ERROR_TLS : DOWNLOAD_ERROR_NETWORK,
+                           DOWNLOAD_STAGE_SEND, SOURCE_NATIVE_ERROR, 2);
+        assert(downloadSnapshot().sslCode == (tls ? 11 : 0) && downloadSnapshot().networkCode == 451);
+        resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_TEST_CID);
+        sourceResponses[1].readFailureAfter = 3; sourceResponses[1].readRc = SOURCE_NATIVE_ERROR;
+        sourceResponses[1].sslDetail = tls ? 0x200 : 0; netError = 452;
+        checkBinaryFailure(spec, ARCHIVE_TEST_CID, tls ? DOWNLOAD_ERROR_TLS : DOWNLOAD_ERROR_NETWORK,
+                           DOWNLOAD_STAGE_READ, SOURCE_NATIVE_ERROR, 2);
+        assert(downloadSnapshot().received == 3 && downloadSnapshot().networkCode == 452);
+        assert(downloadSnapshot().sslDetails == (tls ? 0x200U : 0U));
+    }
+    resetBinarySource(ARCHIVE_TEST_URL, ARCHIVE_TEST_CID); sourceResponses[0].statusRc = SOURCE_NATIVE_ERROR;
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_STATUS, SOURCE_NATIVE_ERROR);
+    resetBinarySource(ARCHIVE_TEST_URL, ARCHIVE_TEST_CID); sourceResponses[0].status = 403;
+    checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_HTTP, DOWNLOAD_STAGE_STATUS, 403);
+}
+void archiveTests() {
+    archiveUrlTests(); archiveRedirectTests(); archiveTransferTests(); archiveNativeErrorTests();
+}
+void gamebatoTests() {
+    assert(safeUrl(GAMEBATO_TEST_URL));
+    const char* invalid[] = { "http://gamebatoapp.ir/home/app.pkg", "https://gamebatoapp.ir/home/",
+        "https://gamebatoapp.ir/home", "https://gamebatoapp.ir/home/index.html",
+        "https://gamebatoapp.ir/home/other.pkg", "https://gamebatoapp.ir/app.pkg",
+        "https://gamebatoapp.ir/home/app.pkg/extra", "https://gamebatoapp.ir/home/app.pkg?token=x",
+        "https://gamebatoapp.ir/home/app.pkg#fragment", "https://gamebatoapp.ir:443/home/app.pkg",
+        "https://gamebatoapp.ir@evil.example/home/app.pkg", "https://gamebatoapp.ir.evil.example/home/app.pkg",
+        "https://www.gamebatoapp.ir/home/app.pkg", "https://gamebatoapp.ir/home/%61pp.pkg" };
+    for (const char* url : invalid) checkRejectedSource(url, GAMEBATO_TEST_CID);
+
+    DownloadSpec spec = binarySourceSpec(GAMEBATO_TEST_URL);
+    resetBinarySource(GAMEBATO_TEST_URL, GAMEBATO_TEST_CID);
+    // The mock is synthetic: hash its fixture, never assert the real release digest.
+    std::string digest = hashText(std::string((char*)payload.data(), payload.size()));
+    spec.sha256 = digest.c_str(); checkBinarySuccess(spec, GAMEBATO_TEST_CID, 1);
+    resetBinaryRedirect(GAMEBATO_TEST_URL, GAMEBATO_TEST_URL, GAMEBATO_TEST_CID);
+    checkBinarySuccess(spec, GAMEBATO_TEST_CID, 2);
+    spec.sha256 = 0;
+
+    const char* foreign[] = { CID_GITHUB_URL, SOURCE_PAGE_URL, SOURCE_CDN_URL, ARCHIVE_TEST_URL,
+        ARCHIVE_TEST_CDN, "https://store.playstation.com/app.pkg", "https://gamebatoapp.ir/home/other.pkg" };
+    for (const char* to : foreign) {
+        resetBinaryRedirect(GAMEBATO_TEST_URL, to, GAMEBATO_TEST_CID);
+        checkBinaryFailure(spec, GAMEBATO_TEST_CID, DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS);
+    }
+    for (const char* from : { CID_GITHUB_URL, SOURCE_PAGE_URL, SOURCE_CDN_URL, ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN }) {
+        resetBinaryRedirect(from, GAMEBATO_TEST_URL, GAMEBATO_TEST_CID);
+        checkBinaryFailure(binarySourceSpec(from), GAMEBATO_TEST_CID,
+                           DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS);
+    }
+    resetBinarySource(GAMEBATO_TEST_URL, GAMEBATO_TEST_CID); sourceResponses[0].body[0x40] = 'E';
+    checkBinaryFailure(spec, GAMEBATO_TEST_CID, DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE);
+    resetBinarySource(GAMEBATO_TEST_URL, GAMEBATO_TEST_CID);
+    spec.sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+    checkBinaryFailure(spec, GAMEBATO_TEST_CID, DOWNLOAD_ERROR_HASH, DOWNLOAD_STAGE_HASH);
+    spec.sha256 = 0;
+
+    resetBinarySource(GAMEBATO_TEST_URL, GAMEBATO_TEST_CID);
+    const uint64_t actualBytes = 23068672ULL;
+    fixtureBe64(sourceResponses[0].body, 0x430, actualBytes);
+    sourceResponses[0].overrideLength = true; sourceResponses[0].length = actualBytes;
+    sourceResponses[0].readFailureAfter = CID_TEST_HEADER; sourceResponses[0].readRc = LARGE_READ_ERROR;
+    spec.expectedBytes = actualBytes;
+    checkBinaryFailure(spec, GAMEBATO_TEST_CID, DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_READ, LARGE_READ_ERROR);
+    assert(downloadSnapshot().received == CID_TEST_HEADER && downloadSnapshot().total == actualBytes);
+    assert(sourceResponses[0].body.size() == CID_TEST_HEADER);
+}
+
 void largePackageTests(DownloadSpec& spec) {
     const uint64_t cap = 274877906944ULL; // Independently specified 256 GiB.
     assert(PEPPY_MAX_PACKAGE_BYTES == cap);
@@ -652,8 +919,10 @@ int main(){
  largePackageTests(spec);
  mediafireTests();
  contentIdTests();
+ archiveTests();
+ gamebatoTests();
  spec.filename="../sample.pkg";assert(!startDownload(spec));assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC);
  FILE* log=fopen((std::string(testDirectory())+"/download.log").c_str(),"rb");assert(log);char logged[8192]={0};size_t loggedBytes=fread(logged,1,sizeof(logged)-1,log);assert(loggedBytes>0&&!ferror(log));assert(__real_fclose(log)==0);assert(!strstr(logged,"https://")&&!strstr(logged,"token="));
  unlink(outputPath().c_str());unlink((std::string(testDirectory())+"/download.log").c_str());rmdir(testDirectory());
- puts("All digest, URL, redirect, length, I/O failure, cleanup, TLS, cancellation, MediaFire source, and Content ID tests passed.");
+ puts("All digest, URL, redirect, length, I/O failure, cleanup, TLS, cancellation, MediaFire, Archive, GameBaTo, and Content ID tests passed.");
 }

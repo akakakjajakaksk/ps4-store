@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "verified_at": "2026-10-04",
-  "verification_scope": "Metadados de releases, assets, README e changelog de repositorios publicos oficiais/autores de ports no GitHub. Nao foram baixados os binarios nem executados em PS4.",
+  "verification_scope": "Releases e páginas públicas dos autores/fontes, tamanhos exatos e leitura HTTP Range de cabeçalhos de PKG nas novas entradas. Somente o cliente GameBaTo foi baixado integralmente para calcular SHA256. Nenhum jogo completo foi baixado e nenhum pacote foi executado em PS4.",
   "entries": [
     {
       "id": "APOL00004",
@@ -831,6 +831,531 @@
         "explicit_13_52": false,
         "summary": "Instalação e funcionamento em 13.52 ainda precisam de teste no console."
       }
+    },
+    {
+      "id": "fpkgi",
+      "name": "FPKGi",
+      "description": "Instalador de pacotes para PS4 com listas JSON locais, da rede ou da web. Configure suas próprias fontes de conteúdo.",
+      "category": "Utilitários",
+      "repository": "ItsJokerZz/FPKGi",
+      "repository_url": "https://github.com/ItsJokerZz/FPKGi",
+      "version": "v1.10.0",
+      "release_name": "v1.10.0 [FINAL]",
+      "release_url": "https://github.com/ItsJokerZz/FPKGi/releases/tag/v1.10.0",
+      "published_at": "2026-01-28T01:56:03Z",
+      "asset_name": "FPKGi_v1.10.0-release.pkg",
+      "download_url": "https://github.com/ItsJokerZz/FPKGi/releases/download/v1.10.0/FPKGi_v1.10.0-release.pkg",
+      "size_bytes": 85458944,
+      "sha256": "cdc9b5f5384c42eff16adea3e128783e4946573894ec84c15cf9a2ea33df4bfe",
+      "license": "GPL-2.0",
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "firmware": "13.52: testar no console",
+      "additional_notes": [
+        "O autor distribui este pacote como aplicativo para PS4 e PS5. O repositório FPKGi-PS5 está arquivado; a distribuição atual é ItsJokerZz/FPKGi.",
+        "Nenhuma lista de jogos é importada junto com o aplicativo."
+      ],
+      "caption": "Instalador de pacotes",
+      "developer": "ItsJokerZz",
+      "source": "ItsJokerZz/FPKGi",
+      "firmware_evidence": {
+        "summary": "README oficial confirma PS4 e PS5; não declara suporte específico ao firmware 13.52. Necessita teste no console.",
+        "explicit_13_52": false,
+        "evidence_url": "https://github.com/ItsJokerZz/FPKGi/blob/v1.10.0/README.md",
+        "quote": "FPKGi (Fake PKG Installer) is an open-source homebrew app for installing modified .pkg files on the PS4 and PS5."
+      },
+      "url": "https://github.com/ItsJokerZz/FPKGi/releases/download/v1.10.0/FPKGi_v1.10.0-release.pkg",
+      "filename": "FPKGi_v1.10.0-release.pkg",
+      "requires_data": "",
+      "art": 3,
+      "content_id": "ED1633-PKGI13337_00-0000000000000000",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 85458944,
+        "content_id": "ED1633-PKGI13337_00-0000000000000000"
+      }
+    },
+    {
+      "id": "CHTM00777",
+      "name": "PS4 Cheats Manager",
+      "description": "Gerencia códigos de cheats e patches para GoldHEN no PS4.",
+      "category": "Utilitários",
+      "caption": "Cheats e patches GoldHEN",
+      "developer": "bucanero",
+      "license": "GPL-3.0",
+      "additional_notes": [
+        "O README oficial não exige configuração especial; dados e URLs podem ser alterados no aplicativo."
+      ],
+      "requires_data": "GoldHEN necessário para usar os cheats e patches.",
+      "art": 0,
+      "repository": "bucanero/PS4CheatsManager",
+      "repository_url": "https://github.com/bucanero/PS4CheatsManager",
+      "version": "v1.2.2",
+      "release_name": "PS4 Cheats Manager v1.2.2",
+      "release_url": "https://github.com/bucanero/PS4CheatsManager/releases/tag/v1.2.2",
+      "published_at": "2024-06-15T12:34:11Z",
+      "asset_name": "IV0000-CHTM00777_00-PS4CHEATSMANAGER.pkg",
+      "download_url": "https://github.com/bucanero/PS4CheatsManager/releases/download/v1.2.2/IV0000-CHTM00777_00-PS4CHEATSMANAGER.pkg",
+      "url": "https://github.com/bucanero/PS4CheatsManager/releases/download/v1.2.2/IV0000-CHTM00777_00-PS4CHEATSMANAGER.pkg",
+      "filename": "IV0000-CHTM00777_00-PS4CHEATSMANAGER.pkg",
+      "size_bytes": 19202048,
+      "sha256": null,
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "firmware": "13.52: testar no console",
+      "source": "bucanero/PS4CheatsManager",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "O autor identifica este pacote como PS4; funcionamento em 13.52 não foi comprovado nesta sessão."
+      },
+      "content_id": "IV0000-CHTM00777_00-PS4CHEATSMANAGER",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 19202048,
+        "content_id": "IV0000-CHTM00777_00-PS4CHEATSMANAGER"
+      }
+    },
+    {
+      "id": "BREW00984",
+      "name": "NP2kai PS4",
+      "description": "Emulador PC-98 nativo para PS4 com perfis de controle, teclado USB e estados de salvamento.",
+      "category": "Emuladores",
+      "caption": "Emulador PC-98",
+      "developer": "Emii",
+      "license": "MIT",
+      "additional_notes": [
+        "BIOS, fontes e jogos não estão incluídos.",
+        "Arquivos BIOS/fontes: bios.rom, itf.rom, sound.rom e font.bmp ou FONT.rom."
+      ],
+      "requires_data": "BIOS/fontes: /data/np2kai-runtime/system/np2kai/; jogos: /data/np2kai-runtime/games/.",
+      "art": 1,
+      "repository": "EmiiBytee/np2kai-ps4",
+      "repository_url": "https://github.com/EmiiBytee/np2kai-ps4",
+      "version": "v1.0",
+      "release_name": "NP2kai PS4 v1.0",
+      "release_url": "https://github.com/EmiiBytee/np2kai-ps4/releases/tag/v1.0",
+      "published_at": "2026-07-28T04:38:38Z",
+      "asset_name": "IV0000-BREW00984_00-NP2KAIBOOTSTRAP0.pkg",
+      "download_url": "https://github.com/EmiiBytee/np2kai-ps4/releases/download/v1.0/IV0000-BREW00984_00-NP2KAIBOOTSTRAP0.pkg",
+      "url": "https://github.com/EmiiBytee/np2kai-ps4/releases/download/v1.0/IV0000-BREW00984_00-NP2KAIBOOTSTRAP0.pkg",
+      "filename": "IV0000-BREW00984_00-NP2KAIBOOTSTRAP0.pkg",
+      "size_bytes": 9109504,
+      "sha256": "78be5832008fee5c3cf2b023a3fc9e029013625a2f04292ff1589263edc03063",
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "firmware": "13.52: testar no console",
+      "source": "EmiiBytee/np2kai-ps4",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "O autor identifica este pacote como PS4; funcionamento em 13.52 não foi comprovado nesta sessão."
+      },
+      "content_id": "IV0000-BREW00984_00-NP2KAIBOOTSTRAP0",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 9109504,
+        "content_id": "IV0000-BREW00984_00-NP2KAIBOOTSTRAP0"
+      }
+    },
+    {
+      "id": "MGBA00001",
+      "name": "mGBA para PS4",
+      "description": "Port nativo de mGBA para jogos Game Boy, Game Boy Color e Game Boy Advance.",
+      "category": "Emuladores",
+      "caption": "Emulador GB / GBC / GBA",
+      "developer": "bizkut",
+      "license": "MPL-2.0",
+      "additional_notes": [
+        "O README descreve o port como release candidate.",
+        "Multiplayer, câmera, sensores e entrada por teclado não estão incluídos nesta versão."
+      ],
+      "requires_data": "ROMs não incluídas; copie seus arquivos para /data/mgba.",
+      "art": 1,
+      "repository": "bizkut/ps4-mgba",
+      "repository_url": "https://github.com/bizkut/ps4-mgba",
+      "version": "ps4-v0.1.0",
+      "release_name": "mGBA PS4 ps4-v0.1.0",
+      "release_url": "https://github.com/bizkut/ps4-mgba/releases/tag/ps4-v0.1.0",
+      "published_at": "2026-07-19T06:14:20Z",
+      "asset_name": "mgba-ps4-ps4-v0.1.0.pkg",
+      "download_url": "https://github.com/bizkut/ps4-mgba/releases/download/ps4-v0.1.0/mgba-ps4-ps4-v0.1.0.pkg",
+      "url": "https://github.com/bizkut/ps4-mgba/releases/download/ps4-v0.1.0/mgba-ps4-ps4-v0.1.0.pkg",
+      "filename": "mgba-ps4-ps4-v0.1.0.pkg",
+      "size_bytes": 6619136,
+      "sha256": "89cb1457fd64d422472e2e8ad48c6135f9c0296bb2e4a87c2473d3775a7be5b6",
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "firmware": "13.52: testar no console",
+      "source": "bizkut/ps4-mgba",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "Pacote identificado pelo portador como PS4; não há prova de funcionamento em 13.52 nesta sessão."
+      },
+      "content_id": "IV0000-MGBA00001_00-MGBAPS4PORT00000",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 6619136,
+        "content_id": "IV0000-MGBA00001_00-MGBAPS4PORT00000"
+      }
+    },
+    {
+      "id": "CUSA00486",
+      "name": "Hotline Miami",
+      "caption": "PS4 / versão modificada",
+      "description": "Pacote PS4 da coleção H do Internet Archive. A coleção informa atualizações mescladas e conteúdo removido; pode ter limitações no PS4 Pro.",
+      "category": "Jogos",
+      "source_kind": "reviewed_direct",
+      "provider": "archive",
+      "source": "archive.org",
+      "source_label": "INTERNET ARCHIVE",
+      "source_url": "https://archive.org/details/ps4-fpkg-collection-english-h",
+      "release_url": "https://archive.org/details/ps4-fpkg-collection-english-h",
+      "platform": "PS4",
+      "package_kind": "base",
+      "content_id": "UP3643-CUSA00486_00-HOTLINEMIAMIPS40",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 161939456,
+        "content_id": "UP3643-CUSA00486_00-HOTLINEMIAMIPS40"
+      },
+      "version": "v1.01",
+      "developer": "Dennaton Games",
+      "firmware": "13.52: testar no console",
+      "url": "https://archive.org/download/ps4-fpkg-collection-english-h/Hotline%20Miami%20-%20%5BUS%5D%20%5BEN%5D%20%5B1.01%5D.pkg",
+      "filename": "UP3643-CUSA00486_00-HOTLINEMIAMIPS40-archive.pkg",
+      "size_bytes": 161939456,
+      "sha256": null,
+      "requires_data": "Versão modificada; o cabeçalho não comprova compatibilidade ou integridade interna.",
+      "art": 0,
+      "verification_status": "public_metadata_and_bounded_header_verified",
+      "additional_notes": [
+        "A fonte descreve releases modificadas; não foram baixados jogos completos nem realizados testes no PS4."
+      ]
+    },
+    {
+      "id": "CUSA00368",
+      "name": "Hotline Miami 2: Wrong Number",
+      "caption": "PS4 / versão modificada",
+      "description": "Pacote PS4 da coleção H do Internet Archive. A coleção informa atualizações mescladas e conteúdo removido; pode ter limitações no PS4 Pro.",
+      "category": "Jogos",
+      "source_kind": "reviewed_direct",
+      "provider": "archive",
+      "source": "archive.org",
+      "source_label": "INTERNET ARCHIVE",
+      "source_url": "https://archive.org/details/ps4-fpkg-collection-english-h",
+      "release_url": "https://archive.org/details/ps4-fpkg-collection-english-h",
+      "platform": "PS4",
+      "package_kind": "base",
+      "content_id": "UP3643-CUSA00368_00-HOTLINEMIAMI2000",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 391512064,
+        "content_id": "UP3643-CUSA00368_00-HOTLINEMIAMI2000"
+      },
+      "version": "v1.01",
+      "developer": "Dennaton Games",
+      "firmware": "13.52: testar no console",
+      "url": "https://archive.org/download/ps4-fpkg-collection-english-h/Hotline%20Miami%202%20Wrong%20Number%20-%20%5BUS%5D%20%5BEN%5D%20%5B1.01%5D.pkg",
+      "filename": "UP3643-CUSA00368_00-HOTLINEMIAMI2000-archive.pkg",
+      "size_bytes": 391512064,
+      "sha256": null,
+      "requires_data": "Versão modificada; o cabeçalho não comprova compatibilidade ou integridade interna.",
+      "art": 1,
+      "verification_status": "public_metadata_and_bounded_header_verified",
+      "additional_notes": [
+        "A fonte descreve releases modificadas; não foram baixados jogos completos nem realizados testes no PS4."
+      ]
+    },
+    {
+      "id": "CUSA13285",
+      "name": "Hollow Knight",
+      "caption": "PS4 / versão modificada",
+      "description": "Pacote PS4 da coleção H do Internet Archive. A coleção informa atualizações mescladas e conteúdo removido; pode ter limitações no PS4 Pro.",
+      "category": "Jogos",
+      "source_kind": "reviewed_direct",
+      "provider": "archive",
+      "source": "archive.org",
+      "source_label": "INTERNET ARCHIVE",
+      "source_url": "https://archive.org/details/ps4-fpkg-collection-english-h",
+      "release_url": "https://archive.org/details/ps4-fpkg-collection-english-h",
+      "platform": "PS4",
+      "package_kind": "base",
+      "content_id": "EP1805-CUSA13285_00-HOLLOWKNIGHT18EU",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 1237516288,
+        "content_id": "EP1805-CUSA13285_00-HOLLOWKNIGHT18EU"
+      },
+      "version": "v1.02",
+      "developer": "Team Cherry",
+      "firmware": "13.52: testar no console",
+      "url": "https://archive.org/download/ps4-fpkg-collection-english-h/Hollow%20Knight%20-%20%5BEU%5D%20%5BEN%5D%20%5B1.02%5D.pkg",
+      "filename": "EP1805-CUSA13285_00-HOLLOWKNIGHT18EU-archive.pkg",
+      "size_bytes": 1237516288,
+      "sha256": null,
+      "requires_data": "Versão modificada; o cabeçalho não comprova compatibilidade ou integridade interna.",
+      "art": 2,
+      "verification_status": "public_metadata_and_bounded_header_verified",
+      "additional_notes": [
+        "A fonte descreve releases modificadas; não foram baixados jogos completos nem realizados testes no PS4."
+      ]
+    },
+    {
+      "id": "GBTX00001",
+      "name": "GameBaTo",
+      "category": "Utilitários",
+      "caption": "Loja de aplicativos PS4",
+      "description": "Cliente GameBaTo para navegar e instalar o conteúdo oferecido pelo serviço no PS4.",
+      "version": "site sem versão",
+      "developer": "GameBaTo",
+      "firmware": "Site: 5.05-12.0; 13.52 não testado",
+      "source_kind": "reviewed_direct",
+      "provider": "gamebato",
+      "platform": "PS4",
+      "package_kind": "base",
+      "content_id": "XX0000-GBTX00001_00-GBTXXXXXXXXXXXXX",
+      "source": "gamebatoapp.ir",
+      "source_label": "GAMEBATO",
+      "source_url": "https://gamebatoapp.ir/home/en/",
+      "release_url": "https://gamebatoapp.ir/home/en/",
+      "url": "https://gamebatoapp.ir/home/app.pkg",
+      "filename": "XX0000-GBTX00001_00-GBTXXXXXXXXXXXXX-site-20261004.pkg",
+      "size_bytes": 23068672,
+      "sha256": "529a33a55722c2488c9b190da6eb6132997903c3253091e576538785d3c937bb",
+      "requires_data": "O site anuncia firmware 5.05 a 12.0; funcionamento em 13.52 ainda não foi testado.",
+      "art": 3,
+      "verification_status": "public_source_header_and_full_sha256_verified",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 23068672,
+        "content_id": "XX0000-GBTX00001_00-GBTXXXXXXXXXXXXX"
+      },
+      "verification_date": "2026-10-04",
+      "verification_method": "Página pública do fornecedor, cabeçalho HTTP Range e download completo de 23.068.672 bytes com SHA256 calculado nesta revisão.",
+      "source_entry_title": "GameBaTo - Download and Install Games Directly From you PS4 Console",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "A página do fornecedor anuncia PS4 firmware 5.05 até 12.0. Não fornece evidência de funcionamento em 13.52.",
+        "evidence_url": "https://gamebatoapp.ir/home/en/",
+        "quote": "Follow the guide below to install GameBaTo on your jailbroken PS4.Works on PS4 version 5.05 up to 12.0"
+      },
+      "additional_notes": [
+        "A página pública não informa o número da versão do aplicativo nem publica checksum.",
+        "Link app.pkg mutável: SHA256 calculado em 2026-10-04 fixa este arquivo. Uma mudança no servidor exige nova revisão de catálogo.",
+        "A página pública analisada não informa claramente requisitos de conta ou assinatura; nenhum requisito foi inferido.",
+        "Esta entrada instala somente o cliente GameBaTo; nenhuma lista de jogos foi importada."
+      ]
+    },
+    {
+      "id": "QUAK03000",
+      "name": "ioQuake3: Quake III Arena",
+      "caption": "Quake III no PS4",
+      "description": "Port do motor ioQuake3 para Quake III Arena, com bots, mods e multiplayer. O pacote não inclui os dados do jogo.",
+      "category": "Jogos homebrew",
+      "source": "Mayo1970/ioQuake3-PS4",
+      "repository": "Mayo1970/ioQuake3-PS4",
+      "repository_url": "https://github.com/Mayo1970/ioQuake3-PS4",
+      "version": "1.8",
+      "developer": "Mayo1970",
+      "release_url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/tag/1.8",
+      "published_at": "2026-09-20T10:05:18Z",
+      "url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/download/1.8/IV0000-QUAK03000_00-IOQ3PS4PORT00000.pkg",
+      "filename": "IV0000-QUAK03000_00-IOQ3PS4PORT00000.pkg",
+      "size_bytes": 13762560,
+      "sha256": "4f609f1dab826f558fa99d7389c2d9d48ef3c0a28e9c2aec926835b44fce2cc4",
+      "content_id": "IV0000-QUAK03000_00-IOQ3PS4PORT00000",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 13762560,
+        "content_id": "IV0000-QUAK03000_00-IOQ3PS4PORT00000"
+      },
+      "firmware": "13.52: testar no console",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "O autor confirma builds PS4; firmware 13.52 não foi confirmado nesta sessão.",
+        "evidence_url": "https://github.com/Mayo1970/ioQuake3-PS4/blob/1.8/INSTALLATION.md"
+      },
+      "requires_data": "Copie seus pak0.pk3 a pak8.pk3 para /data/ioq3/baseq3/.",
+      "art": 1,
+      "license": "GPL-2.0",
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "discovery_source": "https://www.psx-place.com/resources/ioquake3-ps4.1717/",
+      "additional_notes": [
+        "Instala o motor, sem os arquivos de dados dos jogos. Instruções do autor na INSTALLATION.md da tag 1.8."
+      ]
+    },
+    {
+      "id": "QUAK03001",
+      "name": "ioQuake3: Team Arena",
+      "caption": "Expansão Team Arena",
+      "description": "Port do motor ioQuake3 para Quake III: Team Arena. Exige dados do jogo base e da expansão. O pacote não inclui os dados do jogo.",
+      "category": "Jogos homebrew",
+      "source": "Mayo1970/ioQuake3-PS4",
+      "repository": "Mayo1970/ioQuake3-PS4",
+      "repository_url": "https://github.com/Mayo1970/ioQuake3-PS4",
+      "version": "1.8",
+      "developer": "Mayo1970",
+      "release_url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/tag/1.8",
+      "published_at": "2026-09-20T10:05:18Z",
+      "url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/download/1.8/IV0000-QUAK03001_00-IOQ3PS4PORT00000.pkg",
+      "filename": "IV0000-QUAK03001_00-IOQ3PS4PORT00000.pkg",
+      "size_bytes": 13762560,
+      "sha256": "3c1823e5ba2003d25166aaa75868ec68e5a83684fc18b8a31c5f5c52025058af",
+      "content_id": "IV0000-QUAK03001_00-IOQ3PS4PORT00000",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 13762560,
+        "content_id": "IV0000-QUAK03001_00-IOQ3PS4PORT00000"
+      },
+      "firmware": "13.52: testar no console",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "O autor confirma builds PS4; firmware 13.52 não foi confirmado nesta sessão.",
+        "evidence_url": "https://github.com/Mayo1970/ioQuake3-PS4/blob/1.8/INSTALLATION.md"
+      },
+      "requires_data": "Copie baseq3/pak0.pk3 a pak8.pk3 e missionpack/pak0.pk3 a pak3.pk3 para /data/ioq3/.",
+      "art": 1,
+      "license": "GPL-2.0",
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "discovery_source": "https://www.psx-place.com/resources/ioquake3-ps4.1717/",
+      "additional_notes": [
+        "Instala o motor, sem os arquivos de dados dos jogos. Instruções do autor na INSTALLATION.md da tag 1.8."
+      ]
+    },
+    {
+      "id": "QUAK03002",
+      "name": "ioQuake3: Open Arena",
+      "caption": "Open Arena no PS4",
+      "description": "Port do motor ioQuake3 para Open Arena, que usa dados de jogo disponíveis gratuitamente. O pacote não inclui os dados do jogo.",
+      "category": "Jogos homebrew",
+      "source": "Mayo1970/ioQuake3-PS4",
+      "repository": "Mayo1970/ioQuake3-PS4",
+      "repository_url": "https://github.com/Mayo1970/ioQuake3-PS4",
+      "version": "1.8",
+      "developer": "Mayo1970",
+      "release_url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/tag/1.8",
+      "published_at": "2026-09-20T10:05:18Z",
+      "url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/download/1.8/IV0000-QUAK03002_00-IOQ3PS4PORT00000.pkg",
+      "filename": "IV0000-QUAK03002_00-IOQ3PS4PORT00000.pkg",
+      "size_bytes": 13762560,
+      "sha256": "5ffe1e0c70ab455a693db4af6ac6960e2a2ec430519ea09571bf4e6e09f1d3f0",
+      "content_id": "IV0000-QUAK03002_00-IOQ3PS4PORT00000",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 13762560,
+        "content_id": "IV0000-QUAK03002_00-IOQ3PS4PORT00000"
+      },
+      "firmware": "13.52: testar no console",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "O autor confirma builds PS4; firmware 13.52 não foi confirmado nesta sessão.",
+        "evidence_url": "https://github.com/Mayo1970/ioQuake3-PS4/blob/1.8/INSTALLATION.md"
+      },
+      "requires_data": "Dados não incluídos; copie os arquivos pak*.pk3 de Open Arena para /data/ioq3/baseoa/.",
+      "art": 1,
+      "license": "GPL-2.0",
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "discovery_source": "https://www.psx-place.com/resources/ioquake3-ps4.1717/",
+      "additional_notes": [
+        "Instala o motor, sem os arquivos de dados dos jogos. Instruções do autor na INSTALLATION.md da tag 1.8."
+      ]
+    },
+    {
+      "id": "QUAK03003",
+      "name": "ioQuake3: Classic",
+      "caption": "Protocolo Dreamcast",
+      "description": "Variante Quake III Classic com protocolo 1.16n para servidores da comunidade Dreamcast. O pacote não inclui os dados do jogo.",
+      "category": "Jogos homebrew",
+      "source": "Mayo1970/ioQuake3-PS4",
+      "repository": "Mayo1970/ioQuake3-PS4",
+      "repository_url": "https://github.com/Mayo1970/ioQuake3-PS4",
+      "version": "1.8",
+      "developer": "Mayo1970",
+      "release_url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/tag/1.8",
+      "published_at": "2026-09-20T10:05:18Z",
+      "url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/download/1.8/IV0000-QUAK03003_00-IOQ3PS4PORT00000.pkg",
+      "filename": "IV0000-QUAK03003_00-IOQ3PS4PORT00000.pkg",
+      "size_bytes": 13107200,
+      "sha256": "53a6a447346e88e22684e523193574606374ab247896a127d54188b5c5ba6d57",
+      "content_id": "IV0000-QUAK03003_00-IOQ3PS4PORT00000",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 13107200,
+        "content_id": "IV0000-QUAK03003_00-IOQ3PS4PORT00000"
+      },
+      "firmware": "13.52: testar no console",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "O autor confirma builds PS4; firmware 13.52 não foi confirmado nesta sessão.",
+        "evidence_url": "https://github.com/Mayo1970/ioQuake3-PS4/blob/1.8/INSTALLATION.md"
+      },
+      "requires_data": "PAKs 0-2: /data/ioq3/baseq3/; crossplay: dc-mappack.pk3.",
+      "art": 1,
+      "license": "GPL-2.0",
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "discovery_source": "https://www.psx-place.com/resources/ioquake3-ps4.1717/",
+      "additional_notes": [
+        "Instala o motor, sem os arquivos de dados dos jogos. Instruções do autor na INSTALLATION.md da tag 1.8."
+      ]
+    },
+    {
+      "id": "QUAK03004",
+      "name": "ioQuake3: Elite Force",
+      "caption": "Star Trek: Holomatch",
+      "description": "Port Holomatch de Star Trek Voyager: Elite Force usando o motor ioQuake3. O pacote não inclui os dados do jogo.",
+      "category": "Jogos homebrew",
+      "source": "Mayo1970/ioQuake3-PS4",
+      "repository": "Mayo1970/ioQuake3-PS4",
+      "repository_url": "https://github.com/Mayo1970/ioQuake3-PS4",
+      "version": "1.8",
+      "developer": "Mayo1970",
+      "release_url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/tag/1.8",
+      "published_at": "2026-09-20T10:05:18Z",
+      "url": "https://github.com/Mayo1970/ioQuake3-PS4/releases/download/1.8/IV0000-QUAK03004_00-IOQ3PS4PORT00000.pkg",
+      "filename": "IV0000-QUAK03004_00-IOQ3PS4PORT00000.pkg",
+      "size_bytes": 13762560,
+      "sha256": "8e77da8680aa6f51e9676d526291cd127f4f2eea441a527cb9e1ed120ca542c8",
+      "content_id": "IV0000-QUAK03004_00-IOQ3PS4PORT00000",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "package_size": 13762560,
+        "content_id": "IV0000-QUAK03004_00-IOQ3PS4PORT00000"
+      },
+      "firmware": "13.52: testar no console",
+      "firmware_evidence": {
+        "explicit_13_52": false,
+        "summary": "O autor confirma builds PS4; firmware 13.52 não foi confirmado nesta sessão.",
+        "evidence_url": "https://github.com/Mayo1970/ioQuake3-PS4/blob/1.8/INSTALLATION.md"
+      },
+      "requires_data": "Copie seus arquivos pak*.pk3 de Elite Force para /data/ioq3/baseEF/.",
+      "art": 1,
+      "license": "GPL-2.0",
+      "verification_status": "official_release_metadata_and_bounded_header_verified",
+      "discovery_source": "https://www.psx-place.com/resources/ioquake3-ps4.1717/",
+      "additional_notes": [
+        "Instala o motor, sem os arquivos de dados dos jogos. Instruções do autor na INSTALLATION.md da tag 1.8."
+      ]
     }
   ]
 }

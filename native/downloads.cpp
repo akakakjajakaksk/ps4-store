@@ -184,8 +184,69 @@ bool mediafireCdn(const char* url) {
     size_t length = boundedLength(url, URL_CAP);
     return length < URL_CAP && peppyMediafire::isCdnUrl(url, length);
 }
+bool archiveUrl(const char* url, size_t* originLength = 0) {
+    size_t length = boundedLength(url, URL_CAP);
+    if (length == URL_CAP || length < 10 || strncmp(url, "https://", 8)) return false;
+    const char* host = url + 8;
+    const char* path = strchr(host, '/');
+    if (!path) return false;
+    size_t hostLength = path - host;
+    bool origin = equalNoCase(host, hostLength, "archive.org");
+    bool cdn = equalNoCase(host, hostLength, "ia800705.us.archive.org") ||
+               equalNoCase(host, hostLength, "dn721707.ca.archive.org") ||
+               equalNoCase(host, hostLength, "dn760105.eu.archive.org");
+    if (!origin && !cdn) return false;
+
+    // These exact hosts and this collection were observed serving PKG headers.
+    // Metadata/search pages, other collections, and unobserved mirrors stay out.
+    const char* file = path;
+    if (origin) {
+        const char prefix[] = "/download/ps4-fpkg-collection-english-h/";
+        if (strncmp(file, prefix, sizeof(prefix) - 1)) return false;
+        file += sizeof(prefix) - 1;
+    } else {
+        if (*file++ != '/') return false;
+        size_t digits = 0;
+        while (*file >= '0' && *file <= '9') { ++file; ++digits; }
+        if (!digits || digits > 10) return false;
+        const char prefix[] = "/items/ps4-fpkg-collection-english-h/";
+        if (strncmp(file, prefix, sizeof(prefix) - 1)) return false;
+        file += sizeof(prefix) - 1;
+    }
+    size_t fileLength = length - (size_t)(file - url);
+    if (fileLength <= 4 || strcmp(file + fileLength - 4, ".pkg")) return false;
+    unsigned char previous = 0;
+    for (size_t i = 0; i < fileLength; ++i) {
+        unsigned char value = (unsigned char)file[i];
+        if (value == '%') {
+            if (fileLength - i < 3 || hex(file[i + 1]) < 0 || hex(file[i + 2]) < 0)
+                return false;
+            value = (unsigned char)(hex(file[i + 1]) * 16 + hex(file[i + 2]));
+            i += 2;
+        } else if (value <= 32 || value >= 127) return false;
+        // A basename only: decoding cannot create another path, query, fragment,
+        // or second percent escape. Escaped spaces and punctuation are permitted.
+        if (value < 32 || value >= 127 || value == '/' || value == '\\' ||
+            value == '?' || value == '#' || value == '%' || value == '"' ||
+            value == '<' || value == '>' || value == '`') return false;
+        if ((!previous && value == '.') || (previous == '.' && value == '.')) return false;
+        previous = value;
+    }
+    if (originLength) *originLength = path - url;
+    return true;
+}
+bool gamebatoUrl(const char* url, size_t* originLength = 0) {
+    // The public application PKG was verified at this single HTTPS location.
+    // Do not extend this permission to the site's HTML or other downloads.
+    const char expected[] = "https://gamebatoapp.ir/home/app.pkg";
+    if (boundedLength(url, sizeof(expected)) != sizeof(expected) - 1 ||
+        memcmp(url, expected, sizeof(expected) - 1)) return false;
+    if (originLength) *originLength = sizeof("https://gamebatoapp.ir") - 1;
+    return true;
+}
 bool safeUrl(const char* url, size_t* originLength = 0) {
-    if (githubUrl(url, originLength)) return true;
+    if (githubUrl(url, originLength) || archiveUrl(url, originLength) ||
+        gamebatoUrl(url, originLength)) return true;
     size_t length = boundedLength(url, URL_CAP);
     if (length == URL_CAP) return false;
     return peppyMediafire::isPageUrl(url, length, originLength) ||
@@ -195,6 +256,8 @@ bool allowedRedirect(const char* current, const char* next) {
     // A source may redirect only within its own explicitly supported provider.
     // In particular, CDN URLs cannot redirect back into a landing page.
     if (githubUrl(current)) return githubUrl(next);
+    if (archiveUrl(current)) return archiveUrl(next);
+    if (gamebatoUrl(current)) return gamebatoUrl(next);
     if (mediafirePage(current)) return mediafirePage(next) || mediafireCdn(next);
     return mediafireCdn(current) && mediafireCdn(next);
 }

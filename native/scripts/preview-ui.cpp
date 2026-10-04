@@ -193,13 +193,14 @@ static bool verifyController() {
         resetController();
         activateApp(i);
         if (!expect(lastDownloadContentId && strcmp(lastDownloadContentId, UI_APPS[i].contentId) == 0,
-                    "an external download receives its catalog Content ID")) return false;
+                    "a checked download receives its catalog Content ID")) return false;
         completeDownload(i);
         pollAutoInstall();
         if (!expect(installCalls == 1 && lastInstall.expectedBytes == UI_APPS[i].sizeBytes,
-                    "a checked external download keeps the exact size during install handoff")) return false;
-        if (!expect(strcmp(UI_APPS[i].sourceBadge, "PKG / FONTE OFICIAL") != 0,
-                    "external packages display their source badge")) return false;
+                    "a checked download keeps the exact size during install handoff")) return false;
+        bool official = strncmp(UI_APPS[i].url, "https://github.com/", 19) == 0;
+        if (!expect((strcmp(UI_APPS[i].sourceBadge, "PKG / FONTE OFICIAL") == 0) == official,
+                    "checked packages display the badge for their actual source")) return false;
     }
     resetController();
     puts("Checked automatic install handoff, retry, cancellation, cleanup, music and package size labels.");

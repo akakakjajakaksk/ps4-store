@@ -7,21 +7,24 @@ Interface nativa para PS4 homebrew, compilada com OpenOrbis PS4 Toolchain.
 - Tela em 1920×1080 com fundo escuro e destaques azuis.
 - Arte PEPPY no banner e no ícone do menu do PS4.
 - Fonte suave com caracteres em português, preparada durante a build.
-- Catálogo de 23 PKGs, com categorias, páginas e detalhes.
-- Downloads HTTPS de releases oficiais e páginas MediaFire verificadas, em segundo plano.
+- Catálogo de 36 PKGs, com categorias, páginas e detalhes.
+- Downloads HTTPS de releases oficiais, MediaFire e fontes diretas revisadas, em segundo plano.
 - Instalação local integrada após concluir e validar o download.
 - Playlist FIGHT → ACENDAOFAROL, com opção para silenciar e trocar a faixa.
 
 O catálogo está em `catalog.json`, com versões, URLs fixas, tamanhos e
 evidências de firmware verificadas em 2026-10-04. Inclui utilitários,
 emuladores, PS4 Media Player, dois pacotes de Freedoom, Agony e sete
-conversões de PS2 para PS4. As entradas externas identificam sua procedência
-como MTPS4 / MediaFire. O catálogo não
+conversões de PS2 para PS4. A revisão também adiciona FPKGi, Cheats Manager,
+NP2kai, mGBA, GameBaTo, cinco builds do ioQuake3 e três pacotes do Internet Archive: Hotline Miami,
+Hotline Miami 2 e Hollow Knight. As entradas externas identificam a fonte.
+A coleção do Archive informa atualizações mescladas e conteúdo removido;
+suas versões não são apresentadas como cópias sem alterações. O catálogo não
 representa todos os aplicativos existentes para PS4.
 A interface e os downloads não se conectam a servidores da PlayStation.
 
-O download verifica tamanho e assinatura de PKG, e confere SHA-256 quando
-o autor publica um hash. Pacotes concluídos ficam em
+O download verifica tamanho e magic de PKG, e confere SHA-256 quando
+há um hash revisado. A magic não valida a assinatura criptográfica do pacote. Pacotes concluídos ficam em
 `/data/peppy-store/downloads/`. Arquivos parciais são removidos em caso de
 erro ou cancelamento. A ação **Baixar e instalar** encaminha o pacote validado
 para AppInstUtil/BGFT, o instalador do PS4, sem precisar abrir outro aplicativo.
@@ -77,7 +80,15 @@ Os pacotes externos também conferem Content ID, tipo/flags de base e tamanho
 declarado no cabeçalho antes de publicar o arquivo completo. O catálogo
 guarda evidências de cabeçalho e HTTP Range; isso não comprova assinatura,
 todas as estruturas internas ou instalação no console.
-Os resultados das cinco fontes indicadas estão em [sources-review.md](sources-review.md).
+Internet Archive usa a rota estável da coleção revisada e somente os hosts
+HTTPS observados nesta conferência. Se o serviço mudar para outro CDN, o
+download será recusado até uma nova revisão; redirecionamentos não podem
+trocar de provedor. GameBaTo usa somente `/home/app.pkg` no site conferido,
+com SHA256 calculado em 2026-10-04 para fixar o arquivo mutável.
+O site anuncia firmware 5.05 a 12.0; funcionamento em 13.52 não está confirmado.
+Instalar FPKGi ou GameBaTo não importa seus catálogos para a Peppy nem
+comprova quais servidores serão usados pelos clientes externos.
+Os resultados das fontes indicadas estão em [sources-review.md](sources-review.md).
 
 A inicialização consulta o estado da rede/IP via NetCtl e aceita módulos
 já carregados após verificar seu estado. Falhas mostram a etapa e o retorno
@@ -134,8 +145,9 @@ Uma entrada precisa apontar para o PKG completo, com tamanho verificado e
 origem identificada. Páginas de download, arquivos RAR/ZIP, partes de um
 arquivo, captchas e links de PS5 não são downloads diretos instaláveis pela
 loja. Atualizações e DLCs também precisam de um fluxo de instalação próprio.
-O catálogo preserva as 15 releases oficiais e inclui oito pacotes externos
-conferidos. Outras fontes só entram após conferir formato, URL e servidores
+O catálogo preserva as 15 releases anteriores e contém 24 releases oficiais,
+oito pacotes MediaFire, três pacotes do Internet Archive e o cliente GameBaTo
+conferido pelo site do fornecedor. Outras fontes só entram após conferir formato, URL e servidores
 de redirecionamento. O gerador valida a procedência e as evidências externas,
 e a loja repete a verificação de identidade e tipo no arquivo recebido.
 
