@@ -641,9 +641,16 @@ static void drawDetails(uint32_t* p, int selected) {
                  install.taskId, (unsigned)install.cleanupCode);
         textElided(p, 708, 918, diagnostic, FONT_SMALL, BLUE, 1140);
         if (install.mode != INSTALL_MODE_NONE) {
-            snprintf(diagnostic, sizeof(diagnostic), "%s | SDK 0x%08X | errno %d",
-                     install.mode == INSTALL_MODE_HTTP_LOCAL ? "HTTP local" : "Arquivo global",
-                     (unsigned)install.sdkVersion, install.sdkErrno);
+            if (install.mode == INSTALL_MODE_HTTP_LOCAL) {
+                char sent[40];
+                sizeLabel(sent, sizeof(sent), install.httpBytes);
+                snprintf(diagnostic, sizeof(diagnostic),
+                         "HTTP local | pedidos %u | resposta %d | enviado %s | SDK errno %d",
+                         (unsigned)install.httpRequests, install.httpStatus, sent, install.sdkErrno);
+            } else {
+                snprintf(diagnostic, sizeof(diagnostic), "Arquivo global | SDK 0x%08X | errno %d",
+                         (unsigned)install.sdkVersion, install.sdkErrno);
+            }
             textElided(p, 708, 947, diagnostic, FONT_SMALL, MUTED, 1140);
         }
     } else if (mine && status.state == FAILED && !downloadedBytes[index]) {
@@ -738,7 +745,9 @@ int main(void){
       install.preparingPercent!=previousInstall.preparingPercent || install.localCopyPercent!=previousInstall.localCopyPercent ||
       install.cleanupCode!=previousInstall.cleanupCode || install.cleanupStage!=previousInstall.cleanupStage ||
       install.generation!=previousInstall.generation || install.mode!=previousInstall.mode ||
-      install.sdkVersion!=previousInstall.sdkVersion || install.sdkErrno!=previousInstall.sdkErrno) changed=true;
+      install.sdkVersion!=previousInstall.sdkVersion || install.sdkErrno!=previousInstall.sdkErrno ||
+      install.httpRequests!=previousInstall.httpRequests || install.httpStatus!=previousInstall.httpStatus ||
+      install.httpBytes!=previousInstall.httpBytes) changed=true;
    previousInstall=install;
    MusicSnapshot music=musicSnapshot();
    if(music.state!=previousMusic.state || music.track!=previousMusic.track || music.volume!=previousMusic.volume ||

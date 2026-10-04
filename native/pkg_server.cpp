@@ -63,13 +63,15 @@ void closeSocket(int32_t& socket, int32_t* error) {
     int32_t rc = sceNetSocketClose(owned);
     if (rc < 0) publish(error, rc);
 }
-bool sendAll(int32_t socket, const void* data, size_t bytes, const int* stop) {
+bool sendAll(int32_t socket, const void* data, size_t bytes, const int* stop,
+             uint64_t* bodyBytes = 0) {
     const char* cursor = static_cast<const char*>(data);
     uint64_t began = sceKernelGetProcessTime();
     while (bytes && !cancelled(stop) && !expired(began)) {
         int32_t sent = sceNetSend(socket, cursor, bytes, 0);
         int err = sent < 0 ? nativeErrno() : 0; // Capture before any other native call.
         if (sent > 0 && size_t(sent) <= bytes) {
+            if (bodyBytes) __atomic_add_fetch(bodyBytes, uint64_t(sent), __ATOMIC_RELAXED);
             cursor += sent;
             bytes -= size_t(sent);
         } else if (sent < 0 && retryable(sent, err)) {
@@ -152,7 +154,7 @@ bool headerName(const char* name) {
     }
     return true;
 }
-Request parse(char* header, const char* path, uint64_t bytes) {
+Request parse(char* header, const char* path, uint64_t bytes, uint16_t port) {
     Request out = {false, false, 0, bytes ? bytes - 1 : 0, 400};
     // Validate framing/controls before making any C-string parser assumptions.
     // readHeader guarantees a terminator, and its caller zeroes the full buffer;
@@ -178,12 +180,25 @@ Request parse(char* header, const char* path, uint64_t bytes) {
     if (strcmp(version, "HTTP/1.0") && strcmp(version, "HTTP/1.1")) return out;
     out.head = !strcmp(header, "HEAD");
     if (strcmp(header, "GET") && !out.head) { out.status = 405; return out; }
-    // BGFT can use absolute-form loopback request targets.
-    bool targetOk = !strcmp(target, path);
-    if (!targetOk && !strncmp(target, "http://127.0.0.1:", 17)) {
-        const char* slash = strchr(target + 17, '/');
-        targetOk = slash && !strcmp(slash, path);
+    // BGFT can append its own query even with the CDN query option disabled.
+    // Only the resource path selects a package; the opaque query changes no
+    // file/offset. Do not decode paths or accept an unrelated absolute authority.
+    const char* targetPath = target;
+    if (!strncmp(target, "http://", 7)) {
+        char authority[40];
+        snprintf(authority, sizeof(authority), "http://127.0.0.1:%u", unsigned(port));
+        size_t authorityLength = strlen(authority);
+        if (strncmp(target, authority, authorityLength) || target[authorityLength] != '/') {
+            out.status = 404;
+            return out;
+        }
+        targetPath = target + authorityLength;
     }
+    size_t pathLength = strlen(path);
+    bool targetOk = !strncmp(targetPath, path, pathLength) &&
+                    (!targetPath[pathLength] || targetPath[pathLength] == '?');
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(targetPath); *p; ++p)
+        if (*p == '#' || *p <= 32 || *p == 127) targetOk = false;
     if (!targetOk) { out.status = 404; return out; }
     bool hasRange = false, hasLength = false;
     char* cursor = lineEnd + 2;
@@ -255,10 +270,14 @@ struct PkgServer::State {
     uint64_t bytes;
     int32_t listener, client, pool;
     int32_t error, cleanupError;
+    uint32_t requests;
+    int32_t status;
+    uint64_t sentBytes;
     int stop, alive;
     bool joinable;
     OrbisPthread thread;
     char url[192], path[80];
+    uint16_t port;
 };
 
 PkgServer::PkgServer() : state_(static_cast<State*>(calloc(1, sizeof(State)))) {
@@ -271,6 +290,15 @@ int32_t PkgServer::errorCode() const {
     return primary ? primary : __atomic_load_n(&state_->cleanupError, __ATOMIC_ACQUIRE);
 }
 const char* PkgServer::url() const { return state_ ? state_->url : ""; }
+PkgServerSnapshot PkgServer::snapshot() const {
+    PkgServerSnapshot result = {};
+    if (state_) {
+        result.requests = __atomic_load_n(&state_->requests, __ATOMIC_ACQUIRE);
+        result.status = __atomic_load_n(&state_->status, __ATOMIC_ACQUIRE);
+        result.sentBytes = __atomic_load_n(&state_->sentBytes, __ATOMIC_ACQUIRE);
+    }
+    return result;
+}
 
 int32_t PkgServer::start(FILE* file, uint64_t bytes) {
     if (!state_) return ERROR_MEMORY;
@@ -280,6 +308,9 @@ int32_t PkgServer::start(FILE* file, uint64_t bytes) {
     __atomic_store_n(&state.error, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&state.cleanupError, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&state.stop, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&state.requests, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&state.status, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&state.sentBytes, 0, __ATOMIC_RELEASE);
     state.url[0] = state.path[0] = 0;
     if (!file || !bytes || bytes > uint64_t(INT64_MAX)) {
         publish(&state.error, ERROR_ARGUMENT);
@@ -322,7 +353,8 @@ int32_t PkgServer::start(FILE* file, uint64_t bytes) {
     uint32_t nonce = __atomic_add_fetch(&nonceCounter, 1, __ATOMIC_RELAXED);
     snprintf(state.path, sizeof(state.path), "/peppy-%016llx-%08x.pkg",
              (unsigned long long)sceKernelGetProcessTime(), (unsigned)nonce);
-    snprintf(state.url, sizeof(state.url), "http://127.0.0.1:%u%s", unsigned(sceNetNtohs(address.port)), state.path);
+    state.port = sceNetNtohs(address.port);
+    snprintf(state.url, sizeof(state.url), "http://127.0.0.1:%u%s", unsigned(state.port), state.path);
     __atomic_store_n(&state.alive, 1, __ATOMIC_RELEASE);
     rc = scePthreadCreate(&state.thread, 0, worker, &state, "peppy-pkg-http");
     if (rc != 0) {
@@ -334,10 +366,11 @@ int32_t PkgServer::start(FILE* file, uint64_t bytes) {
 }
 
 void PkgServer::serve(State* state, int32_t client) {
+    __atomic_add_fetch(&state->requests, uint32_t(1), __ATOMIC_RELAXED);
     char header[HEADER_CAP + 1] = {};
     int status = readHeader(client, header, &state->stop);
     if (status < 0) return;
-    Request request = status ? Request{false, false, 0, 0, status} : parse(header, state->path, state->bytes);
+    Request request = status ? Request{false, false, 0, 0, status} : parse(header, state->path, state->bytes, state->port);
     if ((request.status == 200 || request.status == 206) && !request.head) {
         if (fseeko(state->file, off_t(request.first), SEEK_SET) != 0) {
             publish(&state->error, ERROR_FILE_READ);
@@ -346,6 +379,7 @@ void PkgServer::serve(State* state, int32_t client) {
     }
     char outgoing[512];
     size_t length = response(outgoing, sizeof(outgoing), request, state->bytes);
+    __atomic_store_n(&state->status, request.status, __ATOMIC_RELEASE);
     if (!length || !sendAll(client, outgoing, length, &state->stop)) return;
     if (request.head || (request.status != 200 && request.status != 206)) return;
     uint64_t remaining = request.last - request.first + 1;
@@ -356,7 +390,7 @@ void PkgServer::serve(State* state, int32_t client) {
             publish(&state->error, ERROR_FILE_READ);
             return;
         }
-        if (!sendAll(client, block, amount, &state->stop)) return;
+        if (!sendAll(client, block, amount, &state->stop, &state->sentBytes)) return;
         remaining -= amount;
     }
 }

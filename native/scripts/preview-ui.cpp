@@ -265,16 +265,20 @@ int main(int argc, char** argv) {
     previewInstall.state = INSTALL_RUNNING;
     previewInstall.mode = INSTALL_MODE_HTTP_LOCAL;
     previewInstall.sdkVersion = 0xFFFFFFFFU;
-    previewInstall.sdkErrno = 78;
+    previewInstall.sdkErrno = 256;
     previewInstall.stage = INSTALL_STAGE_PROGRESS;
     previewInstall.taskId = 7;
     previewInstall.percent = 42;
+    previewInstall.httpRequests = 3;
+    previewInstall.httpStatus = 206;
+    previewInstall.httpBytes = UI_APPS[0].sizeBytes / 2;
     drawDetails(frame, 0);
     if (!saveState(argv[1], "install-http-local", frame)) { free(allocation); return 1; }
     previewInstall.state = INSTALL_FAILED;
-    previewInstall.errorCode = INSTALL_ERROR_TASK;
-    previewInstall.stage = INSTALL_STAGE_REGISTER;
-    previewInstall.nativeCode = (int32_t)0x80990015;
+    previewInstall.errorCode = INSTALL_ERROR_PROGRESS;
+    previewInstall.stage = INSTALL_STAGE_PROGRESS;
+    previewInstall.nativeCode = (int32_t)0x80991404;
+    previewInstall.httpStatus = 404;
     drawDetails(frame, 0);
     if (!saveState(argv[1], "install-http-native-failure", frame)) { free(allocation); return 1; }
     states += 2;

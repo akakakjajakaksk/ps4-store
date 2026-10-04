@@ -39,6 +39,16 @@ Esse servidor temporário fornece o PKG já validado pelo descritor aberto,
 com suporte a intervalos de bytes. Ele não aceita conexões de outros aparelhos
 e termina antes de fechar o arquivo. Não é necessário baixar o PKG novamente.
 
+Os pedidos do instalador podem conter parâmetros após `?`. O servidor compara
+o caminho exato do pacote separadamente desses parâmetros, tanto em pedidos
+com caminho relativo quanto com URL HTTP completa do próprio endereço local.
+O caminho, a porta e o arquivo continuam limitados ao PKG desta instalação.
+Recusar esses parâmetros causava uma resposta HTTP 404; a implementação
+[SSPI](https://github.com/Xyhlo/SSPI/blob/43247239733132b3e373c6ea9db3553b59da6413/app/LoopbackPkgServer.cs)
+documenta a mesma associação com o erro BGFT `0x80991404` observado no console.
+O diagnóstico de falha e `install.log` incluem número de pedidos, última
+resposta HTTP e bytes do PKG enviados, sem registrar URLs ou parâmetros.
+
 O caminho alternativo não depende de offsets de kernel nem altera permissões.
 O serviço nativo ainda pode recusar a instalação; nesse caso a loja mostra a
 etapa e o código real e mantém o PKG. Ela não substitui aplicativos já

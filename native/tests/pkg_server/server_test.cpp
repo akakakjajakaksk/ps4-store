@@ -20,7 +20,8 @@ struct Client {
     bool closed = false, configured = false;
     bool stalled = false;
     int recvRetry = 0, sendRetry = 0;
-    size_t recvLimit = 0, sendLimit = 0;
+    size_t recvLimit = 0, sendLimit = 0, failSendAfter = 0;
+    unsigned recvCalls = 0;
 };
 std::mutex lock;
 std::map<int, std::shared_ptr<Client>> clients;
@@ -30,6 +31,7 @@ int nextId = 100;
 std::atomic<int32_t> socketResult(9), optionResult(0), bindResult(0), listenResult(0), nameResult(0);
 std::atomic<int32_t> poolResult(4), threadResult(0), acceptFailure(0), joinFailure(0);
 std::atomic<int> poolsCreated(0), poolsDestroyed(0), joins(0), acceptRetry(0);
+std::atomic<uint64_t> clockOffset(0);
 bool listenerConfigured = false;
 uint32_t bindAddress = 0;
 uint16_t bindPort = 1;
@@ -43,7 +45,8 @@ template<class Predicate> void await(Predicate ready) {
     assert(!"Timed out waiting for mock server");
 }
 std::shared_ptr<Client> enqueue(const std::string& request, size_t recvLimit = 0, size_t sendLimit = 0,
-                                int recvRetry = 0, int sendRetry = 0, bool stalled = false) {
+                                int recvRetry = 0, int sendRetry = 0, bool stalled = false,
+                                size_t failSendAfter = 0) {
     std::shared_ptr<Client> client(new Client);
     std::lock_guard<std::mutex> guard(lock);
     client->id = nextId++;
@@ -53,6 +56,7 @@ std::shared_ptr<Client> enqueue(const std::string& request, size_t recvLimit = 0
     client->recvRetry = recvRetry;
     client->sendRetry = sendRetry;
     client->stalled = stalled;
+    client->failSendAfter = failSendAfter;
     clients[client->id] = client;
     pending.push_back(client->id);
     return client;
@@ -85,13 +89,14 @@ void reset() {
     socketResult = 9; optionResult = 0; bindResult = 0; listenResult = 0; nameResult = 0;
     poolResult = 4; threadResult = 0; acceptFailure = 0; joinFailure = 0;
     poolsCreated = 0; poolsDestroyed = 0; joins = 0; acceptRetry = 0;
+    clockOffset = 0;
     listenerConfigured = false; bindAddress = 0; bindPort = 1;
 }
 Request parsed(const std::string& request, uint64_t bytes = 10) {
     assert(request.size() <= HEADER_CAP);
     char header[HEADER_CAP + 1] = {};
     memcpy(header, request.data(), request.size());
-    return parse(header, "/token.pkg", bytes);
+    return parse(header, "/token.pkg", bytes, 43210);
 }
 Request requestedRange(const std::string& value, uint64_t bytes = 10) {
     return parsed("GET /token.pkg HTTP/1.1\r\nRange: " + value + "\r\n\r\n", bytes);
@@ -145,6 +150,7 @@ extern "C" int32_t sceNetRecv(OrbisNetId id, void* output, size_t capacity, int 
     assert(flags == 0);
     std::lock_guard<std::mutex> guard(lock);
     auto client = clients[id]; assert(client && client->configured && !client->closed);
+    ++client->recvCalls;
     if (client->recvRetry > 0) {
         mockErrno = client->recvRetry-- & 1 ? NET_EINTR : NET_EWOULDBLOCK;
         return -1;
@@ -165,7 +171,11 @@ extern "C" int32_t sceNetSend(OrbisNetId id, const void* data, size_t bytes, int
         mockErrno = client->sendRetry-- & 1 ? NET_EINTR : NET_EWOULDBLOCK;
         return -1;
     }
-    if (client->stalled) { mockErrno = NET_EWOULDBLOCK; return -1; }
+    if (client->failSendAfter) {
+        if (client->outgoing.size() >= client->failSendAfter) { mockErrno = 54; return -1; }
+        size_t untilFailure = client->failSendAfter - client->outgoing.size();
+        if (bytes > untilFailure) bytes = untilFailure;
+    }
     if (client->sendLimit && bytes > client->sendLimit) bytes = client->sendLimit;
     client->outgoing.append(static_cast<const char*>(data), bytes);
     return int32_t(bytes);
@@ -182,7 +192,7 @@ extern "C" uint16_t sceNetNtohs(uint16_t value) { return __builtin_bswap16(value
 extern "C" int32_t sceSysmoduleIsLoadedInternal(OrbisSysModuleInternal) { return 0; }
 extern "C" uint32_t sceSysmoduleLoadModuleInternal(OrbisSysModuleInternal) { assert(false); return 0; }
 extern "C" uint64_t sceKernelGetProcessTime() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() + clockOffset.load();
 }
 extern "C" int32_t sceKernelUsleep(uint32_t microseconds) {
     std::this_thread::sleep_for(std::chrono::microseconds(microseconds)); return 0;
@@ -218,6 +228,21 @@ int main() {
     const char nulBytes[] = "GET /token.pkg HTTP/1.1\r\nX: a\0b\r\n\r\n";
     std::string nul(nulBytes, sizeof(nulBytes) - 1);
     assert(parsed(nul).status == 400);
+    // A BGFT query is opaque and optional; the selected token path remains exact.
+    assert(parsed("GET /token.pkg?download=1&x=%2f%ff HTTP/1.1\r\n\r\n").status == 200);
+    assert(parsed("HEAD /token.pkg? HTTP/1.1\r\n\r\n").status == 200);
+    assert(parsed("GET /token.pkg?unusual=%Z?more HTTP/1.1\r\n\r\n").status == 200);
+    assert(parsed("HEAD /token.pkg?download=1 HTTP/1.1\r\nHost: localhost\r\n\r\n").status == 200);
+    assert(parsed("GET http://127.0.0.1:43210/token.pkg?download=1 HTTP/1.1\r\n\r\n").status == 200);
+    const char* wrongTargets[] = { "/token.pkgx?x=1", "/elsewhere?file=/token.pkg", "/../token.pkg?x=1",
+        "/%74oken.pkg?x=1", "/token.pkg#part", "/token.pkg?x=1#part",
+        "http://127.0.0.1:43211/token.pkg?x=1", "http://127.0.0.1/token.pkg?x=1",
+        "http://example.org:43210/token.pkg?x=1", "http://localhost:43210/token.pkg?x=1",
+        "http://127.0.0.1:43210@evil.test/token.pkg?x=1", "http://127.0.0.1:43210x/token.pkg?x=1",
+        "http://127.0.0.1:043210/token.pkg?x=1", "https://127.0.0.1:43210/token.pkg?x=1" };
+    for (const char* target : wrongTargets)
+        assert(parsed(std::string("GET ") + target + " HTTP/1.1\r\n\r\n").status == 404);
+    assert(parsed("GET /token.pkg?x=\tbad HTTP/1.1\r\n\r\n").status == 404);
 
     FILE* file = tmpfile(); assert(file);
     std::string package;
@@ -249,7 +274,13 @@ int main() {
         status(exchange(server, "GET", "", "http://127.0.0.1/token.pkg"), 404);
         status(exchange(server, "GET", "Range: bytes=0-1\r\nRange: bytes=3-4\r\n"), 400);
         std::string exactPath = strchr(server.url() + 7, '/');
-        status(exchange(server, "GET", "", (exactPath + "?extra=1").c_str()), 404);
+        reply = exchange(server, "GET", "", (exactPath + "?extra=1").c_str());
+        status(reply, 200); assert(body(reply) == package);
+        reply = exchange(server, "HEAD", "", (std::string(server.url()) + "?download=1").c_str());
+        status(reply, 200); assert(body(reply).empty());
+        reply = exchange(server, "GET", "Range: bytes=65535-65537\r\n",
+                         (std::string(server.url()) + "?download=1&x=%2f").c_str());
+        status(reply, 206); assert(body(reply) == package.substr(65535, 3));
         status(exchange(server, "GET", "", (exactPath + "x").c_str()), 404);
         std::string atCap = "GET " + exactPath + " HTTP/1.1\r\nX-Fill: ";
         atCap.append(HEADER_CAP - atCap.size() - 4, 'A');
@@ -269,6 +300,60 @@ int main() {
         assert(closed(stalled) && joins == 2 && poolsDestroyed == 1);
         assert(fileno(file) >= 0 && fseeko(file, 0, SEEK_SET) == 0 && fgetc(file) == 0);
         assert(server.stop() == -22 && poolsDestroyed == 1);
+    }
+    // Native-shaped targets work in both forms; telemetry counts only actual
+    // package bytes, including a client disconnect halfway through an output.
+    reset();
+    {
+        PkgServer server;
+        assert(server.start(file, package.size()) == 0);
+        PkgServerSnapshot snapshot = server.snapshot();
+        assert(snapshot.requests == 0 && snapshot.status == 0 && snapshot.sentBytes == 0);
+        std::string tokenPath = strchr(server.url() + 7, '/');
+        std::string reply = exchange(server, "GET", "Range: bytes=65530-65536\r\n",
+            (tokenPath + "?download=1&native=%Z?opaque").c_str(), 1, 3, 2, 3);
+        status(reply, 206); assert(body(reply) == package.substr(65530, 7));
+        snapshot = server.snapshot();
+        assert(snapshot.requests == 1 && snapshot.status == 206 && snapshot.sentBytes == 7);
+        assert(server.start(file, package.size()) == ERROR_BUSY);
+        assert(server.snapshot().requests == 1 && server.snapshot().sentBytes == 7);
+        reply = exchange(server, "HEAD", "Range: bytes=1-2\r\n", (std::string(server.url()) + "?download=1").c_str());
+        status(reply, 200); assert(body(reply).empty());
+        snapshot = server.snapshot();
+        assert(snapshot.requests == 2 && snapshot.status == 200 && snapshot.sentBytes == 7);
+        status(exchange(server, "GET", "", (tokenPath + "x?download=1").c_str()), 404);
+        snapshot = server.snapshot();
+        assert(snapshot.requests == 3 && snapshot.status == 404 && snapshot.sentBytes == 7);
+        status(exchange(server, "GET", "Range: bytes=150000-\r\n", (tokenPath + "?download=1").c_str()), 416);
+        assert(server.snapshot().requests == 4 && server.snapshot().status == 416 && server.snapshot().sentBytes == 7);
+        Request full = {false, false, 0, uint64_t(package.size() - 1), 200};
+        char fullHeader[512];
+        size_t fullHeaderSize = response(fullHeader, sizeof(fullHeader), full, package.size());
+        assert(fullHeaderSize);
+        auto partial = enqueue("GET " + tokenPath + "?download=1 HTTP/1.1\r\n\r\n", 0, 5, 0, 1, false, fullHeaderSize + 13);
+        await([partial] { return closed(partial); });
+        status(partial->outgoing, 200);
+        assert(body(partial->outgoing) == package.substr(0, 13));
+        snapshot = server.snapshot();
+        assert(snapshot.requests == 5 && snapshot.status == 200 && snapshot.sentBytes == 20);
+        auto timeout = enqueue("", 0, 0, 0, 0, true);
+        await([timeout] { std::lock_guard<std::mutex> guard(lock); return timeout->recvCalls != 0; });
+        clockOffset.fetch_add(IO_TIMEOUT + 1);
+        await([timeout] { return closed(timeout); });
+        status(timeout->outgoing, 408);
+        snapshot = server.snapshot();
+        assert(snapshot.requests == 6 && snapshot.status == 408 && snapshot.sentBytes == 20);
+        assert(server.errorCode() == 0 && server.stop() == 0);
+        snapshot = server.snapshot();
+        assert(snapshot.requests == 6 && snapshot.status == 408 && snapshot.sentBytes == 20);
+        assert(server.stop() == 0 && server.snapshot().sentBytes == 20);
+        { std::lock_guard<std::mutex> guard(lock); closeCounts.erase(9); } // A newly created listener can reuse fd 9.
+        assert(server.start(file, package.size()) == 0);
+        snapshot = server.snapshot();
+        assert(snapshot.requests == 0 && snapshot.status == 0 && snapshot.sentBytes == 0);
+        status(exchange(server, "HEAD"), 200);
+        assert(server.stop() == 0 && server.snapshot().requests == 1 && server.snapshot().sentBytes == 0);
+        assert(fileno(file) >= 0);
     }
     // Startup failures close resources once, never the owner's FILE.
     reset(); optionResult = -71;

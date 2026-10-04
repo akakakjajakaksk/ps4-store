@@ -24,9 +24,9 @@ outputs that refer to an unowned existing task. Console behavior remains unverif
 The HTTP fallback cases replace `PkgServer` with a transport mock via
 `PEPPY_PKG_SERVER_HEADER`. They cover unavailable SDK probes with errno 78, 1,
 or 0, an unknown SDK version, and unchanged credentials with no global-path
-copy. The suite checks the foreground user and native HTTP registration
-parameters; preserves AppInstUtil/BGFT/registration errors; rejects a changed
-source inode and invalid server URLs; observes startup, transfer and shutdown
+copy. The suite checks the foreground user, native HTTP registration
+parameters and Title ID derived from the held, validated PKG header; preserves
+AppInstUtil/BGFT/registration errors; rejects invalid server URLs; observes startup, transfer and shutdown
 errors; and requires native completion plus installed-app confirmation before
 success. A failed registration may return another task's ID without permitting
 stop/unregister calls against it. Cancellation checks the order of owned task
@@ -34,6 +34,17 @@ stop, unregister, quiescent server shutdown and source `fclose`, including
 cleanup failures. The source remains readable until server shutdown even when
 shutdown reports an error. The real server's socket/HTTP behavior is tested
 separately in its own suite.
+
+HTTP telemetry uses an independent mock `PkgServerSnapshot` with request
+counts, the last response status and cumulative bytes, including values above
+4 GiB. Tests verify propagation during registration, progress and shutdown;
+retain bytes from an in-flight request that finishes while `stop` waits; and
+preserve the final counters on success, cancellation and registration failure.
+A healthy server returning HTTP 404 accompanies native BGFT `0x80991404` in
+both progress API-return and `errorResult` regressions, without changing its
+category, stage or native code. The final log retains both diagnostics. Accepted storage, invalid-spec
+and thread-start requests reset prior HTTP counters, and an active HTTP
+server reports zero until BGFT has actually issued requests.
 
 HTTP registration uses the native `sceBgftServiceIntDownloadRegisterTask`
 export with a 104-byte parameter structure and 64-bit package size at offset

@@ -62,6 +62,9 @@ struct InstallSnapshot {
     int mode;
     uint32_t sdkVersion;
     int sdkErrno;
+    uint32_t httpRequests;
+    int32_t httpStatus;
+    uint64_t httpBytes;
 };
 
 // The controller serializes start/cancel. Only completed, validated downloads

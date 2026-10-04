@@ -32,13 +32,15 @@ enum Mode {
     ALIAS_DIFFERENT_INODE, ALIAS_SYMLINK, COPY_DIRECTORY_SYMLINK,
     USER_FAIL, USER_INVALID, SERVER_START_FAIL, SERVER_TRANSFER_FAIL, SERVER_STOP_FAIL,
     SERVER_EARLY_FAIL, SERVER_LATE_FAIL, SERVER_URL_INVALID, SERVER_URL_NULL,
-    HTTP_PATH_REPLACED
+    HTTP_PATH_REPLACED, HTTP_BGFT_NOT_FOUND, HTTP_BGFT_NOT_FOUND_API, HTTP_REGISTER_BLOCK
 };
 static Mode mode;
 static int modules, moduleProbes, appInitCalls, appTermCalls, bgftInitCalls, bgftTermCalls;
 static int registerCalls, startCalls, progressCalls, existsCalls, stopCalls, unregisterCalls;
 static int jailbreakCalls, restoreCalls, titleCalls, sdkCalls, foregroundUserCalls;
 static int storageRegisterCalls, httpRegisterCalls, serverStartCalls, serverStopCalls, sourceCloseCalls;
+static int serverSnapshotCalls;
+static PkgServerSnapshot serverTelemetry;
 static bool jailbroken, nativeStarted;
 static bool forceHttp, serverActive;
 static int32_t forcedSdkVersion;
@@ -55,6 +57,14 @@ static int globalNamespaceOpens;
 static const int32_t RAW = (int32_t)0x8099ee01U;
 static const int32_t RAW_ENOSYS = (int32_t)0x8002004eU;
 static const uint64_t NATIVE_LENGTH = 5ULL * 1024 * 1024 * 1024;
+static const int32_t BGFT_NOT_FOUND = (int32_t)0x80991404U;
+static const uint64_t HTTP_WIDE_BYTES = (1ULL << 32) + 71;
+static const uint64_t HTTP_PROGRESS_BYTES = 37, HTTP_STOP_BYTES = 251;
+static void request(int status, uint64_t sentBytes) {
+    ++serverTelemetry.requests;
+    serverTelemetry.status = status;
+    serverTelemetry.sentBytes += sentBytes;
+}
 static bool httpFallback() { return forceHttp || mode == NO_SDK; }
 static void credentialsExpected() { assert(jailbroken == !httpFallback()); }
 static bool needsCopy(Mode value) {
@@ -202,6 +212,15 @@ extern "C" int32_t peppyBgftRegisterHttp(PeppyBgftParam* params, int32_t* task) 
     assert(params->playgoScenarioId && !strcmp(params->playgoScenarioId, "0"));
     registeredPath = params->contentUrl;
     ++registerCalls; ++httpRegisterCalls;
+    if (mode == HTTP_REGISTER_BLOCK) {
+        entered.store(true);
+        while (block.load()) usleep(20);
+    }
+    if (mode == REGISTER_FAIL) request(404, 113);
+    else {
+        request(200, 0); // A metadata request precedes the body request.
+        request(206, HTTP_WIDE_BYTES);
+    }
     if (mode == REGISTER_FAIL) { *task = 42; return RAW; }
     if (mode == REGISTER_EXISTS) { *task = 42; return (int32_t)0x80990088U; }
     if (mode == REGISTER_BUSY) { *task = 42; return (int32_t)0x80990086U; }
@@ -216,13 +235,18 @@ extern "C" int32_t sceBgftServiceDownloadStartTask(int32_t task) {
 }
 extern "C" int32_t peppyBgftProgress(int32_t task, PeppyBgftProgress* progress) {
     credentialsExpected(); assert(task == 17); ++progressCalls;
-    if (httpFallback()) assert(serverActive && borrowedFile);
+    if (httpFallback()) {
+        assert(serverActive && borrowedFile);
+        bool missing = mode == HTTP_BGFT_NOT_FOUND || mode == HTTP_BGFT_NOT_FOUND_API;
+        request(missing ? 404 : 206, missing ? 0 : HTTP_PROGRESS_BYTES);
+    }
     if (mode == BLOCK_PROGRESS || mode == STOP_FAIL || mode == UNREGISTER_FAIL) {
         entered.store(true);
         while (block.load()) usleep(20);
     }
     if (mode == PROGRESS_API_FAIL) return RAW;
-    progress->errorResult = mode == PROGRESS_RESULT_FAIL ? RAW : 0;
+    if (mode == HTTP_BGFT_NOT_FOUND_API) return BGFT_NOT_FOUND;
+    progress->errorResult = mode == PROGRESS_RESULT_FAIL ? RAW : mode == HTTP_BGFT_NOT_FOUND ? BGFT_NOT_FOUND : 0;
     if (mode == ZERO_PROGRESS) return 0;
     progress->length = NATIVE_LENGTH;
     progress->lengthTotal = NATIVE_LENGTH;
@@ -249,7 +273,9 @@ extern "C" int32_t sceBgftServiceIntTerm() {
     credentialsExpected(); ++bgftTermCalls; events.push_back(BGFT_TERM);
     return mode == BGFT_TERM_FAIL ? RAW : 0;
 }
-PkgServer::PkgServer() : file_(0), descriptor_(-1), active_(false) {}
+PkgServer::PkgServer() : file_(0), descriptor_(-1), active_(false) {
+    serverTelemetry = PkgServerSnapshot();
+}
 PkgServer::~PkgServer() { assert(!active_ && !file_); }
 int32_t PkgServer::start(FILE* file, uint64_t size) {
     assert(httpFallback() && !active_ && file && size == 8192);
@@ -280,12 +306,24 @@ int32_t PkgServer::errorCode() const {
     if (mode == SERVER_LATE_FAIL && nativeStarted && progressCalls >= 3) return RAW;
     return 0;
 }
+PkgServerSnapshot PkgServer::snapshot() const {
+    ++serverSnapshotCalls;
+    if (file_) assert(fileno(file_) == descriptor_ && fcntl(descriptor_, F_GETFD) >= 0);
+    // HTTP error responses are diagnostics; they do not imply a server/socket
+    // failure. In particular, a 404 must not replace BGFT's own error result.
+    return serverTelemetry;
+}
 int32_t PkgServer::stop() {
     if (!file_) return 0;
     assert(file_ == borrowedFile && fileno(file_) == descriptor_);
     assert(fcntl(descriptor_, F_GETFD) >= 0);
     // stop() guarantees quiescence even when reporting a shutdown error.
     ++serverStopCalls; events.push_back(SERVER_STOP);
+    if (serverTelemetry.requests) {
+        // An in-flight request finishes while stop waits for quiescence. A
+        // cleanup snapshot taken only before stop would lose these counters.
+        request(serverTelemetry.status, HTTP_STOP_BYTES);
+    }
     active_ = serverActive = false;
     file_ = 0; descriptor_ = -1;
     return mode == SERVER_STOP_FAIL ? RAW : 0;
@@ -432,13 +470,15 @@ static void reset(Mode next, bool alias = true) {
     jailbreakCalls = restoreCalls = titleCalls = 0;
     sdkCalls = foregroundUserCalls = storageRegisterCalls = httpRegisterCalls = 0;
     serverStartCalls = serverStopCalls = sourceCloseCalls = 0;
+    serverSnapshotCalls = 0; serverTelemetry = PkgServerSnapshot();
     jailbroken = nativeStarted = false;
     assert(!serverActive && !borrowedFile);
     forceHttp = false; forcedSdkVersion = -1; forcedSdkErrno = 78;
     borrowedDescriptor = -1; events.clear();
     registeredPath.clear();
     descriptorPaths.clear(); noFollowOpens = nativeFstatCalls = globalNamespaceOpens = 0;
-    block.store(next == BLOCK_PROGRESS || next == STOP_FAIL || next == UNREGISTER_FAIL || next == COPY_CANCEL);
+    block.store(next == BLOCK_PROGRESS || next == STOP_FAIL || next == UNREGISTER_FAIL ||
+                next == COPY_CANCEL || next == HTTP_REGISTER_BLOCK);
     entered.store(false);
     // Each fault scenario emulates a fresh application process.
     __atomic_store_n(&g_installUnsafe, 0, __ATOMIC_RELEASE);
@@ -486,9 +526,22 @@ static void waitEntered() {
     for (int i = 0; i < 100000; ++i) { if (entered.load()) return; usleep(20); }
     assert(!"mock did not enter blocking stage");
 }
+static void noHttpTelemetry(const InstallSnapshot& value) {
+    assert(value.httpRequests == 0 && value.httpStatus == 0 && value.httpBytes == 0);
+}
+static void httpTelemetry(const InstallSnapshot& value, uint32_t requests,
+                          int32_t status, uint64_t bytes) {
+    assert(value.httpRequests == requests && value.httpStatus == status && value.httpBytes == bytes);
+}
 static InstallSnapshot run(Mode next) {
     reset(next, !needsCopy(next));
-    assert(startInstall(spec())); return waitDone();
+    assert(startInstall(spec()));
+    InstallSnapshot value = waitDone();
+    if (!httpFallback()) {
+        noHttpTelemetry(value);
+        assert(serverSnapshotCalls == 0);
+    }
+    return value;
 }
 static void prepareHttp(Mode next, int32_t version = -1, int sdkError = 78) {
     reset(next, false);
@@ -505,6 +558,7 @@ static InstallSnapshot runHttp(Mode next, int32_t version = -1, int sdkError = 7
     assert(!storageRegisterCalls && !globalNamespaceOpens);
     assert(access(copyDirectory.c_str(), F_OK) != 0);
     assert(!serverActive && !borrowedFile);
+    httpTelemetry(value, serverTelemetry.requests, serverTelemetry.status, serverTelemetry.sentBytes);
     assert(access((localDirectory + "/apollo.pkg").c_str(), F_OK) == 0);
     return value;
 }
@@ -630,6 +684,91 @@ static void httpFallbackTests() {
         }
     }
 }
+static void httpTelemetryTests() {
+    InstallSnapshot value = runHttp(NORMAL);
+    assert(value.state == INSTALL_DONE && value.percent == 100 && serverSnapshotCalls > 0);
+    // Counters are cumulative HTTP traffic, separate from native BGFT
+    // progress. Use bytes above UINT32_MAX to exercise the full public width.
+    httpTelemetry(value, 6, 206, HTTP_WIDE_BYTES + 3 * HTTP_PROGRESS_BYTES + HTTP_STOP_BYTES);
+    assert(value.httpBytes > UINT32_MAX && value.httpBytes != value.received);
+    serverClosedAfterStop();
+
+    failedHttp(REGISTER_FAIL, INSTALL_ERROR_TASK, INSTALL_STAGE_REGISTER, RAW);
+    value = installSnapshot();
+    httpTelemetry(value, 2, 404, 113 + HTTP_STOP_BYTES);
+    assert(value.taskId == -1 && !stopCalls && !unregisterCalls);
+    serverClosedAfterStop();
+
+    for (Mode next : { HTTP_BGFT_NOT_FOUND, HTTP_BGFT_NOT_FOUND_API }) {
+        failedHttp(next, INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS, BGFT_NOT_FOUND);
+        value = installSnapshot();
+        httpTelemetry(value, 4, 404, HTTP_WIDE_BYTES + HTTP_STOP_BYTES);
+        assert(value.nativeCode == BGFT_NOT_FOUND && value.cleanupCode == 0);
+        assert(value.percent < 100 && stopCalls == 1 && unregisterCalls == 1);
+        serverClosedAfterStop();
+        assert(eventIndex(TASK_UNREGISTER) < eventIndex(SERVER_STOP));
+        // errorCode() remains zero for this HTTP 404. Both the API-return and
+        // errorResult paths must retain the native failure alongside transport
+        // diagnostics, instead of producing a generic server failure.
+        FILE* log = fopen((localDirectory + "/install.log").c_str(), "r"); assert(log);
+        std::string text;
+        char line[1024];
+        while (fgets(line, sizeof(line), log)) text += line;
+        assert(!ferror(log) && fclose(log) == 0);
+        size_t finalLineStart = text.rfind('\n', text.size() - 2);
+        std::string finalLine = text.substr(finalLineStart == std::string::npos ? 0 : finalLineStart + 1);
+        assert(finalLine.find("native=0x80991404") != std::string::npos);
+        assert(finalLine.find("http_requests=4 http_status=404") != std::string::npos);
+    }
+
+    prepareHttp(BLOCK_PROGRESS); assert(startInstall(spec())); waitEntered();
+    InstallSnapshot during = installSnapshot();
+    httpTelemetry(during, 2, 206, HTTP_WIDE_BYTES);
+    assert(during.state == INSTALL_RUNNING);
+    assert(!startInstall(spec()));
+    httpTelemetry(installSnapshot(), during.httpRequests, during.httpStatus, during.httpBytes);
+    cancelInstall(); block.store(false); value = waitDone();
+    assert(value.state == INSTALL_CANCELLED && value.errorCode == 0);
+    httpTelemetry(value, 4, 206, HTTP_WIDE_BYTES + HTTP_PROGRESS_BYTES + HTTP_STOP_BYTES);
+    assert(value.httpBytes > during.httpBytes && value.httpRequests > during.httpRequests);
+    serverClosedAfterStop();
+    assert(eventIndex(TASK_UNREGISTER) < eventIndex(SERVER_STOP));
+
+    // Every accepted request clears stale telemetry, including failures that
+    // occur before worker startup. A storage install never samples HTTP.
+    value = run(NORMAL);
+    assert(value.state == INSTALL_DONE && value.mode == INSTALL_MODE_STORAGE);
+    noHttpTelemetry(value);
+    assert(serverSnapshotCalls == 0);
+    for (Mode next : { ATTR_FAIL, DETACH_FAIL, CREATE_FAIL }) {
+        value = runHttp(NORMAL); assert(value.httpRequests > 0);
+        reset(next);
+        assert(!startInstall(spec())); value = installSnapshot();
+        assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_THREAD);
+        noHttpTelemetry(value);
+        assert(value.mode == INSTALL_MODE_NONE && !serverSnapshotCalls);
+    }
+    value = runHttp(NORMAL); assert(value.httpRequests > 0);
+    reset(NORMAL);
+    InstallSpec invalid = { "../evil.pkg", "Apollo", 8192 };
+    assert(!startInstall(invalid)); value = installSnapshot();
+    assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_SPEC);
+    noHttpTelemetry(value);
+    assert(value.mode == INSTALL_MODE_NONE && !serverSnapshotCalls);
+
+    // The loopback server can be running while BGFT has issued no requests.
+    // Its public telemetry must be zero, rather than leftovers from a prior
+    // installation or guessed HTTP success based on native progress.
+    prepareHttp(HTTP_REGISTER_BLOCK); assert(startInstall(spec())); waitEntered();
+    value = installSnapshot();
+    assert(value.state == INSTALL_RUNNING && value.mode == INSTALL_MODE_HTTP_LOCAL && serverActive);
+    noHttpTelemetry(value);
+    assert(serverTelemetry.requests == 0 && serverSnapshotCalls > 0);
+    block.store(false); value = waitDone();
+    assert(value.state == INSTALL_DONE);
+    httpTelemetry(value, 6, 206, HTTP_WIDE_BYTES + 3 * HTTP_PROGRESS_BYTES + HTTP_STOP_BYTES);
+    serverClosedAfterStop();
+}
 int main() {
     struct stat unavailable;
     assert(lstat("/tmp", &unavailable) == -1 && errno == ENOSYS);
@@ -719,6 +858,7 @@ int main() {
         assert(!startInstall(spec())); value = installSnapshot();
         assert(value.generation == previousGeneration + 1);
         assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_THREAD && value.nativeCode == RAW);
+        noHttpTelemetry(value);
         assert(!jailbreakCalls && !modules);
     }
     for (Mode next : { BLOCK_PROGRESS, STOP_FAIL, UNREGISTER_FAIL }) {
@@ -800,6 +940,7 @@ int main() {
     assert(noFollowOpens > 0 && nativeFstatCalls > 0 &&
            unavailableLstatCalls == 0 && unavailablePosixFstatCalls == 0);
     httpFallbackTests();
+    httpTelemetryTests();
     assert(unavailableLstatCalls == 0 && unavailablePosixFstatCalls == 0);
-    puts("All native installer ABI, SDK/storage and HTTP fallback, lifetime, progress, preservation, errors and cancellation tests passed.");
+    puts("All native installer ABI, SDK/storage and HTTP fallback/telemetry, lifetime, progress, preservation, errors and cancellation tests passed.");
 }

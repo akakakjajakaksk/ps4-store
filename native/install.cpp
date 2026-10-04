@@ -132,6 +132,9 @@ uint32_t g_installBits = 0;
 uint32_t g_installGeneration = 0;
 int g_installMode = INSTALL_MODE_NONE, g_installSdkErrno = 0;
 uint32_t g_installSdkVersion = 0;
+uint32_t g_installHttpRequests = 0;
+int32_t g_installHttpStatus = 0;
+uint64_t g_installHttpBytes = 0;
 char g_installFilename[NAME_CAP], g_installName[TITLE_CAP];
 uint64_t g_installExpected = 0;
 FILE* g_installLog = 0;
@@ -172,11 +175,14 @@ void stage(int value) { __atomic_store_n(&g_installStage, value, __ATOMIC_RELEAS
 void logCall(int where, int32_t native) {
     if (!g_installLog) return;
     int rc = fprintf(g_installLog,
-        "stage=%d native=0x%08X task=%d mode=%d sdk=0x%08X sdk_errno=%d\n", where,
+        "stage=%d native=0x%08X task=%d mode=%d sdk=0x%08X sdk_errno=%d http_requests=%u http_status=%d http_bytes=%llu\n", where,
         (unsigned)native, __atomic_load_n(&g_installTask, __ATOMIC_ACQUIRE),
         __atomic_load_n(&g_installMode, __ATOMIC_ACQUIRE),
         __atomic_load_n(&g_installSdkVersion, __ATOMIC_ACQUIRE),
-        __atomic_load_n(&g_installSdkErrno, __ATOMIC_ACQUIRE));
+        __atomic_load_n(&g_installSdkErrno, __ATOMIC_ACQUIRE),
+        (unsigned)__atomic_load_n(&g_installHttpRequests, __ATOMIC_ACQUIRE),
+        __atomic_load_n(&g_installHttpStatus, __ATOMIC_ACQUIRE),
+        (unsigned long long)__atomic_load_n(&g_installHttpBytes, __ATOMIC_ACQUIRE));
     if (rc < 0 || fflush(g_installLog)) { fclose(g_installLog); g_installLog = 0; }
 }
 int fail(int category, int where, int32_t native) {
@@ -210,6 +216,15 @@ int module(OrbisSysModuleInternal id, int where) {
     return 0;
 }
 
+void sampleHttp(const PkgServer& server) {
+    // These observations are diagnostic only: they never replace the native
+    // BGFT result or decide whether the installation completed successfully.
+    PkgServerSnapshot value = server.snapshot();
+    __atomic_store_n(&g_installHttpRequests, value.requests, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installHttpStatus, value.status, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installHttpBytes, value.sentBytes, __ATOMIC_RELEASE);
+}
+
 struct InstallResources {
     FILE* file;
     void* heap;
@@ -223,6 +238,7 @@ struct InstallResources {
                          completed(false), jailbroken(false), serverAttempted(false),
                          backup(), task(-1) { partialPath[0] = 0; }
     ~InstallResources() {
+        if (serverAttempted) sampleHttp(server);
         if (task >= 0 && !completed) {
             int32_t rc = sceBgftServiceDownloadStopTask(task);
             cleanupError(INSTALL_STAGE_STOP, rc);
@@ -234,7 +250,11 @@ struct InstallResources {
         if (serverAttempted) {
             // stop waits for every server worker even when it reports an
             // error. Keep the borrowed FILE alive until that join finishes.
+            sampleHttp(server);
             int32_t rc = server.stop();
+            // stop is quiescent and retains counters, including requests or
+            // partial writes made while native task cleanup was in progress.
+            sampleHttp(server);
             cleanupError(INSTALL_STAGE_SERVER_STOP, rc);
             if (rc) __atomic_store_n(&g_installUnsafe, 1, __ATOMIC_RELEASE);
         }
@@ -498,6 +518,7 @@ int runInstall() {
         stage(INSTALL_STAGE_SERVER_START);
         owned.serverAttempted = true;
         rc = owned.server.start(owned.file, g_installExpected);
+        sampleHttp(owned.server);
         if (rc) return fail(INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_START, rc);
         rc = owned.server.errorCode();
         if (rc) return fail(INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_TRANSFER, rc);
@@ -518,7 +539,8 @@ int runInstall() {
     params.params.iconPath = "";
     params.params.playgoScenarioId = "0";
     // Keep Peppy's progress UI and never force an existing application update.
-    // HTTP uses RPI's CDN-query suppression to retain the exact local URL.
+    // HTTP follows RPI's CDN-query option; BGFT can still append optional
+    // query parameters, which the loopback server accepts.
     params.params.option = storage ? 0x2 : 0x10002;
     if (!storage) {
         params.params.packageType = "PS4GD";
@@ -530,6 +552,7 @@ int runInstall() {
     int32_t candidate = -1;
     rc = storage ? peppyBgftRegister(&params, &candidate)
                  : peppyBgftRegisterHttp(&params.params, &candidate);
+    if (!storage) sampleHttp(owned.server);
     if (rc) {
         uint32_t native = (uint32_t)rc;
         int category = native == 0x80990088U || native == 0x80990015U
@@ -549,12 +572,14 @@ int runInstall() {
     for (unsigned poll = 0; poll < MAX_POLLS; ++poll) {
         if (cancelled()) return 0;
         if (!storage) {
+            sampleHttp(owned.server);
             rc = owned.server.errorCode();
             if (rc) return fail(INSTALL_ERROR_SERVER, INSTALL_STAGE_SERVER_TRANSFER, rc);
         }
         stage(INSTALL_STAGE_PROGRESS);
         PeppyBgftProgress progress = {};
         rc = peppyBgftProgress(owned.task, &progress);
+        if (!storage) sampleHttp(owned.server);
         if (rc) return fail(INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS, rc);
         if (progress.errorResult) return fail(INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS, progress.errorResult);
         uint64_t total = progress.lengthTotal ? progress.lengthTotal : progress.length;
@@ -640,6 +665,9 @@ bool startInstall(const InstallSpec& spec) {
     __atomic_store_n(&g_installMode, INSTALL_MODE_NONE, __ATOMIC_RELEASE);
     __atomic_store_n(&g_installSdkVersion, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_installSdkErrno, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installHttpRequests, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installHttpStatus, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_installHttpBytes, 0, __ATOMIC_RELEASE);
     stage(INSTALL_STAGE_SPEC);
     if (!validFilename(spec.filename) || !validName(spec.name) ||
         spec.expectedBytes < HEADER_BYTES || spec.expectedBytes > MAX_PACKAGE_BYTES) {
@@ -692,6 +720,9 @@ InstallSnapshot installSnapshot() {
     value.mode = __atomic_load_n(&g_installMode, __ATOMIC_ACQUIRE);
     value.sdkVersion = __atomic_load_n(&g_installSdkVersion, __ATOMIC_ACQUIRE);
     value.sdkErrno = __atomic_load_n(&g_installSdkErrno, __ATOMIC_ACQUIRE);
+    value.httpRequests = __atomic_load_n(&g_installHttpRequests, __ATOMIC_ACQUIRE);
+    value.httpStatus = __atomic_load_n(&g_installHttpStatus, __ATOMIC_ACQUIRE);
+    value.httpBytes = __atomic_load_n(&g_installHttpBytes, __ATOMIC_ACQUIRE);
     return value;
 }
 const char* installStageName(int value) {
