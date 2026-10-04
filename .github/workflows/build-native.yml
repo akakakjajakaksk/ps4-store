@@ -31,7 +31,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/OpenOrbis/create-fself.git /tmp/create-fself
           cd /tmp/create-fself/cmd/create-fself
-          go build -o "$OO_PS4_TOOLCHAIN/bin/linux/create-fself" .
+          go build -modfile=go-linux.mod -o "$OO_PS4_TOOLCHAIN/bin/linux/create-fself" .
           chmod +x "$OO_PS4_TOOLCHAIN/bin/linux/create-fself"
           "$OO_PS4_TOOLCHAIN/bin/linux/create-fself" -h || true
           test -x "$OO_PS4_TOOLCHAIN/bin/linux/create-fself"
