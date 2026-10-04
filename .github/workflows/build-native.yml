@@ -1,5 +1,5 @@
 name: Build Peppy Store Native
-# CI trigger refresh for native VideoOut diagnostic
+# CI trigger refresh for BGFT HTTP fix
 
 on:
   workflow_dispatch:
