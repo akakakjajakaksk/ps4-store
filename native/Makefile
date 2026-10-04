@@ -3,14 +3,15 @@ VERSION := 01.00
 TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
+# Minimal VideoOut isolation build: deliberately do not compile/link graphics.cpp.
 LIBS := -lc -lkernel -lc++ -lSceVideoOut
 
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
 INTDIR := build
 
-CPPFILES := boot_test.cpp graphics.cpp
-OBJS := $(INTDIR)/boot_test.o $(INTDIR)/graphics.o
+CPPFILES := boot_test.cpp
+OBJS := $(INTDIR)/boot_test.o
 
 CXXFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -isystem $(TOOLCHAIN)/include/c++/v1
 LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o
