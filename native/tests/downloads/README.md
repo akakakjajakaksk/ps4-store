@@ -6,6 +6,7 @@ Run from `native/` on Linux with GNU g++ and GNU ld:
 g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
   -Itests/downloads/stubs tests/downloads/downloads_test.cpp \
   -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=fclose \
+  -Wl,--wrap=malloc -Wl,--wrap=setvbuf \
   -o /tmp/peppy-download-tests
 /tmp/peppy-download-tests
 ```
@@ -81,12 +82,14 @@ Additional host checks use the same linker wrappers:
 g++ -std=c++11 -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=3 -pthread \
   -Itests/downloads/stubs tests/downloads/downloads_test.cpp \
   -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=fclose \
+  -Wl,--wrap=malloc -Wl,--wrap=setvbuf \
   -o /tmp/peppy-download-tests-fortify
 /tmp/peppy-download-tests-fortify
 g++ -std=c++11 -O1 -g -Wall -Wextra -Werror -pthread \
   -fsanitize=address,undefined -fno-omit-frame-pointer \
   -Itests/downloads/stubs tests/downloads/downloads_test.cpp \
   -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=fclose \
+  -Wl,--wrap=malloc -Wl,--wrap=setvbuf \
   -o /tmp/peppy-download-tests-sanitized
 ASAN_OPTIONS=detect_leaks=0 /tmp/peppy-download-tests-sanitized
 ```

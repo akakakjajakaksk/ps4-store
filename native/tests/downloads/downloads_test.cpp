@@ -46,6 +46,13 @@ static std::vector<SourceResponse> sourceResponses;
 static std::vector<std::string> sourceRequestUrls;
 static size_t sourceCursor, sourceBytes, sourceReadCalls, packageReadCalls;
 static int templateCreates, tlsEnables;
+static const size_t BUFFER_TEST_BYTES = 256 * 1024;
+static int packageMallocFailure, setvbufFailureErrno;
+static bool setvbufFailure;
+static size_t packageMallocCalls, packageSetvbufCalls, packageBufferLifetimeChecks;
+static size_t packageDataReads, packageMaxReadRequest, packageMaxReadBytes;
+static FILE* trackedPackageFile;
+static unsigned char* trackedStdioBuffer;
 static SourceResponse& sourceResponse() {
     assert(requests > 0 && (size_t)requests <= sourceResponses.size());
     return sourceResponses[(size_t)requests - 1];
@@ -55,9 +62,40 @@ static std::string outputPath(bool partial=false){return std::string(testDirecto
 extern "C" size_t __real_fwrite(const void*,size_t,size_t,FILE*);
 extern "C" int __real_fflush(FILE*);
 extern "C" int __real_fclose(FILE*);
+extern "C" void* __real_malloc(size_t);
+extern "C" int __real_setvbuf(FILE*,char*,int,size_t);
+extern "C" void* __wrap_malloc(size_t bytes){
+    if(bytes==BUFFER_TEST_BYTES&&downloadSnapshot().stage==DOWNLOAD_STAGE_FILE_OPEN){
+        ++packageMallocCalls;
+        if(packageMallocFailure&&(int)packageMallocCalls==packageMallocFailure){errno=ENOMEM;return 0;}
+    }
+    return __real_malloc(bytes);
+}
+extern "C" int __wrap_setvbuf(FILE* file,char* buffer,int buffering,size_t bytes){
+    if(file==g_log)return __real_setvbuf(file,buffer,buffering,bytes);
+    assert(file&&buffer&&buffering==_IOFBF&&bytes==BUFFER_TEST_BYTES);
+    assert(!trackedPackageFile);
+    ++packageSetvbufCalls;trackedPackageFile=file;
+    trackedStdioBuffer=(unsigned char*)buffer;
+    // Initialize the boundary even for short transfers and a failed setvbuf.
+    trackedStdioBuffer[BUFFER_TEST_BYTES-1]=0xa5;
+    if(setvbufFailure){errno=setvbufFailureErrno;return -1;}
+    return __real_setvbuf(file,buffer,buffering,bytes);
+}
 extern "C" size_t __wrap_fwrite(const void* p,size_t s,size_t n,FILE* f){if(mode==11)return n? n-1:0;return __real_fwrite(p,s,n,f);}
 extern "C" int __wrap_fflush(FILE* f){if(mode==12){errno=ENOSPC;return EOF;}return __real_fflush(f);}
-extern "C" int __wrap_fclose(FILE* f){int rc=__real_fclose(f);if(mode==13){errno=ENOSPC;return EOF;}return rc;}
+extern "C" int __wrap_fclose(FILE* f){
+    bool tracked=trackedPackageFile&&f==trackedPackageFile;
+    if(tracked){
+        assert(trackedStdioBuffer);
+        // ASan checks that the caller-owned buffer still lives at fclose.
+        volatile unsigned char last=trackedStdioBuffer[BUFFER_TEST_BYTES-1];(void)last;
+        ++packageBufferLifetimeChecks;
+    }
+    int rc=__real_fclose(f);
+    if(tracked){trackedPackageFile=0;trackedStdioBuffer=0;}
+    if(mode==13){errno=ENOSPC;return EOF;}return rc;
+}
 extern "C" int32_t sceKernelUsleep(uint32_t n){std::this_thread::sleep_for(std::chrono::microseconds(n==100000?100:n));return 0;}
 extern "C" int32_t scePthreadAttrInit(OrbisPthreadAttr* a){*a=0;return mode==25?(int32_t)0x80020022:0;}
 extern "C" int32_t scePthreadAttrDestroy(OrbisPthreadAttr*){return 0;}
@@ -106,7 +144,7 @@ extern "C" int32_t sceHttpReadData(int32_t,void* out,uint32_t max){
             ++sourceReadCalls;
             assert(downloadSnapshot().received==0);
             assert(access(outputPath(true).c_str(),F_OK)!=0);
-        }else ++packageReadCalls;
+        }else{++packageReadCalls;if(max>packageMaxReadRequest)packageMaxReadRequest=max;}
         if(sourceCursor>=value.blockAfter){blocked=true;while(!aborted.load()&&!releaseRead.load())sceKernelUsleep(1000);if(aborted.load())return -1;value.blockAfter=SIZE_MAX;}
         if(sourceCursor>=value.readFailureAfter)return value.readRc;
         if(sourceCursor==value.body.size())return 0;
@@ -115,6 +153,7 @@ extern "C" int32_t sceHttpReadData(int32_t,void* out,uint32_t max){
         if(n>value.fragment)n=value.fragment;
         memcpy(out,value.body.data()+sourceCursor,n);sourceCursor+=n;
         if(value.page)sourceBytes+=n;
+        else{++packageDataReads;if(n>packageMaxReadBytes)packageMaxReadBytes=n;}
         return (int32_t)n;
     }
     if(cursor==payload.size())return mode==31?LARGE_READ_ERROR:0;
@@ -129,7 +168,7 @@ extern "C" int32_t sceHttpTerm(int32_t){++closedHttp;return 0;}
 
 std::string hashText(const std::string& input){Sha256 s;for(size_t i=0;i<input.size();i+=7)s.update((const uint8_t*)input.data()+i,input.size()-i>7?7:input.size()-i);uint8_t digest[32];s.finish(digest);char buf[65];for(int i=0;i<32;++i)sprintf(buf+2*i,"%02x",digest[i]);return buf;}
 DownloadSnapshot finished(){for(int i=0;i<5000;++i){if(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE))return downloadSnapshot();sceKernelUsleep(1000);}assert(false);return downloadSnapshot();}
-void reset(int nextMode){assert(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));mode=nextMode;cursor=0;requests=0;moduleLoads=moduleProbes=stateQueries=0;advertisedLength=0;contentLengthCalls=0;netError=0;aborted=false;blocked=false;releaseRead=false;secure=false;manual=false;closedRequests=closedConnections=closedTemplates=closedHttp=closedSsl=closedPools=0;payload={0x7f,0x43,0x4e,0x54,'a','b','c','d'};sourceResponses.clear();sourceRequestUrls.clear();sourceCursor=sourceBytes=sourceReadCalls=packageReadCalls=0;templateCreates=tlsEnables=0;unlink(outputPath().c_str());unlink(outputPath(true).c_str());}
+void reset(int nextMode){assert(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));assert(!trackedPackageFile&&!trackedStdioBuffer);mode=nextMode;cursor=0;requests=0;moduleLoads=moduleProbes=stateQueries=0;advertisedLength=0;contentLengthCalls=0;netError=0;aborted=false;blocked=false;releaseRead=false;secure=false;manual=false;closedRequests=closedConnections=closedTemplates=closedHttp=closedSsl=closedPools=0;payload={0x7f,0x43,0x4e,0x54,'a','b','c','d'};sourceResponses.clear();sourceRequestUrls.clear();sourceCursor=sourceBytes=sourceReadCalls=packageReadCalls=0;templateCreates=tlsEnables=0;packageMallocFailure=setvbufFailureErrno=0;setvbufFailure=false;packageMallocCalls=packageSetvbufCalls=packageBufferLifetimeChecks=0;packageDataReads=packageMaxReadRequest=packageMaxReadBytes=0;unlink(outputPath().c_str());unlink(outputPath(true).c_str());}
 void cleanHandles(){assert(closedRequests==requests&&closedConnections==requests);assert(closedTemplates==1&&closedHttp==1&&closedSsl==1&&closedPools==1);assert(access(outputPath(true).c_str(),F_OK)!=0);}
 void seedPrevious(){FILE* f=fopen(outputPath().c_str(),"wb");assert(f);assert(__real_fwrite("previous",1,8,f)==8);assert(__real_fclose(f)==0);}
 void checkPrevious(){FILE* f=fopen(outputPath().c_str(),"rb");assert(f);char data[9]={0};assert(fread(data,1,8,f)==8);assert(!strcmp(data,"previous"));assert(__real_fclose(f)==0);}
@@ -612,6 +651,94 @@ void checkBinarySuccess(const DownloadSpec& spec, const char* cid, int expectedR
     assert(!sourceReadCalls && !sourceBytes && packageReadCalls >= (CID_TEST_HEADER + 2) / 3);
     cleanHandles(); checkPackageOutput(payload);
 }
+bool manifestHasArchiveCollection(const std::string& candidate) {
+    for (size_t i = 0; i < peppyArchiveSources::COLLECTION_COUNT; ++i)
+        if (candidate == peppyArchiveSources::COLLECTIONS[i]) return true;
+    return false;
+}
+bool manifestHasArchiveHost(const std::string& candidate) {
+    for (size_t i = 0; i < peppyArchiveSources::CDN_HOST_COUNT; ++i) {
+        const char* listed = peppyArchiveSources::CDN_HOSTS[i];
+        if (candidate.size() != strlen(listed)) continue;
+        bool same = true;
+        for (size_t j = 0; j < candidate.size(); ++j) {
+            char a = candidate[j], b = listed[j];
+            if (a >= 'A' && a <= 'Z') a = (char)(a + ('a' - 'A'));
+            if (b >= 'A' && b <= 'Z') b = (char)(b + ('a' - 'A'));
+            if (a != b) { same = false; break; }
+        }
+        if (same) return true;
+    }
+    return false;
+}
+std::string unapprovedArchiveCollection(std::string candidate = "peppy-unapproved-collection") {
+    while (manifestHasArchiveCollection(candidate)) candidate += "-x";
+    return candidate;
+}
+std::string unapprovedArchiveHost(std::string candidate = "peppy-unapproved.archive.org") {
+    size_t attempt = 0;
+    while (manifestHasArchiveHost(candidate)) {
+        char name[80]; snprintf(name, sizeof(name), "peppy-unapproved-%zu.archive.org", ++attempt);
+        candidate = name;
+    }
+    return candidate;
+}
+void archivePolicyTests() {
+    assert(peppyArchiveSources::COLLECTION_COUNT > 0 && peppyArchiveSources::CDN_HOST_COUNT > 0);
+    const char* knownCdn = peppyArchiveSources::CDN_HOSTS[0];
+    for (size_t i = 0; i < peppyArchiveSources::COLLECTION_COUNT; ++i) {
+        const char* collection = peppyArchiveSources::COLLECTIONS[i];
+        assert(peppyArchiveSources::approvedCollection(collection, strlen(collection)));
+        std::string origin = std::string("https://archive.org/download/") + collection + "/policy-fixture.pkg";
+        std::string cdn = std::string("https://") + knownCdn + "/0/items/" + collection + "/policy-fixture.pkg";
+        assert(safeUrl(origin.c_str()) && safeUrl(cdn.c_str()));
+        const std::string aliases[] = { unapprovedArchiveCollection(std::string("prefix-") + collection),
+                                        unapprovedArchiveCollection(std::string(collection) + "-unapproved") };
+        for (const std::string& alias : aliases) {
+            assert(!peppyArchiveSources::approvedCollection(alias.data(), alias.size()));
+            std::string url = std::string("https://archive.org/download/") + alias + "/policy-fixture.pkg";
+            assert(!safeUrl(url.c_str()));
+        }
+    }
+    for (size_t i = 0; i < peppyArchiveSources::CDN_HOST_COUNT; ++i) {
+        std::string host(peppyArchiveSources::CDN_HOSTS[i]);
+        assert(peppyArchiveSources::approvedCdnHost(host.data(), host.size()));
+        std::string route = std::string("/0/items/") + ARCHIVE_COLLECTION + "/policy-fixture.pkg";
+        assert(safeUrl(("https://" + host + route).c_str()));
+        // Host matching folds ASCII case, while a longer authority stays distinct.
+        for (size_t j = 0; j < host.size(); ++j)
+            if (host[j] >= 'a' && host[j] <= 'z') host[j] = (char)(host[j] - ('a' - 'A'));
+        assert(peppyArchiveSources::approvedCdnHost(host.data(), host.size()));
+        assert(safeUrl(("https://" + host + route).c_str()));
+        const std::string aliases[] = { unapprovedArchiveHost("prefix." + host),
+                                        unapprovedArchiveHost(host + ".evil.example") };
+        for (const std::string& alias : aliases)
+            assert(!safeUrl(("https://" + alias + route).c_str()));
+    }
+    // Collection names are exact spans: neither case folding nor percent decoding
+    // may create membership in the shared generated list.
+    std::vector<size_t> letters;
+    for (size_t i = 0; ARCHIVE_COLLECTION[i]; ++i)
+        if (ARCHIVE_COLLECTION[i] >= 'a' && ARCHIVE_COLLECTION[i] <= 'z') letters.push_back(i);
+    assert(!letters.empty() && letters.size() < 64);
+    std::string upper;
+    // More distinct variants than manifest entries guarantee an unlisted one.
+    for (uint64_t mask = 1; mask <= peppyArchiveSources::COLLECTION_COUNT + 1; ++mask) {
+        upper = ARCHIVE_COLLECTION;
+        for (size_t j = 0; j < letters.size(); ++j)
+            if (mask & (1ULL << j)) upper[letters[j]] = (char)(upper[letters[j]] - ('a' - 'A'));
+        if (!manifestHasArchiveCollection(upper)) break;
+    }
+    assert(!manifestHasArchiveCollection(upper));
+    assert(!peppyArchiveSources::approvedCollection(upper.data(), upper.size()));
+    assert(!safeUrl(("https://archive.org/download/" + upper + "/policy-fixture.pkg").c_str()));
+    std::string encoded = std::string("%70") + (ARCHIVE_COLLECTION + 1);
+    assert(!safeUrl(("https://archive.org/download/" + encoded + "/policy-fixture.pkg").c_str()));
+    std::string unknown = unapprovedArchiveCollection();
+    assert(!safeUrl(("https://archive.org/download/" + unknown + "/policy-fixture.pkg").c_str()));
+    std::string host = unapprovedArchiveHost();
+    assert(!safeUrl(("https://" + host + "/0/items/" + ARCHIVE_COLLECTION + "/policy-fixture.pkg").c_str()));
+}
 void archiveUrlTests() {
     const char* allowed[] = { ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN, ARCHIVE_OTHER_CDN, ARCHIVE_IA_FIXTURE,
         "https://ia800705.us.archive.org/1234567890/items/ps4-fpkg-collection-english-h/Hotline%20Miami.pkg",
@@ -620,6 +747,12 @@ void archiveUrlTests() {
         size_t origin = 0; assert(safeUrl(url, &origin));
         assert(origin > 8 && url[origin] == '/');
     }
+    // URL syntax fixtures only; these names do not establish catalog availability.
+    const char* unicodeNames[] = { "Ragnar%C3%B6k.pkg", "%C5%8CKAMI.pkg", "Ninja%20Gaiden%20%CE%A3.pkg",
+        "Turn%E2%88%80Gundam.pkg", "Unicode%F0%9F%98%80.pkg", "Unicode%F4%8F%BF%BF.pkg",
+        "NieR...pkg", "Hotline..pkg" };
+    for (const char* name : unicodeNames)
+        assert(safeUrl((std::string("https://archive.org/download/") + ARCHIVE_COLLECTION + "/" + name).c_str()));
     const char* prefixes[] = {
         "https://archive.org/download/ps4-fpkg-collection-english-h/",
         "https://dn721707.ca.archive.org/0/items/ps4-fpkg-collection-english-h/",
@@ -627,12 +760,18 @@ void archiveUrlTests() {
         "https://ia800705.us.archive.org/0/items/ps4-fpkg-collection-english-h/"
     };
     const char* invalidNames[] = { "", ".pkg", "Hotline.zip", "Hotline.pkg/extra", "sub/Hotline.pkg",
-        "../Hotline.pkg", "%2e%2e.pkg", "Hotline..pkg", "Hotline%2fMiami.pkg", "Hotline%2FMiami.pkg",
+        "../Hotline.pkg", "%2e%2e.pkg", "Hotline%2fMiami.pkg", "Hotline%2FMiami.pkg",
         "Hotline%5cMiami.pkg", "Hotline%00Miami.pkg", "Hotline%0aMiami.pkg", "Hotline%7fMiami.pkg",
         "Hotline%80Miami.pkg", "Hotline%3fMiami.pkg", "Hotline%23Miami.pkg", "Hotline%252fMiami.pkg",
         "Hotline%GGMiami.pkg", "Hotline%2.pkg", "Hotline%.pkg", "Hotline Miami.pkg",
         "Hotline\tMiami.pkg", "Hotline\nMiami.pkg",
-        "Hotline.pkg?token=x", "Hotline.pkg#fragment" };
+        "Hotline.pkg?token=x", "Hotline.pkg#fragment",
+        "Unicode%80.pkg", "Unicode%BF.pkg", "Unicode%C3.pkg", "Unicode%C3%28.pkg",
+        "Unicode%C0%AF.pkg", "Unicode%C1%A1.pkg", "Unicode%E0%80%AF.pkg", "Unicode%F0%80%80%AF.pkg",
+        "Unicode%E2%82.pkg", "Unicode%F0%9F%98.pkg", "Unicode%ED%A0%80.pkg", "Unicode%ED%BF%BF.pkg",
+        "Unicode%F4%90%80%80.pkg", "Unicode%F5%80%80%80.pkg", "Unicode%F8%80%80%80%80.pkg",
+        "Unicode%FE.pkg", "Unicode%FF.pkg", "Unicode%1F.pkg", "Unicode%C2%80.pkg", "Unicode%C2%9F.pkg",
+        "Raw\xC3\xB6.pkg" };
     for (const char* prefix : prefixes) for (const char* name : invalidNames)
         checkRejectedSource(std::string(prefix) + name, ARCHIVE_TEST_CID);
     checkRejectedSource(std::string(prefixes[0]) + std::string(URL_CAP, 'a') + ".pkg", ARCHIVE_TEST_CID);
@@ -642,15 +781,11 @@ void archiveUrlTests() {
         "https://archive.org@evil.example/download/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://archive.org:443/download/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://www.archive.org/download/ps4-fpkg-collection-english-h/Hotline.pkg",
-        "https://archive.org/download/ps4-fpkg-collection-english-g/Hotline.pkg",
-        "https://archive.org/download/ps4-fpkg-collection-english-h-extra/Hotline.pkg",
         "https://archive.org/details/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://archive.org/items/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://dn721707.ca.archive.org.evil.example/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://dn721707.ca.archive.org:443/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://dn721707.ca.archive.org@evil.example/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
-        "https://dn760106.eu.archive.org/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
-        "https://ia600705.us.archive.org/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://ia800705.us.archive.org.evil.example/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://ia800705.us.archive.org:443/0/items/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://ia800705.us.archive.org/items/ps4-fpkg-collection-english-h/Hotline.pkg",
@@ -659,10 +794,19 @@ void archiveUrlTests() {
         "https://ia800705.us.archive.org/-1/items/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://ia800705.us.archive.org/12345678901/items/ps4-fpkg-collection-english-h/Hotline.pkg",
         "https://ia800705.us.archive.org/0/1/items/ps4-fpkg-collection-english-h/Hotline.pkg",
-        "https://dn721707.ca.archive.org/0/items/ps4-fpkg-collection-english-g/Hotline.pkg",
         "https://dn721707.ca.archive.org/0/items/ps4-fpkg-collection-english-h/extra/Hotline.pkg"
     };
     for (const char* url : invalid) checkRejectedSource(url, ARCHIVE_TEST_CID);
+    const std::string unknown = unapprovedArchiveCollection();
+    checkRejectedSource("https://archive.org/download/" + unknown + "/Hotline.pkg", ARCHIVE_TEST_CID);
+    checkRejectedSource("https://dn721707.ca.archive.org/0/items/" + unknown + "/Hotline.pkg", ARCHIVE_TEST_CID);
+    const std::string alias = unapprovedArchiveCollection(std::string(ARCHIVE_COLLECTION) + "-extra");
+    checkRejectedSource("https://archive.org/download/" + alias + "/Hotline.pkg", ARCHIVE_TEST_CID);
+    // Keep these former fixed negatives unless a reviewed manifest approves them.
+    for (const char* candidate : { "dn760106.eu.archive.org", "ia700705.us.archive.org" }) {
+        std::string host = unapprovedArchiveHost(candidate);
+        checkRejectedSource("https://" + host + "/0/items/" + ARCHIVE_COLLECTION + "/Hotline.pkg", ARCHIVE_TEST_CID);
+    }
 }
 void archiveRedirectTests() {
     DownloadSpec spec = binarySourceSpec(ARCHIVE_TEST_URL);
@@ -685,9 +829,11 @@ void archiveRedirectTests() {
     sourceResponses[0].headers = "Location: " + relative + "\r\n";
     checkBinarySuccess(binarySourceSpec(ARCHIVE_TEST_CDN), ARCHIVE_TEST_CID, 2);
 
+    const std::string unknown = unapprovedArchiveCollection();
+    const std::string unknownUrl = "https://archive.org/download/" + unknown + "/Hotline.pkg";
     const char* forbidden[] = { CID_GITHUB_URL, SOURCE_PAGE_URL, SOURCE_CDN_URL, GAMEBATO_TEST_URL,
         "https://store.playstation.com/Hotline.pkg",
-        "https://archive.org/download/ps4-fpkg-collection-english-g/Hotline.pkg",
+        unknownUrl.c_str(),
         "https://dn721707.ca.archive.org.evil.example/0/items/ps4-fpkg-collection-english-h/Hotline.pkg" };
     for (const char* from : { ARCHIVE_TEST_URL, ARCHIVE_TEST_CDN }) for (const char* to : forbidden) {
         resetBinaryRedirect(from, to, ARCHIVE_TEST_CID);
@@ -702,7 +848,8 @@ void archiveRedirectTests() {
                                DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS);
         }
     }
-    for (const char* location : { "/download/ps4-fpkg-collection-english-g/Hotline.pkg",
+    const std::string unknownRelative = "/download/" + unknown + "/Hotline.pkg";
+    for (const char* location : { unknownRelative.c_str(),
                                 "//archive.org/download/ps4-fpkg-collection-english-h/Hotline.pkg",
                                 "/download/ps4-fpkg-collection-english-h/Hotline%2fMiami.pkg" }) {
         resetBinaryRedirect(ARCHIVE_TEST_URL, ARCHIVE_TEST_URL, ARCHIVE_TEST_CID);
@@ -781,7 +928,7 @@ void archiveNativeErrorTests() {
     checkBinaryFailure(spec, ARCHIVE_TEST_CID, DOWNLOAD_ERROR_HTTP, DOWNLOAD_STAGE_STATUS, 403);
 }
 void archiveTests() {
-    archiveUrlTests(); archiveRedirectTests(); archiveTransferTests(); archiveNativeErrorTests();
+    archivePolicyTests(); archiveUrlTests(); archiveRedirectTests(); archiveTransferTests(); archiveNativeErrorTests();
 }
 void gamebatoTests() {
     assert(safeUrl(GAMEBATO_TEST_URL));
@@ -830,6 +977,106 @@ void gamebatoTests() {
     checkBinaryFailure(spec, GAMEBATO_TEST_CID, DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_READ, LARGE_READ_ERROR);
     assert(downloadSnapshot().received == CID_TEST_HEADER && downloadSnapshot().total == actualBytes);
     assert(sourceResponses[0].body.size() == CID_TEST_HEADER);
+}
+
+void hitmanArchiveMirrorTests() {
+    const char* cid = "UP4572-CUSA13612_00-000000BLOODMONHD";
+    const char* origin = "https://archive.org/download/ps4-fpkg-collection-english-h/Hitman%20Blood%20Money%20-%20%5BUS%5D%20%5BEN%5D%20%5B1.02%5D.pkg";
+    const char* mirror = "https://ia600705.us.archive.org/21/items/ps4-fpkg-collection-english-h/Hitman%20Blood%20Money%20-%20%5BUS%5D%20%5BEN%5D%20%5B1.02%5D.pkg";
+    assert(safeUrl(origin) && safeUrl(mirror));
+    resetBinaryRedirect(origin, mirror, cid);
+    DownloadSpec spec = binarySourceSpec(origin);
+    // The completed transfer is a synthetic 1080-byte PKG header, fragmented
+    // into three-byte reads; its digest is unrelated to the real release file.
+    std::string digest = hashText(std::string((char*)payload.data(), payload.size()));
+    spec.sha256 = digest.c_str(); checkBinarySuccess(spec, cid, 2);
+    assert(sourceRequestUrls[0] == origin && sourceRequestUrls[1] == mirror);
+
+    resetBinaryRedirect(origin, mirror, cid);
+    const uint64_t actualBytes = 4064149504ULL;
+    fixtureBe64(sourceResponses[1].body, 0x430, actualBytes);
+    sourceResponses[1].overrideLength = true; sourceResponses[1].length = actualBytes;
+    sourceResponses[1].readFailureAfter = CID_TEST_HEADER; sourceResponses[1].readRc = LARGE_READ_ERROR;
+    spec.expectedBytes = actualBytes; spec.sha256 = 0;
+    checkBinaryFailure(spec, cid, DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_READ, LARGE_READ_ERROR, 2);
+    assert(downloadSnapshot().received == CID_TEST_HEADER && downloadSnapshot().total == actualBytes);
+    assert(sourceResponses[1].body.size() == CID_TEST_HEADER);
+
+    // A successful Range probe does not permit a partial response to a full GET.
+    resetBinaryRedirect(origin, mirror, cid); sourceResponses[1].status = 206;
+    spec.expectedBytes = CID_TEST_HEADER;
+    checkBinaryFailure(spec, cid, DOWNLOAD_ERROR_HTTP, DOWNLOAD_STAGE_STATUS, 206, 2);
+    assert(!packageReadCalls && !contentLengthCalls && downloadSnapshot().received == 0);
+}
+void pinnedItemzflowMirrorTests() {
+    const char* cid = "IV0002-ITEM00001_00-STOREUPD00000000";
+    const char* url = "https://raw.githubusercontent.com/Niklas080208/ps4-aio-apps/bf32bd6cf497ee9070f3f2f962c63ed19330e8bc/pkgs/itemzflow.pkg";
+    assert(safeUrl(url)); resetBinarySource(url, cid);
+    DownloadSpec spec = binarySourceSpec(url);
+    std::string digest = hashText(std::string((char*)payload.data(), payload.size()));
+    spec.sha256 = digest.c_str(); checkBinarySuccess(spec, cid, 1);
+    assert(sourceRequestUrls[0] == url);
+
+    resetBinarySource(url, cid);
+    const uint64_t actualBytes = 27131904ULL;
+    fixtureBe64(sourceResponses[0].body, 0x430, actualBytes);
+    sourceResponses[0].overrideLength = true; sourceResponses[0].length = actualBytes;
+    sourceResponses[0].readFailureAfter = CID_TEST_HEADER; sourceResponses[0].readRc = LARGE_READ_ERROR;
+    spec.expectedBytes = actualBytes; spec.sha256 = 0;
+    checkBinaryFailure(spec, cid, DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_READ, LARGE_READ_ERROR);
+    assert(downloadSnapshot().received == CID_TEST_HEADER && downloadSnapshot().total == actualBytes);
+    assert(sourceResponses[0].body.size() == CID_TEST_HEADER);
+}
+
+void packageBufferFailureTests() {
+    DownloadSpec spec = binarySourceSpec(CID_GITHUB_URL);
+    for (int allocation : { 1, 2 }) {
+        resetBinarySource(CID_GITHUB_URL, CID_TEST_VALUE); packageMallocFailure = allocation;
+        checkBinaryFailure(spec, CID_TEST_VALUE, DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, ENOMEM);
+        assert(packageMallocCalls == (size_t)allocation && !packageSetvbufCalls);
+        assert(!packageReadCalls && !packageBufferLifetimeChecks && !trackedPackageFile && !trackedStdioBuffer);
+    }
+    for (int suppliedErrno : { 0, ENOMEM }) {
+        resetBinarySource(CID_GITHUB_URL, CID_TEST_VALUE);
+        setvbufFailure = true; setvbufFailureErrno = suppliedErrno;
+        checkBinaryFailure(spec, CID_TEST_VALUE, DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN,
+                           suppliedErrno ? suppliedErrno : EIO);
+        assert(packageMallocCalls == 2 && packageSetvbufCalls == 1 && !packageReadCalls);
+        assert(packageBufferLifetimeChecks == 1 && !trackedPackageFile && !trackedStdioBuffer);
+    }
+}
+void packageBufferThroughputTests() {
+    const size_t bytes = 1024 * 1024;
+    const size_t oldChunk = 64 * 1024;
+    const size_t baselineDataReads = (bytes + oldChunk - 1) / oldChunk;
+    assert(baselineDataReads == 16);
+    for (int integrity : { 0, 1, 2 }) {
+        reset(MODE_MEDIAFIRE);
+        payload = contentIdPackage(bytes);
+        // Nonzero tail data makes exact output comparison meaningful beyond the header.
+        for (size_t i = CID_TEST_HEADER; i < payload.size(); ++i) payload[i] = (uint8_t)(i % 251);
+        SourceResponse response = sourcePackage(CID_GITHUB_URL); response.fragment = SIZE_MAX;
+        sourceResponses.push_back(response);
+        DownloadSpec spec = binarySourceSpec(CID_GITHUB_URL, bytes);
+        std::string digest;
+        if (integrity == 1) {
+            digest = hashText(std::string((char*)payload.data(), payload.size())); spec.sha256 = digest.c_str();
+        } else if (integrity == 2) {
+            spec.sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+        }
+        seedPrevious(); assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
+        assert(value.received == bytes && value.total == bytes && sourceCursor == bytes);
+        assert(packageMaxReadRequest == BUFFER_TEST_BYTES && packageMaxReadBytes == BUFFER_TEST_BYTES);
+        assert(packageDataReads == 4 && packageReadCalls == 5 && packageDataReads < baselineDataReads);
+        assert(packageMallocCalls == 2 && packageSetvbufCalls == 1 && packageBufferLifetimeChecks == 1);
+        assert(!trackedPackageFile && !trackedStdioBuffer); cleanHandles();
+        if (integrity == 2) {
+            assert(value.state == FAILED && value.errorCode == DOWNLOAD_ERROR_HASH && value.stage == DOWNLOAD_STAGE_HASH);
+            checkPrevious();
+        } else {
+            assert(value.state == DONE); checkPackageOutput(payload);
+        }
+    }
 }
 
 void largePackageTests(DownloadSpec& spec) {
@@ -921,6 +1168,10 @@ int main(){
  contentIdTests();
  archiveTests();
  gamebatoTests();
+ hitmanArchiveMirrorTests();
+ pinnedItemzflowMirrorTests();
+ packageBufferFailureTests();
+ packageBufferThroughputTests();
  spec.filename="../sample.pkg";assert(!startDownload(spec));assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC);
  FILE* log=fopen((std::string(testDirectory())+"/download.log").c_str(),"rb");assert(log);char logged[8192]={0};size_t loggedBytes=fread(logged,1,sizeof(logged)-1,log);assert(loggedBytes>0&&!ferror(log));assert(__real_fclose(log)==0);assert(!strstr(logged,"https://")&&!strstr(logged,"token="));
  unlink(outputPath().c_str());unlink((std::string(testDirectory())+"/download.log").c_str());rmdir(testDirectory());

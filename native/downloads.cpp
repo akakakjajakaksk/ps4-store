@@ -1,6 +1,7 @@
 #include "downloads.h"
 #include "package_limits.h"
 #include "mediafire_source.h"
+#include "archive_sources.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -43,6 +44,7 @@ namespace {
 const size_t URL_CAP = 4096;
 const size_t NAME_CAP = 96;
 const size_t RESPONSE_HEADER_CAP = 64 * 1024;
+const size_t READ_BUFFER_BYTES = 256 * 1024, STDIO_BUFFER_BYTES = 256 * 1024;
 const size_t PACKAGE_HEADER_BYTES = 0x438, CONTENT_ID_BYTES = 36;
 const uint32_t TLS_CHECKS = 0x01 | 0x04 | 0x08 | 0x10 | 0x20 | 0x80;
 const int MAX_REDIRECTS = 5;
@@ -192,16 +194,14 @@ bool archiveUrl(const char* url, size_t* originLength = 0) {
     if (!path) return false;
     size_t hostLength = path - host;
     bool origin = equalNoCase(host, hostLength, "archive.org");
-    bool cdn = equalNoCase(host, hostLength, "ia800705.us.archive.org") ||
-               equalNoCase(host, hostLength, "dn721707.ca.archive.org") ||
-               equalNoCase(host, hostLength, "dn760105.eu.archive.org");
+    bool cdn = peppyArchiveSources::approvedCdnHost(host, hostLength);
     if (!origin && !cdn) return false;
 
-    // These exact hosts and this collection were observed serving PKG headers.
-    // Metadata/search pages, other collections, and unobserved mirrors stay out.
+    // The catalog generator and native downloader share the exact reviewed
+    // collection/host policy. Metadata pages and unobserved mirrors stay out.
     const char* file = path;
     if (origin) {
-        const char prefix[] = "/download/ps4-fpkg-collection-english-h/";
+        const char prefix[] = "/download/";
         if (strncmp(file, prefix, sizeof(prefix) - 1)) return false;
         file += sizeof(prefix) - 1;
     } else {
@@ -209,13 +209,20 @@ bool archiveUrl(const char* url, size_t* originLength = 0) {
         size_t digits = 0;
         while (*file >= '0' && *file <= '9') { ++file; ++digits; }
         if (!digits || digits > 10) return false;
-        const char prefix[] = "/items/ps4-fpkg-collection-english-h/";
+        const char prefix[] = "/items/";
         if (strncmp(file, prefix, sizeof(prefix) - 1)) return false;
         file += sizeof(prefix) - 1;
     }
+    const char* collectionEnd = strchr(file, '/');
+    if (!collectionEnd ||
+        !peppyArchiveSources::approvedCollection(file, (size_t)(collectionEnd - file)))
+        return false;
+    file = collectionEnd + 1;
     size_t fileLength = length - (size_t)(file - url);
     if (fileLength <= 4 || strcmp(file + fileLength - 4, ".pkg")) return false;
-    unsigned char previous = 0;
+    bool first = true;
+    unsigned int continuation = 0;
+    uint32_t codepoint = 0, minimum = 0;
     for (size_t i = 0; i < fileLength; ++i) {
         unsigned char value = (unsigned char)file[i];
         if (value == '%') {
@@ -224,14 +231,34 @@ bool archiveUrl(const char* url, size_t* originLength = 0) {
             value = (unsigned char)(hex(file[i + 1]) * 16 + hex(file[i + 2]));
             i += 2;
         } else if (value <= 32 || value >= 127) return false;
-        // A basename only: decoding cannot create another path, query, fragment,
-        // or second percent escape. Escaped spaces and punctuation are permitted.
-        if (value < 32 || value >= 127 || value == '/' || value == '\\' ||
+        if (continuation) {
+            if ((value & 0xc0) != 0x80) return false;
+            codepoint = (codepoint << 6) | (value & 0x3f);
+            if (!--continuation && (codepoint < minimum || codepoint > 0x10ffff ||
+                (codepoint >= 0xd800 && codepoint <= 0xdfff) ||
+                (codepoint >= 0x7f && codepoint <= 0x9f))) return false;
+            continue;
+        }
+        if (value >= 128) {
+            if (value >= 0xc2 && value <= 0xdf) {
+                continuation = 1; codepoint = value & 0x1f; minimum = 0x80;
+            } else if (value >= 0xe0 && value <= 0xef) {
+                continuation = 2; codepoint = value & 0x0f; minimum = 0x800;
+            } else if (value >= 0xf0 && value <= 0xf4) {
+                continuation = 3; codepoint = value & 0x07; minimum = 0x10000;
+            } else return false;
+            first = false;
+            continue;
+        }
+        // A single basename permits embedded dots and encoded UTF-8, while
+        // decoding cannot create separators, controls, or a second URL escape.
+        if (value < 32 || value == 127 || value == '/' || value == '\\' ||
             value == '?' || value == '#' || value == '%' || value == '"' ||
             value == '<' || value == '>' || value == '`') return false;
-        if ((!previous && value == '.') || (previous == '.' && value == '.')) return false;
-        previous = value;
+        if (first && value == '.') return false;
+        first = false;
     }
+    if (continuation) return false;
     if (originLength) *originLength = path - url;
     return true;
 }
@@ -616,21 +643,37 @@ int runTransfer() {
     __atomic_store_n(&g_total, required, __ATOMIC_RELEASE);
     if (cancelled()) return 0;
     stage(DOWNLOAD_STAGE_FILE_OPEN);
+    struct TransferBuffers {
+        uint8_t* read;
+        char* output;
+        TransferBuffers() : read(static_cast<uint8_t*>(malloc(READ_BUFFER_BYTES))), output(0) {
+            if (read) output = static_cast<char*>(malloc(STDIO_BUFFER_BYTES));
+        }
+        ~TransferBuffers() { free(output); free(read); }
+    } buffers;
+    if (!buffers.read || !buffers.output)
+        return fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, ENOMEM);
     FILE* file = fopen(partPath, "wb");
     if (!file) { int code = errno; removePartial(partPath); return fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, code); }
     int result = 0;
+    // OpenOrbis musl does not allocate a buffer for setvbuf(NULL, ...).
+    // The supplied buffer must remain owned through both fflush and fclose.
+    errno = 0;
+    if (setvbuf(file, buffers.output, _IOFBF, STDIO_BUFFER_BYTES) != 0)
+        result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, errno ? errno : EIO);
     uint64_t received = 0;
-    uint8_t buffer[65536], magic[4] = {0,0,0,0};
+    uint8_t* buffer = buffers.read;
+    uint8_t magic[4] = {0,0,0,0};
     size_t magicCount = 0;
     uint8_t packageHeader[PACKAGE_HEADER_BYTES];
     size_t packageHeaderCount = 0;
     Sha256 hash;
-    while (!cancelled()) {
+    while (!result && !cancelled()) {
         stage(DOWNLOAD_STAGE_READ);
-        int32_t got = sceHttpReadData(handles.req, buffer, sizeof(buffer));
+        int32_t got = sceHttpReadData(handles.req, buffer, READ_BUFFER_BYTES);
         if (got < 0) { result = transferError(handles.req, DOWNLOAD_STAGE_READ, got); break; }
         if (got == 0) break;
-        if ((size_t)got > sizeof(buffer) || (uint64_t)got > required - received) {
+        if ((size_t)got > READ_BUFFER_BYTES || (uint64_t)got > required - received) {
             result = fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_READ, got); break;
         }
         for (int32_t i = 0; i < got && magicCount < 4; ++i) magic[magicCount++] = buffer[i];
@@ -648,7 +691,7 @@ int runTransfer() {
         if (fwrite(buffer, 1, (size_t)got, file) != (size_t)got) {
             result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_WRITE, errno); break;
         }
-        hash.update(buffer, (size_t)got);
+        if (g_digest[0]) hash.update(buffer, (size_t)got);
         received += (uint64_t)got;
         __atomic_store_n(&g_received, received, __ATOMIC_RELEASE);
     }

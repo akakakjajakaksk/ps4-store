@@ -7,20 +7,27 @@ Interface nativa para PS4 homebrew, compilada com OpenOrbis PS4 Toolchain.
 - Tela em 1920×1080 com fundo escuro e destaques azuis.
 - Arte PEPPY no banner e no ícone do menu do PS4.
 - Fonte suave com caracteres em português, preparada durante a build.
-- Catálogo de 36 PKGs, com categorias, páginas e detalhes.
+- Catálogo de 845 PKGs, com categorias, páginas e detalhes.
 - Downloads HTTPS de releases oficiais, MediaFire e fontes diretas revisadas, em segundo plano.
 - Instalação local integrada após concluir e validar o download.
 - Playlist FIGHT → ACENDAOFAROL, com opção para silenciar e trocar a faixa.
 
-O catálogo está em `catalog.json`, com versões, URLs fixas, tamanhos e
-evidências de firmware verificadas em 2026-10-04. Inclui utilitários,
-emuladores, PS4 Media Player, dois pacotes de Freedoom, Agony e sete
-conversões de PS2 para PS4. A revisão também adiciona FPKGi, Cheats Manager,
-NP2kai, mGBA, GameBaTo, cinco builds do ioQuake3 e três pacotes do Internet Archive: Hotline Miami,
-Hotline Miami 2 e Hollow Knight. As entradas externas identificam a fonte.
-A coleção do Archive informa atualizações mescladas e conteúdo removido;
-suas versões não são apresentadas como cópias sem alterações. O catálogo não
-representa todos os aplicativos existentes para PS4.
+O catálogo está em `catalog.json`, com versões, fontes, tamanhos exatos e
+evidências de arquivo conferidas em 2026-10-04. São 805 jogos nativos de PS4,
+14 conversões de PS1/PS2 e 26 aplicativos, emuladores e motores de jogos.
+Os jogos nativos incluem Agony e 804 títulos distintos do Internet Archive;
+as conversões não entram nessa contagem. As entradas identificam a fonte e
+distinguem as conversões dos jogos nativos.
+
+A coleção nativa do Archive informa versões em inglês, atualizações
+mescladas e conteúdo removido; essas versões não são apresentadas como
+cópias sem alterações nem como jogos em português. Sete conversões novas
+têm indicação de português/BR no nome ou na descrição da fonte. Essa
+indicação não foi confirmada jogando no console. A pesquisa de bases nativas
+em português encontrou arquivos compactados, sem PKG direto aprovado.
+O catálogo também inclui Itemzflow de um espelho não oficial fixado por
+commit e SHA-256. O catálogo não representa todos os aplicativos existentes
+para PS4, e os cabeçalhos não comprovam funcionamento no firmware 13.52.
 A interface e os downloads não se conectam a servidores da PlayStation.
 
 O download verifica tamanho e magic de PKG, e confere SHA-256 quando
@@ -33,7 +40,13 @@ Uma falha permite tentar instalar novamente o arquivo já baixado.
 Download e instalação usam o mesmo limite de 256 GiB por pacote, com tamanhos
 e progresso de 64 bits. A interface mostra GB a partir de 1 GiB. O conteúdo
 continua sendo transferido em blocos pequenos; o limite não reserva essa
-quantidade de memória. Os testes de pacotes grandes usam respostas simuladas
+quantidade de memória. A transferência usa um buffer de leitura de 256 KiB
+na heap e outro de 256 KiB para a gravação, fornecido explicitamente a
+`setvbuf`. Esses dois buffers somam 512 KiB fixos, além dos recursos de rede.
+O SHA-256 só é calculado quando existe um hash esperado no catálogo; nesse
+caso a comparação continua obrigatória. Isso reduz trabalho sem remover as
+verificações de tamanho, identidade e tipo. Não foi medida a velocidade real
+de transferência no PS4. Os testes de pacotes grandes usam respostas simuladas
 e arquivos esparsos, sem comprovar uma transferência completa no console.
 O instalador abre os arquivos com `O_NOFOLLOW` e verifica o descritor com
 `sceKernelFstat`, usando a estrutura nativa de 120 bytes. A chamada `lstat`
@@ -80,8 +93,11 @@ Os pacotes externos também conferem Content ID, tipo/flags de base e tamanho
 declarado no cabeçalho antes de publicar o arquivo completo. O catálogo
 guarda evidências de cabeçalho e HTTP Range; isso não comprova assinatura,
 todas as estruturas internas ou instalação no console.
-Internet Archive usa a rota estável da coleção revisada e somente os hosts
-HTTPS observados nesta conferência. Se o serviço mudar para outro CDN, o
+Internet Archive usa as rotas das coleções revisadas e somente os hosts
+HTTPS observados nesta conferência. `archive_sources.json` é a lista
+autoritativa de 27 coleções e 57 servidores CDN: o gerador Python lê esse arquivo e
+`scripts/archive_policy.py` gera `archive_sources.h` para o downloader nativo.
+Não há autorização por wildcard. Se o serviço mudar para outro CDN, o
 download será recusado até uma nova revisão; redirecionamentos não podem
 trocar de provedor. GameBaTo usa somente `/home/app.pkg` no site conferido,
 com SHA256 calculado em 2026-10-04 para fixar o arquivo mutável.
@@ -146,8 +162,11 @@ origem identificada. Páginas de download, arquivos RAR/ZIP, partes de um
 arquivo, captchas e links de PS5 não são downloads diretos instaláveis pela
 loja. Atualizações e DLCs também precisam de um fluxo de instalação próprio.
 O catálogo preserva as 15 releases anteriores e contém 24 releases oficiais,
-oito pacotes MediaFire, três pacotes do Internet Archive e o cliente GameBaTo
-conferido pelo site do fornecedor. Outras fontes só entram após conferir formato, URL e servidores
+oito pacotes MediaFire, 811 pacotes do Internet Archive, o cliente GameBaTo
+conferido pelo site do fornecedor e Itemzflow de um espelho não oficial.
+Os 811 pacotes do Archive são 804 jogos nativos e sete conversões em
+português/BR; 808 candidatos nativos aprovados foram reduzidos a 804 nomes
+distintos. Outras fontes só entram após conferir formato, URL e servidores
 de redirecionamento. O gerador valida a procedência e as evidências externas,
 e a loja repete a verificação de identidade e tipo no arquivo recebido.
 

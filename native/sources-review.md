@@ -2,8 +2,10 @@
 
 Conferência de 2026-10-04. A loja instala pacotes base completos de PS4;
 listas de jogos e páginas de hospedagem exigem conferência do arquivo final.
-Esta revisão consulta índices públicos e exemplos de download. Ela não
-verifica todos os arquivos de cada site.
+Esta revisão consulta índices públicos e os arquivos selecionados para o
+catálogo. Não é uma importação de todos os arquivos de cada site. No
+Internet Archive, os cabeçalhos dos 867 candidatos nativos selecionados
+foram processados; jogos comerciais completos não foram baixados.
 
 | Fonte indicada | Evidência disponível | Resultado nesta integração |
 | --- | --- | --- |
@@ -64,18 +66,18 @@ A conferência do cabeçalho não valida a assinatura ou todas as estruturas
 internas, e não comprova instalação no firmware 13.52. A transferência
 completa continua verificando tamanho, magic e SHA-256 quando disponível.
 
-## Fontes adicionais da Build 102
+## Fontes adicionais e ampliação do catálogo
 
 | Fonte indicada | Resultado da conferência de 2026-10-04 |
 | --- | --- |
-| [PKG-Zone](https://pkg-zone.com/) | Página e catálogo `api.pkg-zone.com/store.db` retornaram HTTP 500, inclusive com o User-Agent documentado da HB-Store. A HB-Store já está no catálogo por release oficial no GitHub. Itemzflow e PS4-Xplorer não foram adicionados: os espelhos consultados retornaram HTTP 403. |
+| [PKG-Zone](https://pkg-zone.com/) | Página e catálogo `api.pkg-zone.com/store.db` retornaram HTTP 500, inclusive com o User-Agent documentado da HB-Store. A HB-Store já está no catálogo por release oficial no GitHub. Os primeiros espelhos de Itemzflow e PS4-Xplorer retornaram HTTP 403; Itemzflow foi posteriormente conferido em um espelho público no GitHub, descrito abaixo. |
 | [Brewology](https://brewology.com/) | A página consultada prioriza homebrews de outras plataformas. IRISMAN, webMAN MOD e CFW/HFW de PS3 não são pacotes instaláveis neste aplicativo PS4. |
 | [PSX-Place](https://www.psx-place.com/resources/categories/ps4-homebrew.42/) | O recurso [ioQuake3 PS4](https://www.psx-place.com/resources/ioquake3-ps4.1717/) aponta para o autor Mayo1970. Foram incluídas cinco builds da release 1.8, com dados de jogo externos explicitados. |
 | [FPKGi](https://github.com/ItsJokerZz/FPKGi/releases/tag/v1.10.0) | Aplicativo PS4/PS5 do autor, release fixa v1.10.0, incluído por pacote PS4 conferido. Esta entrada instala o cliente; suas listas de jogos não foram importadas. |
 | [GameBaTo](https://gamebatoapp.ir/home/en/) | Cliente PS4 incluído a partir do link público `/home/app.pkg`. O site anuncia firmware 5.05 a 12.0, sem comprovar 13.52. A página não publica versão/checksum: o catálogo mostra “site sem versão” e fixa o SHA256 calculado nesta revisão. |
 | PKGi / NoPayStation | As opções indicadas para PS3, PS Vita e PSP ficam fora do catálogo PS4. A Peppy não integra downloads de servidores da PlayStation. |
 | [Vimm's Lair](https://vimm.net/vault/PS4) | O endereço PS4 consultado retornou HTTP 404. Discos, ISOs e pastas de PS3 não são PKGs base instaláveis de PS4. |
-| [Internet Archive](https://archive.org/details/ps4-fpkg-collection-english-h) | Incluídos três arquivos da coleção H após conferir metadados e cabeçalhos. A coleção declara releases modificadas, com atualizações mescladas e conteúdo removido; também avisa possíveis limitações no PS4 Pro. Esses avisos aparecem nas entradas. |
+| [Internet Archive](https://archive.org/details/ps4-fpkg-collection-english-h) | As coleções alfabéticas revisadas forneceram 804 jogos nativos distintos após conferir disponibilidade, metadados, cabeçalhos e duplicatas. A fonte declara versões modificadas em inglês, com atualizações mescladas, conteúdo removido e possíveis limitações no PS4 Pro. Sete conversões de PS1/PS2 com indicação português/BR também foram integradas, em itens separados. |
 | [Romsfun](https://romsfun.com/download/sonic-mania-40290) | Sonic Mania leva a uma página 1fichier com link temporário. Nenhum binário direto foi conferido; não foi incluído como PKG instalável. |
 | [Romspure](https://romspure.cc/roms/sony-playstation-4/) | O exemplo Puyo Puyo Tetris anuncia PKG, mas a página consultada não fornece um arquivo direto verificável. |
 
@@ -85,7 +87,7 @@ autores, com tag fixa; Cheats Manager não publica SHA256, enquanto as outras
 três releases publicam. NP2kai e mGBA precisam de dados externos descritos
 nas respectivas entradas. Firmware 13.52 permanece sem teste no console.
 
-| Arquivo adicionado | Title ID conferido | Tamanho em bytes |
+| Exemplos de arquivos conferidos | Title ID conferido | Tamanho em bytes |
 | --- | --- | --- |
 | FPKGi v1.10.0 | PKGI13337 | 85.458.944 |
 | PS4 Cheats Manager v1.2.2 | CHTM00777 | 19.202.048 |
@@ -112,19 +114,109 @@ autor documenta os diretórios em
 Open Arena usa dados gratuitos, também fornecidos à parte. As outras builds
 precisam dos dados correspondentes; instalar o motor sozinho não basta.
 
-Somente o cliente GameBaTo foi baixado integralmente para calcular SHA256:
+O cliente GameBaTo foi baixado integralmente para calcular SHA256:
 `529a33a55722c2488c9b190da6eb6132997903c3253091e576538785d3c937bb`.
-Nenhum jogo completo foi baixado nesta revisão. Como `app.pkg` é mutável,
+O arquivo Itemzflow do espelho também foi baixado integralmente para ler
+o PARAM.SFO e calcular SHA-256, conforme a seção abaixo. Nenhum jogo
+comercial completo foi baixado nesta revisão. Como `app.pkg` é mutável,
 uma mudança no arquivo do servidor exige atualizar a evidência e o hash.
 
-Internet Archive mantém URLs estáveis da coleção. Os destinos observados
-foram `ia800705.us.archive.org`, `dn721707.ca.archive.org` e
-`dn760105.eu.archive.org`; somente esses hosts e `archive.org` são aceitos,
-com rota limitada à coleção revisada e um único basename `.pkg`.
-Um novo CDN exige nova revisão. GameBaTo aceita somente o endereço exato do
-cliente. Cada provedor permanece isolado nos redirecionamentos HTTPS.
+## Revisão das coleções nativas do Internet Archive
 
-O catálogo final contém 36 entradas: 24 releases oficiais, oito pacotes
-MediaFire, três pacotes Internet Archive e um cliente GameBaTo do site.
+Os pedidos HTTP Range leem os primeiros 1.080 bytes e comparam magic,
+Content ID, tipo/flags de base e tamanho declarado com o tamanho HTTP.
+Os metadados fornecem nome, versão, tamanho e hashes publicados pela fonte;
+MD5/SHA1 de metadados não são tratados como SHA-256 verificado do arquivo.
+O resultado dos 867 candidatos nativos foi:
+
+| Resultado | Quantidade |
+| --- | ---: |
+| Cabeçalho de pacote base aprovado | 808 |
+| HTTP 401, sem arquivo público acessível | 44 |
+| HTTP 403, acesso recusado | 13 |
+| Cabeçalho recusado por flags de patch | 2 |
+| Total processado | 867 |
+
+Os dois cabeçalhos de patch pertencem a Serial Cleaner e Cyberpunk 2077.
+Quatro nomes duplicados entre os 808 candidatos aprovados foram removidos,
+resultando em 804 jogos nativos distintos do Archive. Agony é a outra base
+nativa, obtida pelo MediaFire: 805 jogos nativos no catálogo. Aplicativos,
+motores, emuladores e conversões PS1/PS2 não são usados para atingir a meta
+de jogos nativos.
+
+Respostas HTTP 500 e timeouts da rota estável foram tentados nas réplicas
+públicas indicadas pelos próprios metadados. Entre 293 candidatos encaminhados
+para essa recuperação, 292 foram recuperados. Esses casos usam a URL HTTPS
+do CDN efetivamente conferido; nenhuma proteção de acesso foi contornada.
+Arquivos com HTTP 401/403 permaneceram excluídos.
+
+As 27 coleções e os 57 servidores CDN aprovados ficam em
+[`archive_sources.json`](archive_sources.json). Essa lista é compartilhada:
+o gerador Python lê o JSON e
+[`scripts/archive_policy.py`](scripts/archive_policy.py) gera o cabeçalho
+C++ do downloader. A política aceita somente nomes exatos de coleções e
+hosts observados, com rota de um único arquivo `.pkg`; não usa wildcards de
+domínio. Um novo CDN exige nova revisão. Cada provedor permanece isolado
+nos redirecionamentos HTTPS, e nenhuma rota de servidor Sony foi integrada.
+
+A disponibilidade é a observada em 2026-10-04. Essa revisão do cabeçalho
+não comprova assinatura, integridade de todos os dados, execução no PS4
+Pro ou compatibilidade com firmware 13.52. O downloader confere novamente
+tamanho, identidade, tipo e SHA-256 quando existe um hash esperado antes
+de encaminhar o arquivo recebido ao instalador.
+
+## Português e conversões de jogos clássicos
+
+A pesquisa de bases nativas em português encontrou MediEvil, Deadpool e
+Shadow Complex Remastered com afirmações de idioma, porém somente em
+arquivos `.7z`. Esses arquivos não foram incorporados como PKGs diretos.
+Uma tradução de fã oferecida à parte também não transforma a base original
+em um pacote português. A coleção nativa em inglês permanece identificada
+como inglês; região europeia não é usada como prova de idioma.
+
+Foram integrados sete PKGs de clássicos com indicação de português/BR na
+fonte. São conversões para PS4, explicitadas como PS1 ou PS2 na loja:
+
+| Conversão | Title ID do cabeçalho | Tamanho real em bytes |
+| --- | --- | ---: |
+| God of War: O Bom de Guerra (PS2) | SCUS97399 | 3.279.749.120 |
+| Parasite Eve II (PS1, PT-BR) | SLUS01042 | 976.355.328 |
+| Resident Evil (PS1, BR) | CUSA00927 | 411.697.152 |
+| Resident Evil 2 (PS1, BR) | CUSA00755 | 944.766.976 |
+| Resident Evil Survivor (PS1, BR) | CUSA01088 | 245.760.000 |
+| Silent Hill (PS1, BR) | CUSA00925 | 397.803.520 |
+| Yu-Gi-Oh! Forbidden Memories (PS1, BR) | CUSA14511 | 248.578.048 |
+
+Esses cabeçalhos têm magic `7f434e54`, tipo `0x1A`, flags `0x0A000000` e
+tamanho declarado igual ao total HTTP. Os identificadores CUSA em algumas
+conversões não mudam a plataforma original dos jogos: a procedência informa
+PS1. O idioma é uma indicação do nome/descrição da fonte, sem teste de áudio
+ou legendas no console. Com as sete conversões anteriores do MediaFire,
+são 14 conversões, separadas dos 805 jogos nativos. A conversão de Resident
+Evil 3: Nemesis também teve cabeçalho conferido, mas usa `CUSA00924`, o
+mesmo Title ID da base nativa Resident Evil Revelations 2; ela foi excluída
+para evitar colisão entre os aplicativos.
+
+## Itemzflow de espelho não oficial
+
+[Niklas080208/ps4-aio-apps](https://github.com/Niklas080208/ps4-aio-apps/blob/bf32bd6cf497ee9070f3f2f962c63ed19330e8bc/apps.json)
+oferece um espelho público de Itemzflow. O arquivo de 27.131.904 bytes foi
+fixado pelo commit `bf32bd6cf497ee9070f3f2f962c63ed19330e8bc`, conferido
+integralmente e rotulado como **espelho não oficial**. O PARAM.SFO informa
+`TITLE=Itemzflow Game Manager`, `TITLE_ID=ITEM00001` e `APP_VER=01.08`;
+a versão exibida vem do arquivo, pois o manifesto não a informa.
+
+SHA-256 calculado:
+`acd4f37aad8d686a433e73f1b44a3e87b513c10ee7303ff965cb3dc54048e60e`.
+O hash fixa os bytes desse espelho, sem autenticar o arquivo pelo autor
+original. Funcionamento em 13.52 ainda precisa de teste no console.
+
+## Catálogo consolidado
+
+O catálogo contém 845 entradas: 805 jogos nativos, 14 conversões PS1/PS2
+e 26 aplicativos, emuladores e motores. Por procedência, são 24 releases
+oficiais, oito pacotes MediaFire, 811 pacotes Internet Archive, o cliente
+GameBaTo do site e Itemzflow de um espelho não oficial.
+
 Não é uma importação completa dos sites. Nenhum PKG enviado pelo usuário foi
 incluído nesta revisão, pois os anexos recebidos até agora são fotografias.

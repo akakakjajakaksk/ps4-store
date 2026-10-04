@@ -72,12 +72,15 @@ jobs:
           command -v ld.lld
           ld.lld --version
 
+      - name: Check reviewed Archive source policy
+        run: python3 native/scripts/archive_policy.py --policy native/archive_sources.json --output native/archive_sources.h --check
+
       - name: Test package downloads on host
         run: |
           cd native
           g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
             -Itests/downloads/stubs tests/downloads/downloads_test.cpp \
-            -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=fclose \
+            -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=fclose -Wl,--wrap=malloc -Wl,--wrap=setvbuf \
             -o /tmp/peppy-download-tests
           /tmp/peppy-download-tests
 

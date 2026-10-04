@@ -1,0 +1,34 @@
+{
+  "reviewed_at": "2026-10-04",
+  "method": "Public metadata plus HTTPS Range bytes=0-1079. No full commercial package downloaded; no console compatibility test.",
+  "archive_candidates": 867,
+  "verified_base_headers": 808,
+  "distinct_archive_games": 804,
+  "public_metadata_replicas_recovered": 292,
+  "excluded_http_401": 44,
+  "excluded_http_403": 13,
+  "excluded_patch_headers": [
+    "Serial Cleaner",
+    "Cyberpunk 2077"
+  ],
+  "duplicate_name_variants_removed": 4,
+  "title_id_conflicts_excluded": [
+    {
+      "name": "Resident Evil 3: Nemesis (PS1, PT-BR)",
+      "title_id": "CUSA00924",
+      "conflict": "RESIDENT EVIL REVELATIONS 2"
+    }
+  ],
+  "catalog_summary": {
+    "total_entries": 845,
+    "native_ps4_games": 805,
+    "ps1_ps2_conversions": 14,
+    "apps_and_engines": 26,
+    "portuguese_conversions": 7,
+    "native_ps4_portuguese_confirmed": 0
+  },
+  "approved_archive_collections": 27,
+  "approved_archive_cdn_hosts": 57,
+  "language_selection": "Portuguese preferred for equivalent available releases. Native PS4 collection is English; seven Portuguese entries are explicitly PS1/PS2 conversions.",
+  "integrity": "Runtime checks exact expected size, Content ID and base flags; SHA256 only when a reviewed expected digest is available."
+}

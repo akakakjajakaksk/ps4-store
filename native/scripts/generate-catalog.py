@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -23,11 +24,43 @@ CATEGORIES = {
 MAX_PACKAGE_BYTES = 256 * 1024 ** 3
 CONTENT_ID_RE = re.compile(r"[A-Z]{2}[0-9]{4}-((?:CUSA|SLES|SLUS)[0-9]{5})_[0-9]{2}-[A-Z0-9]{16}")
 CUSA_CONTENT_ID_RE = re.compile(r"[A-Z]{2}[0-9]{4}-(CUSA[0-9]{5})_[0-9]{2}-[A-Z0-9]{16}")
-ARCHIVE_ITEM = "ps4-fpkg-collection-english-h"
-ARCHIVE_SOURCE_URL = "https://archive.org/details/" + ARCHIVE_ITEM
+DEFAULT_ARCHIVE_POLICY = Path(__file__).resolve().parents[1] / "archive_sources.json"
+# Resolve the sibling explicitly so importlib-based callers and other working
+# directories use this project's policy reader without changing sys.path.
+_archive_policy_spec = importlib.util.spec_from_file_location(
+    "peppy_archive_policy", Path(__file__).resolve().with_name("archive_policy.py"))
+_archive_policy_module = importlib.util.module_from_spec(_archive_policy_spec)
+_archive_policy_spec.loader.exec_module(_archive_policy_module)
+load_archive_policy = _archive_policy_module.load_archive_policy
 GAMEBATO_SOURCE_URL = "https://gamebatoapp.ir/home/en/"
 GAMEBATO_DOWNLOAD_URL = "https://gamebatoapp.ir/home/app.pkg"
 GAMEBATO_CONTENT_ID = "XX0000-GBTX00001_00-GBTXXXXXXXXXXXXX"
+# Third-party mirrors are reviewed individually and never become official sources.
+REVIEWED_GITHUB_MIRRORS = {
+    "https://raw.githubusercontent.com/Niklas080208/ps4-aio-apps/bf32bd6cf497ee9070f3f2f962c63ed19330e8bc/pkgs/itemzflow.pkg": {
+        "source": "Niklas080208/ps4-aio-apps",
+        "source_url": "https://github.com/Niklas080208/ps4-aio-apps/blob/bf32bd6cf497ee9070f3f2f962c63ed19330e8bc/apps.json",
+        "content_id": "IV0002-ITEM00001_00-STOREUPD00000000",
+        "size_bytes": 27131904,
+    },
+}
+# These PS1/PS2 conversions have reviewed PS4-container headers. Their donor
+# Title IDs do not make them native PS4 games or authorize other legacy IDs.
+# Sizes are the observed header/HTTP totals in portuguese-wrapper-probes.json.
+REVIEWED_ARCHIVE_CONVERSIONS = {
+    "o-bom-de-guerra-1": {
+        "UP9000-SCUS97399_00-SCUS973990000001": ("PS2 conversion for PS4", 3279749120),
+    },
+    "parasite-eve-ii-pt-br": {
+        "UP9000-SLUS01042_00-SLUS010420000000": ("PS1 conversion for PS4", 976355328),
+        "UP9000-CUSA00927_00-SCUS942400000000": ("PS1 conversion for PS4", 411697152),
+        "UP9000-CUSA00755_00-SCUS942400000000": ("PS1 conversion for PS4", 944766976),
+        "UP9000-CUSA00924_00-SCUS942400000000": ("PS1 conversion for PS4", 468910080),
+        "UP9000-CUSA01088_00-SCUS942400000000": ("PS1 conversion for PS4", 245760000),
+        "UP9000-CUSA00925_00-SCUS942400000000": ("PS1 conversion for PS4", 397803520),
+        "UP9000-CUSA14511_00-SCUS942400000000": ("PS1 conversion for PS4", 248578048),
+    },
+}
 REMOTE_CONTENT_ID_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}[0-9]{4}-[A-Z]{4}[0-9]{5}_[0-9]{2}-[A-Z0-9]{16}(?![A-Z0-9_])")
 REMOTE_TITLE_ID_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{4}[0-9]{5}(?![A-Z0-9])")
 
@@ -202,24 +235,55 @@ def validate_mediafire(entry: dict) -> None:
         raise ValueError("source badge must contain at most 52 characters")
 
 
-def validate_archive_direct(entry: dict) -> None:
-    """Allow only the reviewed archive collection route and base CUSA headers."""
-    content_id = validate_reviewed_base(entry, legacy_title_ids=False)
+def validate_archive_direct(entry: dict, archive_policy: dict | None = None) -> None:
+    """Pin reviewed collections, base-header evidence and conversion origins."""
+    if archive_policy is None:
+        archive_policy = load_archive_policy(DEFAULT_ARCHIVE_POLICY)
+    provenance = plain_https_url(text_field(entry, "source_url"), "source_url")
+    source_parts = provenance.path.split("/")
+    if (provenance.netloc != "archive.org" or "?" in entry["source_url"]
+            or len(source_parts) != 3 or source_parts[:2] != ["", "details"]
+            or source_parts[2] not in archive_policy["collections"]):
+        raise ValueError("archive provenance must name an exact reviewed collection from archive_sources.json")
+    collection = source_parts[2]
+    conversions = REVIEWED_ARCHIVE_CONVERSIONS.get(collection)
+    if conversions is not None:
+        content_id = text_field(entry, "content_id")
+        conversion = conversions.get(content_id)
+        if conversion is None:
+            raise ValueError("archive conversion Content ID must match the individually reviewed collection package")
+        origin, size = conversion
+        if entry.get("content_origin") != origin or entry.get("size_bytes") != size:
+            raise ValueError("archive conversion requires its reviewed content_origin and exact package size")
+        content_id = validate_reviewed_base(entry, required_content_id=content_id)
+    else:
+        if entry.get("content_origin", "native PS4") != "native PS4":
+            raise ValueError("archive conversions require an individually reviewed conversion collection and Content ID")
+        content_id = validate_reviewed_base(entry, legacy_title_ids=False)
     if (text_field(entry, "source") != "archive.org"
             or text_field(entry, "source_label") != "INTERNET ARCHIVE"
-            or text_field(entry, "source_url") != ARCHIVE_SOURCE_URL
-            or entry["release_url"] != ARCHIVE_SOURCE_URL or "repository" in entry):
+            or entry["release_url"] != entry["source_url"] or "repository" in entry):
         raise ValueError("archive provenance must use the reviewed collection and INTERNET ARCHIVE label without an official repository claim")
     parsed = plain_https_url(entry["url"], "url")
-    if parsed.netloc != "archive.org" or "?" in entry["url"]:
-        raise ValueError("archive URL must be plain HTTPS archive.org without a query")
+    if "?" in entry["url"]:
+        raise ValueError("archive URL must be plain HTTPS without a query")
     parts = parsed.path.split("/")
-    if len(parts) != 4 or parts[:3] != ["", "download", ARCHIVE_ITEM]:
+    if parsed.netloc == "archive.org":
+        correct_route = len(parts) == 4 and parts[:3] == ["", "download", collection]
+    elif parsed.netloc in archive_policy["cdn_hosts"]:
+        correct_route = (len(parts) == 5 and parts[0] == ""
+                         and re.fullmatch(r"[0-9]{1,10}", parts[1]) is not None
+                         and parts[2:4] == ["items", collection])
+    else:
+        raise ValueError("archive URL host must be archive.org or an exact reviewed CDN host")
+    if not correct_route:
         raise ValueError("archive URL must name one PKG directly in the reviewed collection")
-    remote_name = unquote(parts[3], errors="strict")
-    if (not remote_name.endswith(".pkg") or len(remote_name) <= 4 or ".." in remote_name
-            or any(ord(char) < 32 or ord(char) >= 127 or char in "/\\%?#" for char in remote_name)):
-        raise ValueError("archive URL must name a complete ASCII PKG basename without traversal or encoded separators")
+    raw_basename = parts[-1]
+    remote_name = unquote(raw_basename, errors="strict")
+    if (not raw_basename.endswith(".pkg") or len(remote_name) <= 4 or remote_name.startswith(".")
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 or char in '/\\%?#"<>`'
+                   for char in remote_name)):
+        raise ValueError("archive URL must name a complete UTF-8 PKG basename without controls or encoded separators")
     validate_remote_identity(remote_name, content_id)
     entry["source_badge"] = "PKG / INTERNET ARCHIVE"
 
@@ -239,17 +303,38 @@ def validate_gamebato_direct(entry: dict) -> None:
     entry["source_badge"] = "PKG / GAMEBATO"
 
 
-def validate_reviewed_direct(entry: dict) -> None:
+def validate_github_mirror(entry: dict) -> None:
+    """Allow a single individually reviewed commit-pinned package mirror."""
+    reviewed = REVIEWED_GITHUB_MIRRORS.get(entry["url"])
+    if reviewed is None:
+        raise ValueError("github_mirror URL must match an individually reviewed commit-pinned package")
+    validate_reviewed_base(entry, required_content_id=reviewed["content_id"])
+    if (text_field(entry, "source") != reviewed["source"]
+            or text_field(entry, "source_label") != "ESPELHO NÃO OFICIAL"
+            or text_field(entry, "source_url") != reviewed["source_url"]
+            or entry["release_url"] != reviewed["source_url"]
+            or entry["size_bytes"] != reviewed["size_bytes"] or "repository" in entry):
+        raise ValueError("github_mirror provenance, size and nonofficial label must match the reviewed mirror without an official repository claim")
+    digest = entry.get("sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+        raise ValueError("github_mirror requires a checked 64-character SHA-256 digest")
+    entry["source_badge"] = "PKG / ESPELHO NÃO OFICIAL"
+
+
+def validate_reviewed_direct(entry: dict, archive_policy: dict | None = None) -> None:
     provider = entry.get("provider")
     if provider == "archive":
-        validate_archive_direct(entry)
+        validate_archive_direct(entry, archive_policy)
     elif provider == "gamebato":
         validate_gamebato_direct(entry)
+    elif provider == "github_mirror":
+        validate_github_mirror(entry)
     else:
-        raise ValueError("reviewed_direct requires an explicitly reviewed archive or gamebato provider")
+        raise ValueError("reviewed_direct requires an explicitly reviewed archive, gamebato or github_mirror provider")
 
 
-def validate_entry(entry: dict, index: int, seen_ids: set[str], seen_filenames: set[str] | None = None) -> dict:
+def validate_entry(entry: dict, index: int, seen_ids: set[str], seen_filenames: set[str] | None = None,
+                   archive_policy: dict | None = None) -> dict:
     if not isinstance(entry, dict):
         raise ValueError(f"entry {index} must be an object")
     entry = dict(entry)
@@ -288,7 +373,7 @@ def validate_entry(entry: dict, index: int, seen_ids: set[str], seen_filenames: 
     elif source_kind == "external_mediafire":
         validate_mediafire(entry)
     else:
-        validate_reviewed_direct(entry)
+        validate_reviewed_direct(entry, archive_policy)
 
     size = entry.get("size_bytes")
     if type(size) is not int or not 0x438 <= size <= MAX_PACKAGE_BYTES:
@@ -308,7 +393,7 @@ def validate_entry(entry: dict, index: int, seen_ids: set[str], seen_filenames: 
     return entry
 
 
-def read_catalog(catalog_path: Path) -> list[dict]:
+def read_catalog(catalog_path: Path, archive_policy_path: Path | None = None) -> list[dict]:
     with catalog_path.open("r", encoding="utf-8", errors="strict") as stream:
         catalog = json.load(stream)
     if (not isinstance(catalog, dict) or type(catalog.get("schema_version")) is not int
@@ -320,9 +405,13 @@ def read_catalog(catalog_path: Path) -> list[dict]:
     seen_ids: set[str] = set()
     seen_filenames: set[str] = set()
     validated = []
+    archive_policy = None
     for index, entry in enumerate(entries, 1):
         try:
-            validated.append(validate_entry(entry, index, seen_ids, seen_filenames))
+            if (isinstance(entry, dict) and entry.get("source_kind") == "reviewed_direct"
+                    and entry.get("provider") == "archive" and archive_policy is None):
+                archive_policy = load_archive_policy(archive_policy_path or DEFAULT_ARCHIVE_POLICY)
+            validated.append(validate_entry(entry, index, seen_ids, seen_filenames, archive_policy))
         except (ValueError, UnicodeError) as error:
             raise ValueError(f"entry {index}: {error}") from error
     return validated
@@ -402,11 +491,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", required=True, type=Path, help="verified UTF-8 catalog.json")
     parser.add_argument("--output", required=True, type=Path, help="destination ui_catalog.h")
+    parser.add_argument("--archive-policy", type=Path, help="reviewed archive_sources.json; defaults to this project's native file")
     args = parser.parse_args()
     try:
         if args.catalog.resolve() == args.output.resolve():
             raise ValueError("--output must be different from --catalog")
-        entries = read_catalog(args.catalog)
+        entries = read_catalog(args.catalog, args.archive_policy)
         write_header(args.output, generate_header(entries))
     except (OSError, ValueError, UnicodeError) as error:
         print(f"error: {error}", file=sys.stderr)

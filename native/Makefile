@@ -59,7 +59,7 @@ eboot.bin: $(OBJS)
 ui_assets.h: ../peppy-icon0-1.png scripts/generate-ui-assets.py
 	python3 scripts/generate-ui-assets.py --icon ../peppy-icon0-1.png --output $@
 
-ui_catalog.h: catalog.json scripts/generate-catalog.py
+ui_catalog.h: catalog.json scripts/generate-catalog.py archive_sources.json scripts/archive_policy.py
 	python3 scripts/generate-catalog.py --catalog catalog.json --output $@
 
 $(MUSIC_ASSETS): ../fight-ps4.mp3 ../acendaofarol-ps4.mp3 scripts/prepare-music.py
@@ -69,7 +69,10 @@ $(MUSIC_ASSETS): ../fight-ps4.mp3 ../acendaofarol-ps4.mp3 scripts/prepare-music.
 .NOTPARALLEL: pkg.gp4
 
 $(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h downloads.h install.h music.h
-$(INTDIR)/downloads.o: downloads.h package_limits.h mediafire_source.h
+archive_sources.h: archive_sources.json scripts/archive_policy.py
+	python3 scripts/archive_policy.py --policy archive_sources.json --output $@
+
+$(INTDIR)/downloads.o: downloads.h package_limits.h mediafire_source.h archive_sources.h
 $(INTDIR)/install.o: install.h pkg_server.h package_limits.h
 $(INTDIR)/pkg_server.o: pkg_server.h
 $(INTDIR)/music.o: music.h

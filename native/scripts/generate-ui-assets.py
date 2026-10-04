@@ -29,8 +29,9 @@ FONT_SPECS = (
     ("FONT_HERO", 68, "DejaVuSans-Bold.ttf"),
 )
 PORTUGUESE_CHARACTERS = "ÀÁÂÃÄÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜàáâãäçèéêëìíîïñòóôõöùúûü"
+CATALOG_CHARACTERS = "ŌΣ→∀"
 CHARACTERS = tuple(
-    sorted(set(range(32, 127)) | {ord(char) for char in PORTUGUESE_CHARACTERS})
+    sorted(set(range(32, 127)) | {ord(char) for char in PORTUGUESE_CHARACTERS + CATALOG_CHARACTERS})
 )
 
 

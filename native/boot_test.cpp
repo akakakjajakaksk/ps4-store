@@ -518,7 +518,7 @@ static void drawStore(uint32_t* p, int selected, int padState) {
     int count = categoryCount(), first = selected / 4 * 4;
     text(p, 72, 578, activeCategory ? CATEGORY_NAMES[activeCategory] : "Explore sua biblioteca", FONT_TITLE, WHITE);
     char pageLabel[80];
-    snprintf(pageLabel, sizeof(pageLabel), "%02d apps  |  Página %d/%d", count, count ? selected / 4 + 1 : 0, (count + 3) / 4);
+    snprintf(pageLabel, sizeof(pageLabel), "%02d itens  |  Página %d/%d", count, count ? selected / 4 + 1 : 0, (count + 3) / 4);
     text(p, W - 72 - textWidth(pageLabel, FONT_SMALL), 587, pageLabel, FONT_SMALL, MUTED);
     const int start = 72, y = 650, cw = 426, ch = 294, gap = 24;
     for (int slot = 0; slot < 4 && first + slot < count; ++slot) {
@@ -638,7 +638,7 @@ static void drawDetails(uint32_t* p, int selected) {
         snprintf(info, sizeof(info), "%s (código %d)", downloadErrorText(status.errorCode), status.errorCode);
     } else if (mine && status.state == CANCELLED) snprintf(info, sizeof(info), "Download cancelado.");
     else if (*app.sha256) snprintf(info, sizeof(info), "SHA-256 conferido ao concluir o download.");
-    else snprintf(info, sizeof(info), "Pacote publicado pelo projeto; hash não informado no release.");
+    else snprintf(info, sizeof(info), "Hash não informado pela fonte.");
     textWrapped(p, 708, 861, info, FONT_SMALL, MUTED, 1140, 2);
     if (install.cleanupCode || (myInstall && install.state == INSTALL_FAILED)) {
         char diagnostic[192];
