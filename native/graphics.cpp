@@ -8,6 +8,8 @@
 #include "graphics.h"
 
 
+Scene2D::~Scene2D() {}
+
 Scene2D::Scene2D(int w, int h, int pixelDepth)
 {
 	this->width = w;
