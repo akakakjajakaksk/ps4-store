@@ -178,7 +178,13 @@ Request parse(char* header, const char* path, uint64_t bytes) {
     if (strcmp(version, "HTTP/1.0") && strcmp(version, "HTTP/1.1")) return out;
     out.head = !strcmp(header, "HEAD");
     if (strcmp(header, "GET") && !out.head) { out.status = 405; return out; }
-    // BGFT may canonicalize the loopback URL before requesting it (for example\n    // an absolute-form request target). Accept the exact path or an absolute\n    // http://127.0.0.1:<port><path> target, while still rejecting every other path.\n    bool targetOk = !strcmp(target, path);\n    if (!targetOk && !strncmp(target, "http://127.0.0.1:", 17)) {\n        const char* slash = strchr(target + 17, '/');\n        targetOk = slash && !strcmp(slash, path);\n    }\n    if (!targetOk) { out.status = 404; return out; }
+    // BGFT can use absolute-form loopback request targets.
+    bool targetOk = !strcmp(target, path);
+    if (!targetOk && !strncmp(target, "http://127.0.0.1:", 17)) {
+        const char* slash = strchr(target + 17, '/');
+        targetOk = slash && !strcmp(slash, path);
+    }
+    if (!targetOk) { out.status = 404; return out; }
     bool hasRange = false, hasLength = false;
     char* cursor = lineEnd + 2;
     while (*cursor) {
