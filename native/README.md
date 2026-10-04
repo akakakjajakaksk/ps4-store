@@ -1,30 +1,47 @@
-# Orbis Store Native 0.1
+# Peppy Store Native
 
-Versao nativa experimental da Orbis Store para PlayStation 4 homebrew.
+Interface nativa para PS4 homebrew, compilada com OpenOrbis PS4 Toolchain.
 
-## Objetivo
-- App separado da versao web
-- Navegacao por DualShock 4
-- Catalogo de homebrews autorizados
-- Base preparada para rede/download em etapas posteriores
+## Interface
 
-## Toolchain
-Projeto estruturado para OpenOrbis PS4 Toolchain.
+- Tela em 1920×1080 com fundo escuro e destaques azuis.
+- Arte PEPPY no banner e no ícone do menu do PS4.
+- Fonte suave com caracteres em português, preparada durante a build.
+- Quatro cards de catálogo e páginas de detalhes.
 
-## Estado 0.1
-A primeira build mostra a interface inicial nativa e responde ao controle. A instalacao automatica de PKG ainda NAO esta implementada; ela so sera marcada como pronta depois de validacao real no PS4/GoldHEN.
+Os downloads e a instalação de aplicativos ainda não estão implementados.
+As páginas de detalhes indicam que o download está indisponível.
+A interface não se conecta a servidores da PlayStation.
+
+## Controles
+
+- Esquerda/direita: selecionar um card, com retorno ao início/fim da lista.
+- X: abrir os detalhes do card selecionado.
+- Bolinha: voltar à biblioteca.
 
 ## Build
-Instale o OpenOrbis PS4 Toolchain e configure OO_PS4_TOOLCHAIN. Depois use make dentro desta pasta.
 
-A versao web da Orbis continua independente na raiz do repositorio.
+Configure `OO_PS4_TOOLCHAIN` para o OpenOrbis v0.5.4. Em Linux, instale
+`lld`, `python3-pil` e `fonts-dejavu-core`. Execute `make` nesta pasta.
+O `ui_assets.h` é gerado automaticamente a partir das fontes e do ícone
+`../peppy-icon0-1.png`; as imagens e as fontes não precisam de dependências
+adicionais no console.
 
+A workflow `.github/workflows/build-native.yml` prepara `right.sprx` e
+`sce_sys/icon0.png`, compila, empacota e valida o PKG. A licença da fonte
+acompanha o pacote em `assets/FONT_LICENSE.txt`.
 
-## Native 0.3
-- Renderer fullscreen 1920x1080 via SDL2
-- Faixa de destaque e biblioteca horizontal
-- Cards com foco visual
-- Navegacao esquerda/direita pelo controle
-- Estrutura visual sem depender do navegador do PS4
+## Prévia sem PS4
 
-Observacao: esta etapa e um prototipo grafico de codigo-fonte. Precisa ser compilada com a distribuicao do OpenOrbis que inclua SDL-PS4 e validada no hardware antes de ser chamada de build funcional.
+Na raiz do repositório:
+
+```sh
+python3 native/scripts/generate-ui-assets.py --icon peppy-icon0-1.png --output native/ui_assets.h
+g++ -std=c++11 -O2 native/scripts/preview-ui.cpp -o /tmp/peppy-preview
+/tmp/peppy-preview /tmp/peppy
+```
+
+O programa gera arquivos PPM para os quatro estados da biblioteca e os
+quatro estados de detalhes usando o mesmo renderizador da build nativa.
+
+O funcionamento no console depende de teste real no PS4/GoldHEN.
