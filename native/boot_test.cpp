@@ -3,7 +3,6 @@
 #include <orbis/VideoOut.h>
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
-#include <orbis/UserService.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -57,38 +56,44 @@ static void text(uint32_t*p,int x,int y,const char*s,int scale,uint32_t c){
 }
 
 static void drawStore(uint32_t*p,int selected,int padState){
- const uint32_t bg=0x80101420,top=0x80192334,panel=0x80212D42,card=0x802B3A54;
- const uint32_t accent=0x8000A8FF,white=0x80F4F7FF,muted=0x80788AA8;
- fill(p,bg); rect(p,0,0,W,120,top);rect(p,0,116,W,4,accent);
- rect(p,70,34,52,52,accent);rect(p,82,46,28,28,top);
- text(p,150,38,"ORBIS STORE",7,white); text(p,150,91,"HOME",2,muted);
- if(padState==0) text(p,1050,52,"PAD FAIL",3,0x80FF6060);
- else if(padState==1) text(p,1050,52,"PAD OPEN",3,0x80FFD060);
- else text(p,1050,52,"PAD READ",3,0x8060FF90);
+ const uint32_t bg=0x80080D18,nav=0x80101728,panel=0x80151E30,card=0x801B263B;
+ const uint32_t accent=0x800078FF,glow=0x8030B8FF,white=0x80F5F8FF,muted=0x80879AB8,shadow=0x8003070D;
+ fill(p,bg);
+ rect(p,0,0,W,108,nav);rect(p,0,104,W,4,accent);
+ rect(p,58,25,62,62,accent);rect(p,72,39,34,34,bg);
+ text(p,150,28,"ORBIS STORE",7,white);text(p,151,82,"PS4 HOME",2,muted);
+ if(padState==2){rect(p,1180,36,190,38,0x8014352B);text(p,1205,46,"PAD READ",3,0x8060FF90);}
 
- rect(p,1450,36,380,50,panel);border(p,1450,36,380,50,2,muted);text(p,1490,52,"SEARCH",3,muted);
+ rect(p,1430,28,420,56,panel);border(p,1430,28,420,56,2,0x80364A68);text(p,1470,45,"SEARCH",3,muted);
 
- rect(p,55,170,330,830,panel);rect(p,55,190,8,86,accent);
- text(p,95,210,"HOME",5,white);text(p,95,330,"GAMES",4,muted);
- text(p,95,410,"APPS",4,muted);text(p,95,490,"INSTALL",4,muted);
+ rect(p,42,145,310,875,shadow);rect(p,50,137,310,875,panel);
+ const char*menu[4]={"HOME","GAMES","APPS","INSTALL"};
+ for(int i=0;i<4;i++){int yy=190+i*92;if(i==0){rect(p,50,yy-18,310,66,0x80203855);rect(p,50,yy-18,7,66,accent);}text(p,92,yy,menu[i],4,i==0?white:muted);}
+ text(p,92,930,"ORBIS",3,muted);text(p,92,970,"STORE",3,muted);
 
- rect(p,430,170,1435,300,panel);border(p,430,170,1435,300,3,accent);
- text(p,485,215,"ORBIS STORE",7,white);
- text(p,485,285,"HOME FOR PS4 APPS",4,muted);
- rect(p,485,370,260,54,accent);text(p,525,383,"OPEN",4,white);
+ rect(p,405,145,1460,292,shadow);rect(p,413,137,1460,292,0x8014243C);
+ rect(p,413,137,14,292,accent);
+ text(p,475,185,"ORBIS STORE",8,white);text(p,478,260,"HOME FOR PS4 APPS",4,muted);
+ rect(p,478,337,250,58,accent);text(p,530,352,"OPEN",4,white);
+ rect(p,1510,185,250,150,0x801C3456);border(p,1510,185,250,150,3,glow);
+ rect(p,1580,215,110,90,accent);rect(p,1603,238,64,44,0x8014243C);
 
- const int y=525,cw=325,ch=385,gap=30,start=430;
+ const int y=500,cw=330,ch=390,gap=27,start=413;
  const char*names[4]={"GAME 1","APP 2","GAME 3","APP 4"};
+ const uint32_t covers[4]={0x80304D82,0x80513B68,0x802E6255,0x80604D32};
  for(int i=0;i<4;i++){
-  int x=start+i*(cw+gap);rect(p,x,y,cw,ch,card);
-  rect(p,x,y,cw,230,(i==0)?0x804B65A0:(i==1)?0x80633E72:(i==2)?0x803A6B58:0x80715A35);
-  text(p,x+25,y+260,names[i],4,white);text(p,x+25,y+305,"INSTALL",3,muted);
-  rect(p,x+25,y+345,125,35,accent);text(p,x+39,y+353,"OPEN",3,white);
+  int x=start+i*(cw+gap);
+  rect(p,x+8,y+10,cw,ch,shadow);rect(p,x,y,cw,ch,card);
+  rect(p,x,y,cw,225,covers[i]);
+  rect(p,x+22,y+20,286,8,i==selected?accent:0x80445A78);
+  rect(p,x+118,y+68,94,94,0x80212E47);border(p,x+118,y+68,94,94,3,i==selected?glow:muted);
+  text(p,x+25,y+254,names[i],4,white);text(p,x+25,y+300,"INSTALL",3,muted);
+  rect(p,x+25,y+342,132,34,i==selected?accent:0x802B3A54);text(p,x+42,y+350,"OPEN",3,white);
  }
- border(p,start+selected*(cw+gap)-5,y-5,cw+10,ch+10,5,accent);
- rect(p,430,950,1435,50,top);text(p,470,965,"SELECT",3,white);text(p,720,965,"BACK",3,muted);
+ int sx=start+selected*(cw+gap);
+ border(p,sx-7,y-7,cw+14,ch+14,5,glow);
+ rect(p,413,930,1460,72,nav);text(p,455,952,"SELECT",3,white);text(p,720,952,"BACK",3,muted);
 }
-
 int main(void){
  sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_VIDEO_OUT);
  int32_t video=sceVideoOutOpen(ORBIS_VIDEO_USER_MAIN,ORBIS_VIDEO_OUT_BUS_MAIN,0,0);
@@ -120,7 +125,7 @@ int main(void){
  int32_t pad=(padInit==0 && userRc==0)?scePadOpen(userId,0,0,0):-1;
 
  int selected=0,front=0;uint32_t prev=0;int64_t frame=1;
- drawStore(fb[front],selected,(pad>=0)?1:0);
+ drawStore(fb[front],selected,2);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
  for(;;){
