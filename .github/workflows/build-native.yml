@@ -27,6 +27,15 @@ jobs:
           echo "Toolchain root: $TOOLCHAIN_ROOT"
           find "$TOOLCHAIN_ROOT/bin/linux" -maxdepth 1 -type f -printf "%f\n" | sort
 
+      - name: Build official create-fself
+        run: |
+          git clone --depth 1 https://github.com/OpenOrbis/create-fself.git /tmp/create-fself
+          cd /tmp/create-fself/cmd/create-fself
+          go build -o "$OO_PS4_TOOLCHAIN/bin/linux/create-fself" .
+          chmod +x "$OO_PS4_TOOLCHAIN/bin/linux/create-fself"
+          "$OO_PS4_TOOLCHAIN/bin/linux/create-fself" -h || true
+          test -x "$OO_PS4_TOOLCHAIN/bin/linux/create-fself"
+
       - name: Prepare package assets
         run: |
           mkdir -p native/sce_sys/about
