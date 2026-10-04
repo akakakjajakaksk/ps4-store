@@ -69,8 +69,8 @@ $(MUSIC_ASSETS): ../fight-ps4.mp3 ../acendaofarol-ps4.mp3 scripts/prepare-music.
 .NOTPARALLEL: pkg.gp4
 
 $(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h downloads.h install.h music.h
-$(INTDIR)/downloads.o: downloads.h
-$(INTDIR)/install.o: install.h pkg_server.h
+$(INTDIR)/downloads.o: downloads.h package_limits.h mediafire_source.h
+$(INTDIR)/install.o: install.h pkg_server.h package_limits.h
 $(INTDIR)/pkg_server.o: pkg_server.h
 $(INTDIR)/music.o: music.h
 $(INTDIR)/goldhen_bridge.o: third_party/goldhen/GoldHEN.h

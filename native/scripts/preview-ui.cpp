@@ -12,9 +12,11 @@ static MusicSnapshot previewMusic = {MUSIC_PLAYING, 0, 30, false, 0};
 static int downloadCalls = 0, installCalls = 0, cancelInstallCalls = 0;
 static bool rejectDownload = false, rejectInstall = false, rejectInstallBusy = false;
 static InstallSpec lastInstall = {};
+static const char* lastDownloadContentId = 0;
 DownloadSnapshot downloadSnapshot() { return previewDownload; }
-bool startDownload(const DownloadSpec& spec) {
+bool startDownload(const DownloadSpec& spec, const char* expectedContentId) {
     ++downloadCalls;
+    lastDownloadContentId = expectedContentId;
     previewDownload = {};
     previewDownload.state = rejectDownload ? FAILED : RUNNING;
     previewDownload.total = spec.expectedBytes;
@@ -23,6 +25,8 @@ bool startDownload(const DownloadSpec& spec) {
 }
 void cancelDownload() { previewDownload.state = CANCELLED; }
 const char* downloadStageName(int stage) {
+    if (stage == DOWNLOAD_STAGE_SOURCE_READ) return "Página da fonte";
+    if (stage == DOWNLOAD_STAGE_SOURCE_PARSE) return "Resolver link do PKG";
     return stage == DOWNLOAD_STAGE_SEND ? "Enviar pedido" : "Diagnóstico de rede";
 }
 InstallSnapshot installSnapshot() { return previewInstall; }
@@ -78,6 +82,7 @@ static void resetController() {
     previewMusic = {MUSIC_PLAYING, 0, 30, false, 0};
     downloadCalls = installCalls = cancelInstallCalls = 0;
     rejectDownload = rejectInstall = rejectInstallBusy = false;
+    lastDownloadContentId = 0;
 }
 
 static bool expect(bool condition, const char* message) {
@@ -174,8 +179,30 @@ static bool verifyController() {
     musicNextTrack();
     if (!expect(previewMusic.muted && previewMusic.track == 1 && previewMusic.volume == 30,
                 "sound and playlist controls preserve the default volume")) return false;
+    char size[48];
+    sizeLabel(size, sizeof(size), 22675456ULL);
+    if (!expect(strcmp(size, "21.6 MB") == 0, "small package labels retain MB precision")) return false;
+    sizeLabel(size, sizeof(size), 1024ULL * 1024 * 1024);
+    if (!expect(strcmp(size, "1.0 GB") == 0, "one GiB switches the displayed unit")) return false;
+    sizeLabel(size, sizeof(size), 5ULL * 1024 * 1024 * 1024);
+    if (!expect(strcmp(size, "5.0 GB") == 0, "large package labels show GB")) return false;
+    sizeLabel(size, sizeof(size), UINT64_MAX);
+    if (!expect(strcmp(size, "17179869183.9 GB") == 0, "size labels do not overflow uint64")) return false;
+    for (int i = 0; i < UI_APP_COUNT; ++i) {
+        if (!UI_APPS[i].contentId[0]) continue;
+        resetController();
+        activateApp(i);
+        if (!expect(lastDownloadContentId && strcmp(lastDownloadContentId, UI_APPS[i].contentId) == 0,
+                    "an external download receives its catalog Content ID")) return false;
+        completeDownload(i);
+        pollAutoInstall();
+        if (!expect(installCalls == 1 && lastInstall.expectedBytes == UI_APPS[i].sizeBytes,
+                    "a checked external download keeps the exact size during install handoff")) return false;
+        if (!expect(strcmp(UI_APPS[i].sourceBadge, "PKG / FONTE OFICIAL") != 0,
+                    "external packages display their source badge")) return false;
+    }
     resetController();
-    puts("Checked automatic install handoff, retry, cancellation, cleanup and music controls.");
+    puts("Checked automatic install handoff, retry, cancellation, cleanup, music and package size labels.");
     return true;
 }
 

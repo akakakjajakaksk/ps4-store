@@ -36,11 +36,13 @@ enum Mode {
 };
 static Mode mode;
 static int modules, moduleProbes, appInitCalls, appTermCalls, bgftInitCalls, bgftTermCalls;
+static int threadCreateCalls;
 static int registerCalls, startCalls, progressCalls, existsCalls, stopCalls, unregisterCalls;
 static int jailbreakCalls, restoreCalls, titleCalls, sdkCalls, foregroundUserCalls;
 static int storageRegisterCalls, httpRegisterCalls, serverStartCalls, serverStopCalls, sourceCloseCalls;
 static int serverSnapshotCalls;
 static PkgServerSnapshot serverTelemetry;
+static uint64_t expectedPackageBytes = 8192, registeredPackageBytes, serverPackageBytes;
 static bool jailbroken, nativeStarted;
 static bool forceHttp, serverActive;
 static int32_t forcedSdkVersion;
@@ -83,6 +85,7 @@ extern "C" int32_t scePthreadAttrSetdetachstate(OrbisPthreadAttr*, int value) {
 }
 extern "C" int32_t scePthreadCreate(OrbisPthread* thread, const OrbisPthreadAttr*,
                                     void*(*entry)(void*), void* argument, const char* name) {
+    ++threadCreateCalls;
     assert(!strcmp(name, "peppy-install"));
     if (mode == CREATE_FAIL) return RAW;
     *thread = 1;
@@ -179,7 +182,8 @@ extern "C" int32_t peppyBgftInit(PeppyBgftInit* init) {
 }
 extern "C" int32_t peppyBgftRegister(PeppyBgftParamEx* params, int32_t* task) {
     assert(jailbroken && params->slot == 0 && params->params.entitlementType == 5);
-    assert(params->params.packageSize == 8192 && params->params.option == 2);
+    assert(params->params.packageSize == expectedPackageBytes && params->params.option == 2);
+    registeredPackageBytes = params->params.packageSize;
     assert(!strcmp(params->params.id, "UP0001-APOL00004_00-0000000000000000"));
     assert(!strcmp(params->params.playgoScenarioId, "0"));
     assert(!strstr(params->params.contentUrl, "://"));
@@ -202,7 +206,8 @@ extern "C" int32_t peppyInstallForegroundUser(int32_t* user) {
 extern "C" int32_t peppyBgftRegisterHttp(PeppyBgftParam* params, int32_t* task) {
     assert(httpFallback() && !jailbroken && serverActive && borrowedFile);
     assert(params->userId == 99 && params->entitlementType == 5);
-    assert(params->packageSize == 8192 && params->option == 0x10002);
+    assert(params->packageSize == expectedPackageBytes && params->option == 0x10002);
+    registeredPackageBytes = params->packageSize;
     assert(!strcmp(params->id, "UP0001-APOL00004_00-0000000000000000"));
     assert(!strcmp(params->contentUrl, "http://127.0.0.1:17991/package.pkg"));
     assert(!strcmp(params->contentName, "Apollo Save Tool"));
@@ -278,7 +283,8 @@ PkgServer::PkgServer() : file_(0), descriptor_(-1), active_(false) {
 }
 PkgServer::~PkgServer() { assert(!active_ && !file_); }
 int32_t PkgServer::start(FILE* file, uint64_t size) {
-    assert(httpFallback() && !active_ && file && size == 8192);
+    assert(httpFallback() && !active_ && file && size == expectedPackageBytes);
+    serverPackageBytes = size;
     assert(nativeFstatCalls > 0);
     ++serverStartCalls;
     file_ = borrowedFile = file;
@@ -466,11 +472,13 @@ static void reset(Mode next, bool alias = true) {
     assert(__atomic_load_n(&g_installBusy, __ATOMIC_ACQUIRE) == 0);
     mode = next;
     modules = moduleProbes = appInitCalls = appTermCalls = bgftInitCalls = bgftTermCalls = 0;
+    threadCreateCalls = 0;
     registerCalls = startCalls = progressCalls = existsCalls = stopCalls = unregisterCalls = 0;
     jailbreakCalls = restoreCalls = titleCalls = 0;
     sdkCalls = foregroundUserCalls = storageRegisterCalls = httpRegisterCalls = 0;
     serverStartCalls = serverStopCalls = sourceCloseCalls = 0;
     serverSnapshotCalls = 0; serverTelemetry = PkgServerSnapshot();
+    expectedPackageBytes = 8192; registeredPackageBytes = serverPackageBytes = 0;
     jailbroken = nativeStarted = false;
     assert(!serverActive && !borrowedFile);
     forceHttp = false; forcedSdkVersion = -1; forcedSdkErrno = 78;
@@ -514,7 +522,10 @@ static void reset(Mode next, bool alias = true) {
         file = fopen(systemRoot.c_str(), "wb"); assert(file); assert(fclose(file) == 0);
     }
 }
-static InstallSpec spec() { InstallSpec value = { "apollo.pkg", "Apollo Save Tool", 8192 }; return value; }
+static InstallSpec spec() {
+    InstallSpec value = { "apollo.pkg", "Apollo Save Tool", expectedPackageBytes };
+    return value;
+}
 static InstallSnapshot waitDone() {
     for (int i = 0; i < 200000; ++i) {
         if (!__atomic_load_n(&g_installBusy, __ATOMIC_ACQUIRE)) return installSnapshot();
@@ -769,6 +780,61 @@ static void httpTelemetryTests() {
     httpTelemetry(value, 6, 206, HTTP_WIDE_BYTES + 3 * HTTP_PROGRESS_BYTES + HTTP_STOP_BYTES);
     serverClosedAfterStop();
 }
+static void largePackageTests() {
+    // Explicit test boundaries are independent of the production limit so a
+    // mistaken lower cap cannot make this test silently agree with it.
+    const uint64_t acceptedCap = 256ULL * 1024 * 1024 * 1024;
+    struct Case { uint64_t bytes; Mode fault; int error; int stage; };
+    const Case cases[] = {
+        { 5ULL * 1024 * 1024 * 1024 + 123, REGISTER_FAIL, INSTALL_ERROR_TASK, INSTALL_STAGE_REGISTER },
+        { acceptedCap, PROGRESS_API_FAIL, INSTALL_ERROR_PROGRESS, INSTALL_STAGE_PROGRESS }
+    };
+    for (const Case& test : cases) {
+        prepareHttp(test.fault);
+        expectedPackageBytes = test.bytes;
+        std::string path = localDirectory + "/apollo.pkg";
+        FILE* file = fopen(path.c_str(), "r+b"); assert(file);
+        // Keep the small valid PKG header, create a hole for the body, and
+        // fail at a native boundary. No huge allocation, copy or transfer.
+        assert(ftruncate(fileno(file), (off_t)test.bytes) == 0);
+        struct stat host;
+        assert(__real_fstat(fileno(file), &host) == 0);
+        assert((uint64_t)host.st_size == test.bytes && host.st_blocks < 1024);
+        assert(fclose(file) == 0);
+        assert(startInstall(spec()));
+        InstallSnapshot value = waitDone();
+        assert(value.state == INSTALL_FAILED && value.errorCode == test.error);
+        assert(value.stage == test.stage && value.nativeCode == RAW);
+        assert(value.mode == INSTALL_MODE_HTTP_LOCAL && value.sdkVersion == 0xffffffffU);
+        assert(threadCreateCalls == 1 && sdkCalls == 1 && httpRegisterCalls == 1);
+        assert(!jailbreakCalls && !restoreCalls && !globalNamespaceOpens && !storageRegisterCalls);
+        assert(titleCalls == 0 && nativeFstatCalls > 0);
+        assert(registeredPackageBytes == test.bytes && serverPackageBytes == test.bytes);
+        assert(registeredPackageBytes > UINT32_MAX);
+        assert(!serverActive && !borrowedFile && access(copyDirectory.c_str(), F_OK) != 0);
+        serverClosedAfterStop();
+        if (test.fault == REGISTER_FAIL) {
+            assert(value.taskId == -1 && !progressCalls && !stopCalls && !unregisterCalls);
+        } else {
+            assert(progressCalls == 1 && stopCalls == 1 && unregisterCalls == 1);
+            assert(eventIndex(TASK_UNREGISTER) < eventIndex(SERVER_STOP));
+        }
+        assert(unlink(path.c_str()) == 0);
+    }
+    for (uint64_t tooLarge : { acceptedCap + 1, UINT64_MAX }) {
+        reset(NORMAL);
+        InstallSpec invalid = spec(); invalid.expectedBytes = tooLarge;
+        uint32_t generation = installSnapshot().generation;
+        assert(!startInstall(invalid));
+        InstallSnapshot value = installSnapshot();
+        assert(value.generation == generation + 1 && value.state == INSTALL_FAILED);
+        assert(value.errorCode == INSTALL_ERROR_SPEC && value.stage == INSTALL_STAGE_SPEC);
+        assert(value.mode == INSTALL_MODE_NONE && value.sdkVersion == 0 && value.sdkErrno == 0);
+        assert(!threadCreateCalls && !sdkCalls && !nativeFstatCalls && !serverStartCalls && !registerCalls);
+        assert(registeredPackageBytes == 0 && serverPackageBytes == 0);
+        noHttpTelemetry(value);
+    }
+}
 int main() {
     struct stat unavailable;
     assert(lstat("/tmp", &unavailable) == -1 && errno == ENOSYS);
@@ -941,6 +1007,7 @@ int main() {
            unavailableLstatCalls == 0 && unavailablePosixFstatCalls == 0);
     httpFallbackTests();
     httpTelemetryTests();
+    largePackageTests();
     assert(unavailableLstatCalls == 0 && unavailablePosixFstatCalls == 0);
     puts("All native installer ABI, SDK/storage and HTTP fallback/telemetry, lifetime, progress, preservation, errors and cancellation tests passed.");
 }

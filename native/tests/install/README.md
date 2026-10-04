@@ -46,6 +46,14 @@ category, stage or native code. The final log retains both diagnostics. Accepted
 and thread-start requests reset prior HTTP counters, and an active HTTP
 server reports zero until BGFT has actually issued requests.
 
+Large-package cases use sparse files of 5 GiB plus 123 bytes and exactly
+256 GiB, retaining the small valid header without allocating or transferring
+their bodies. HTTP mode avoids a global copy; injected native registration
+and progress failures prove both requests pass validation and preserve the
+full 64-bit package size in server/BGFT parameters. Requests for 256 GiB plus
+one byte and `UINT64_MAX` fail specification checks before worker creation,
+SDK probing or file validation.
+
 HTTP registration uses the native `sceBgftServiceIntDownloadRegisterTask`
 export with a 104-byte parameter structure and 64-bit package size at offset
 96. The checked foreground-user query returns a signed native status.

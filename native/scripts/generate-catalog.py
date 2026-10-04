@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the verified PS4 catalog and generate its UTF-8 C++ header."""
+"""Validate reviewed PS4 catalog metadata and generate its UTF-8 C++ header."""
 
 from __future__ import annotations
 
@@ -17,8 +17,13 @@ CATEGORIES = {
     "Utilitários": 1,
     "Emuladores": 2,
     "Jogos homebrew": 3,
+    "Jogos": 3,
     "Mídia": 4,
 }
+MAX_PACKAGE_BYTES = 256 * 1024 ** 3
+CONTENT_ID_RE = re.compile(r"[A-Z]{2}[0-9]{4}-((?:CUSA|SLES|SLUS)[0-9]{5})_[0-9]{2}-[A-Z0-9]{16}")
+REMOTE_CONTENT_ID_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}[0-9]{4}-[A-Z]{4}[0-9]{5}_[0-9]{2}-[A-Z0-9]{16}(?![A-Z0-9_])")
+REMOTE_TITLE_ID_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{4}[0-9]{5}(?![A-Z0-9])")
 
 # Add a repository only after checking its author's official release metadata.
 VERIFIED_REPOSITORIES = frozenset({
@@ -46,6 +51,8 @@ TEXT_FIELDS = (
     ("filename", "filename"),
     ("sha256", "sha256"),
     ("requires_data", "requiresData"),
+    ("source_badge", "sourceBadge"),
+    ("content_id", "contentId"),
 )
 
 
@@ -71,36 +78,28 @@ def github_path(value: str, name: str) -> list[str]:
     return parsed.path[1:].split("/")
 
 
-def validate_entry(entry: dict, index: int, seen_ids: set[str]) -> dict:
-    if not isinstance(entry, dict):
-        raise ValueError(f"entry {index} must be an object")
-    entry = dict(entry)
-    for field, _ in TEXT_FIELDS:
-        if field == "sha256":
-            continue
-        text_field(entry, field, allow_empty=field == "requires_data")
+def plain_https_url(value: str, name: str):
+    """Accept metadata URL syntax, without making any network claim."""
+    if len(value) >= 4096 or any(ord(char) <= 32 or ord(char) >= 127 for char in value):
+        raise ValueError(f"{name} must be an ASCII HTTPS URL without whitespace or controls")
+    if "\\" in value or "#" in value or re.search(r"%(?![0-9A-Fa-f]{2})", value):
+        raise ValueError(f"{name} contains a fragment, backslash, or invalid percent encoding")
+    parsed = urlsplit(value)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.netloc != parsed.hostname
+            or not parsed.path.startswith("/")):
+        raise ValueError(f"{name} must use HTTPS without credentials or a port")
+    if len(parsed.hostname) > 253 or any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label)
+                                        or len(label) > 63 for label in parsed.hostname.split(".")):
+        raise ValueError(f"{name} must have a valid ASCII hostname")
+    return parsed
 
-    app_id = entry["id"]
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", app_id):
-        raise ValueError("id must contain only ASCII letters, digits, hyphens or underscores")
-    if app_id in seen_ids:
-        raise ValueError(f"duplicate id: {app_id}")
-    seen_ids.add(app_id)
 
-    if not isinstance(entry.get("category"), str) or entry["category"] not in CATEGORIES:
-        raise ValueError(f"unsupported category: {entry.get('category')!r}")
-    if len(entry["caption"]) > 30:
-        raise ValueError("caption must contain at most 30 characters")
-    filename = entry["filename"]
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.pkg", filename):
-        raise ValueError("filename must be a safe ASCII basename ending in .pkg")
-
+def validate_official(entry: dict) -> None:
     source = text_field(entry, "source")
     if source not in VERIFIED_REPOSITORIES:
         raise ValueError(f"source is not a verified official repository: {source}")
     if entry.get("repository", source) != source:
         raise ValueError("source and repository disagree")
-
     parts = github_path(entry["url"], "url")
     if len(parts) != 6 or parts[2:4] != ["releases", "download"]:
         raise ValueError("url must point to a pinned GitHub release PKG asset")
@@ -109,18 +108,114 @@ def validate_entry(entry: dict, index: int, seen_ids: set[str]) -> dict:
     tag, asset = unquote(parts[4]), unquote(parts[5])
     if not tag or tag.lower() == "latest" or tag != entry["version"]:
         raise ValueError("url release tag must be pinned and match version")
-    if asset != filename:
+    if asset != entry["filename"]:
         raise ValueError("url asset filename must match filename")
-
     release_parts = github_path(entry["release_url"], "release_url")
     if (len(release_parts) != 5 or release_parts[2:4] != ["releases", "tag"]
             or "/".join(release_parts[:2]) != source
             or unquote(release_parts[4]) != tag):
         raise ValueError("release_url must match the pinned asset repository and tag")
+    entry["source_badge"] = "PKG / FONTE OFICIAL"
+
+
+def validate_mediafire(entry: dict) -> None:
+    if entry.get("platform") != "PS4" or entry.get("package_kind") != "base":
+        raise ValueError("external_mediafire requires a PS4 base package")
+    content_id = text_field(entry, "content_id")
+    if not CONTENT_ID_RE.fullmatch(content_id):
+        raise ValueError("external_mediafire content_id must be a canonical CUSA, SLES, or SLUS Content ID")
+    proof = entry.get("header_verification")
+    if not isinstance(proof, dict):
+        raise ValueError("external_mediafire requires explicit reviewed PKG header_verification")
+    if (proof.get("magic") != "7f434e54" or type(proof.get("content_type")) is not int
+            or proof["content_type"] != 0x1A or type(proof.get("content_flags")) is not int
+            or proof["content_flags"] not in (0x0A000000, 0x0E000000)):
+        raise ValueError("header_verification must identify a PS4 game base package, without patch flags")
+    if (type(proof.get("package_size")) is not int or proof["package_size"] != entry.get("size_bytes")
+            or proof.get("content_id") != content_id):
+        raise ValueError("header_verification package_size and content_id must match the catalog metadata exactly")
+    filename = entry["filename"]
+    if not filename.startswith(content_id) or not re.fullmatch(re.escape(content_id) + r"(?:-[A-Za-z0-9_.-]+)?\.pkg", filename):
+        raise ValueError("external filename must begin with its declared Content ID")
+    label = text_field(entry, "source_label")
+    if len(label) > 30 or any(ord(char) < 32 for char in label) or re.search(r"\b(?:oficial|official)\b", label, re.IGNORECASE):
+        raise ValueError("external source_label must be a single line of at most 30 characters without an official-source claim")
+    provenance = plain_https_url(text_field(entry, "source_url"), "source_url")
+    if text_field(entry, "source") != provenance.hostname:
+        raise ValueError("external source must equal the source_url provenance hostname")
+    if "repository" in entry:
+        raise ValueError("external provenance must not claim an official repository")
+    if entry["release_url"] != entry["source_url"]:
+        raise ValueError("external release_url must equal its source_url provenance page")
+    parsed = plain_https_url(entry["url"], "url")
+    if parsed.netloc != "www.mediafire.com" or parsed.query:
+        raise ValueError("external URL must be a plain HTTPS www.mediafire.com file page")
+    parts = parsed.path.split("/")
+    if (len(parts) != 5 or parts[0] or parts[1] != "file" or parts[4] != "file"
+            or not re.fullmatch(r"[A-Za-z0-9]{1,64}", parts[2])):
+        raise ValueError("external URL must use /file/<key>/<encoded-pkg-basename>/file")
+    remote_name = unquote(parts[3], errors="strict")
+    if (not remote_name.endswith(".pkg") or any(ord(char) < 32 or ord(char) == 127 for char in remote_name)
+            or "/" in remote_name or "\\" in remote_name):
+        raise ValueError("MediaFire page must name one complete PKG, not HTML or an archive")
+    remote_ids = REMOTE_CONTENT_ID_RE.findall(remote_name)
+    if remote_ids:
+        if any(value != content_id for value in remote_ids):
+            raise ValueError("MediaFire PKG basename contains a different Content ID")
+    else:
+        remote_titles = REMOTE_TITLE_ID_RE.findall(remote_name)
+        if any(value != content_id[7:16] for value in remote_titles):
+            raise ValueError("MediaFire PKG basename contains a different Title ID")
+        # A generic remote basename is allowed only with the header proof
+        # above. The generated contentId also lets the downloader compare
+        # the received PKG header with this reviewed catalog identity.
+    entry["source_badge"] = "PKG / " + label
+    if len(entry["source_badge"]) > 52:
+        raise ValueError("source badge must contain at most 52 characters")
+
+
+def validate_entry(entry: dict, index: int, seen_ids: set[str], seen_filenames: set[str] | None = None) -> dict:
+    if not isinstance(entry, dict):
+        raise ValueError(f"entry {index} must be an object")
+    entry = dict(entry)
+    source_kind = entry.get("source_kind", "official")
+    if source_kind not in ("official", "external_mediafire"):
+        raise ValueError(f"unsupported source_kind: {source_kind!r}")
+    entry["source_kind"] = source_kind
+    if source_kind == "external_mediafire":
+        entry.setdefault("release_url", entry.get("source_url"))
+    else:
+        entry.setdefault("content_id", "")
+    for field, _ in TEXT_FIELDS:
+        if field in ("sha256", "source_badge"):
+            continue
+        text_field(entry, field, allow_empty=(field == "requires_data"
+                                           or (field == "content_id" and source_kind == "official")))
+
+    app_id = entry["id"]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", app_id):
+        raise ValueError("id must contain only ASCII letters, digits, hyphens or underscores")
+    if app_id in seen_ids:
+        raise ValueError(f"duplicate id: {app_id}")
+
+    if not isinstance(entry.get("category"), str) or entry["category"] not in CATEGORIES:
+        raise ValueError(f"unsupported category: {entry.get('category')!r}")
+    if len(entry["caption"]) > 30:
+        raise ValueError("caption must contain at most 30 characters")
+    filename = entry["filename"]
+    if len(filename) > 95 or ".." in filename or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.pkg", filename):
+        raise ValueError("filename must be a safe ASCII basename of at most 95 characters ending in .pkg")
+    if seen_filenames is not None and filename in seen_filenames:
+        raise ValueError(f"duplicate filename: {filename}")
+
+    if source_kind == "official":
+        validate_official(entry)
+    else:
+        validate_mediafire(entry)
 
     size = entry.get("size_bytes")
-    if type(size) is not int or not 0 < size <= 0xFFFFFFFFFFFFFFFF:
-        raise ValueError("size_bytes must be a positive uint64 integer")
+    if type(size) is not int or not 0x438 <= size <= MAX_PACKAGE_BYTES:
+        raise ValueError("size_bytes must be an exact integer from PKG header size through 256 GiB")
     digest = entry.get("sha256")
     if digest is None:
         entry["sha256"] = ""
@@ -130,6 +225,9 @@ def validate_entry(entry: dict, index: int, seen_ids: set[str]) -> dict:
     art = entry.get("art")
     if type(art) is not int or not 0 <= art <= 3:
         raise ValueError("art must be an integer from 0 to 3")
+    seen_ids.add(app_id)
+    if seen_filenames is not None:
+        seen_filenames.add(filename)
     return entry
 
 
@@ -143,10 +241,11 @@ def read_catalog(catalog_path: Path) -> list[dict]:
     if not isinstance(entries, list) or not entries:
         raise ValueError("catalog entries must be a nonempty array")
     seen_ids: set[str] = set()
+    seen_filenames: set[str] = set()
     validated = []
     for index, entry in enumerate(entries, 1):
         try:
-            validated.append(validate_entry(entry, index, seen_ids))
+            validated.append(validate_entry(entry, index, seen_ids, seen_filenames))
         except (ValueError, UnicodeError) as error:
             raise ValueError(f"entry {index}: {error}") from error
     return validated
@@ -180,12 +279,14 @@ def generate_header(entries: list[dict]) -> str:
         "    const char* filename;",
         "    const char* sha256;",
         "    const char* requiresData;",
+        "    const char* sourceBadge;",
+        "    const char* contentId;",
         "    uint64_t sizeBytes;",
         "    int category, art;",
         "};",
         "",
         "// Categories: 0 all (filter only), 1 utilities, 2 emulators,",
-        "// 3 homebrew games, 4 media. Art: 0 Apollo, 1 games/emulators,",
+        "// 3 games (including homebrew), 4 media. Art: 0 Apollo, 1 games/emulators,",
         "// 2 file tools/installers, 3 store/media.",
         "static const UiApp UI_APPS[] = {",
     ]
@@ -233,7 +334,7 @@ def main() -> int:
     except (OSError, ValueError, UnicodeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    print(f"Generated {args.output}: {len(entries)} verified PS4 packages.")
+    print(f"Generated {args.output}: {len(entries)} validated PS4 catalog entries.")
     return 0
 
 

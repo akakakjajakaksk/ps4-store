@@ -7,14 +7,16 @@ Interface nativa para PS4 homebrew, compilada com OpenOrbis PS4 Toolchain.
 - Tela em 1920×1080 com fundo escuro e destaques azuis.
 - Arte PEPPY no banner e no ícone do menu do PS4.
 - Fonte suave com caracteres em português, preparada durante a build.
-- Catálogo de 15 PKGs, com categorias, páginas e detalhes.
-- Downloads HTTPS de releases oficiais, em segundo plano.
+- Catálogo de 23 PKGs, com categorias, páginas e detalhes.
+- Downloads HTTPS de releases oficiais e páginas MediaFire verificadas, em segundo plano.
 - Instalação local integrada após concluir e validar o download.
 - Playlist FIGHT → ACENDAOFAROL, com opção para silenciar e trocar a faixa.
 
 O catálogo está em `catalog.json`, com versões, URLs fixas, tamanhos e
 evidências de firmware verificadas em 2026-10-04. Inclui utilitários,
-emuladores, PS4 Media Player e dois pacotes de Freedoom. O catálogo não
+emuladores, PS4 Media Player, dois pacotes de Freedoom, Agony e sete
+conversões de PS2 para PS4. As entradas externas identificam sua procedência
+como MTPS4 / MediaFire. O catálogo não
 representa todos os aplicativos existentes para PS4.
 A interface e os downloads não se conectam a servidores da PlayStation.
 
@@ -25,6 +27,11 @@ erro ou cancelamento. A ação **Baixar e instalar** encaminha o pacote validado
 para AppInstUtil/BGFT, o instalador do PS4, sem precisar abrir outro aplicativo.
 A loja acompanha a tarefa e só informa sucesso após confirmar a instalação.
 Uma falha permite tentar instalar novamente o arquivo já baixado.
+Download e instalação usam o mesmo limite de 256 GiB por pacote, com tamanhos
+e progresso de 64 bits. A interface mostra GB a partir de 1 GiB. O conteúdo
+continua sendo transferido em blocos pequenos; o limite não reserva essa
+quantidade de memória. Os testes de pacotes grandes usam respostas simuladas
+e arquivos esparsos, sem comprovar uma transferência completa no console.
 O instalador abre os arquivos com `O_NOFOLLOW` e verifica o descritor com
 `sceKernelFstat`, usando a estrutura nativa de 120 bytes. A chamada `lstat`
 da biblioteca musl para PS4 não está implementada
@@ -60,6 +67,18 @@ A conexão HTTPS valida os certificados e pode falhar caso o relógio,
 a rede ou os certificados do console sejam incompatíveis. O downloader
 foi testado com HTTP simulado e precisa de teste de download no PS4.
 
+Para MediaFire, a loja guarda a página do arquivo e resolve novamente o
+botão de download a cada tentativa. O HTML é limitado a 1 MiB, com HTTPS,
+certificados e redirecionamentos verificados; páginas que exigem captcha ou
+não fornecem um botão válido mostram erro de fonte. O HTML não é salvo como
+pacote nem entra no progresso. A transferência aceita somente páginas do
+MediaFire e seu CDN `download<dígitos>.mediafire.com` neste fluxo.
+Os pacotes externos também conferem Content ID, tipo/flags de base e tamanho
+declarado no cabeçalho antes de publicar o arquivo completo. O catálogo
+guarda evidências de cabeçalho e HTTP Range; isso não comprova assinatura,
+todas as estruturas internas ou instalação no console.
+Os resultados das cinco fontes indicadas estão em [sources-review.md](sources-review.md).
+
 A inicialização consulta o estado da rede/IP via NetCtl e aceita módulos
 já carregados após verificar seu estado. Falhas mostram a etapa e o retorno
 nativo, além do código resumido. O diagnóstico fica em
@@ -91,6 +110,35 @@ o controle. Usar o perfil na saída de áudio retornava `0x809B0001`
 - Quadrado: silenciar/reativar a música.
 - L3: próxima faixa.
 
+## PKGs enviados e novas fontes
+
+Para conferir um arquivo completo antes de revisar sua entrada no catálogo:
+
+```sh
+python3 native/scripts/inspect-pkg.py "/caminho/arquivo.pkg" --output report.json
+```
+
+O relatório contém tamanho exato, Content ID, SHA-256 e um nome ASCII sugerido,
+preservando o nome original. O inspetor recusa arquivos compactados, arquivos
+alterados durante a leitura e identificadores PPSA de PS5. Um identificador
+desconhecido exige comprovação da plataforma; o cabeçalho não comprova que o
+pacote está completo, é um pacote base ou instala no firmware do console.
+
+O arquivo local ainda precisa de um endereço de download acessível ao PS4.
+A opção `--url` registra uma URL HTTPS fornecida, validando apenas sua sintaxe.
+Ela não envia o arquivo nem verifica o servidor. Colocar um relatório no
+repositório não hospeda o PKG. Arquivos grandes precisam de hospedagem
+adequada a seu tamanho.
+
+Uma entrada precisa apontar para o PKG completo, com tamanho verificado e
+origem identificada. Páginas de download, arquivos RAR/ZIP, partes de um
+arquivo, captchas e links de PS5 não são downloads diretos instaláveis pela
+loja. Atualizações e DLCs também precisam de um fluxo de instalação próprio.
+O catálogo preserva as 15 releases oficiais e inclui oito pacotes externos
+conferidos. Outras fontes só entram após conferir formato, URL e servidores
+de redirecionamento. O gerador valida a procedência e as evidências externas,
+e a loja repete a verificação de identidade e tipo no arquivo recebido.
+
 ## Build
 
 Configure `OO_PS4_TOOLCHAIN` para o OpenOrbis v0.5.4. Em Linux, instale
@@ -118,8 +166,8 @@ g++ -std=c++11 -O2 native/scripts/preview-ui.cpp -o /tmp/peppy-preview
 O programa gera arquivos PPM para biblioteca e detalhes de todos os itens
 e categorias, além dos estados de download, usando o renderizador nativo.
 
-Os testes de transferência, instalação, entrega local e música em `tests/downloads/`,
-`tests/install/`, `tests/pkg_server/` e `tests/music/` também são executados na workflow antes da
+Os testes de transferência, instalação, entrega local, música e inspeção em `tests/downloads/`,
+`tests/install/`, `tests/pkg_server/`, `tests/music/` e `tests/catalog_import/` também são executados na workflow antes da
 compilação nativa. Os mocks verificam controle e falhas; instalação e áudio
 reais ainda precisam de teste no PS4 com o GoldHEN ativo.
 

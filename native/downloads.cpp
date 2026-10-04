@@ -1,7 +1,10 @@
 #include "downloads.h"
+#include "package_limits.h"
+#include "mediafire_source.h"
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -12,6 +15,9 @@
 #include <orbis/NetCtl.h>
 #include <orbis/Ssl.h>
 #include <orbis/Http.h>
+
+static_assert(sizeof(size_t) == 8 && sizeof(off_t) == 8,
+              "PS4 package transfers require 64-bit lengths and file offsets");
 
 // OpenOrbis 0.5.x leaves these functions declared void(). The aliases retain
 // their native symbols while supplying the completed public PS4 signatures.
@@ -37,7 +43,7 @@ namespace {
 const size_t URL_CAP = 4096;
 const size_t NAME_CAP = 96;
 const size_t RESPONSE_HEADER_CAP = 64 * 1024;
-const uint64_t MAX_PACKAGE_BYTES = 4ULL * 1024 * 1024 * 1024;
+const size_t PACKAGE_HEADER_BYTES = 0x438, CONTENT_ID_BYTES = 36;
 const uint32_t TLS_CHECKS = 0x01 | 0x04 | 0x08 | 0x10 | 0x20 | 0x80;
 const int MAX_REDIRECTS = 5;
 
@@ -48,6 +54,7 @@ int g_stage = DOWNLOAD_STAGE_NONE, g_native = 0, g_network = 0, g_ssl = 0;
 uint32_t g_sslDetails = 0;
 int g_networkState = -1;
 char g_url[URL_CAP], g_filename[NAME_CAP], g_digest[65];
+char g_contentId[CONTENT_ID_BYTES + 1];
 uint64_t g_expected = 0;
 // Only the worker owns its diagnostic file; URLs and redirect tokens are never
 // written. Atomically published numeric diagnostics remain usable if logging fails.
@@ -116,9 +123,39 @@ bool safeFilename(const char* name) {
     return true;
 }
 
+bool canonicalContentId(const char* value) {
+    if (boundedLength(value, CONTENT_ID_BYTES + 1) != CONTENT_ID_BYTES) return false;
+    for (size_t i = 0; i < CONTENT_ID_BYTES; ++i) {
+        char c = value[i];
+        if (i == 6 || i == 19) { if (c != '-') return false; }
+        else if (i == 16) { if (c != '_') return false; }
+        else if (i < 2 || (i >= 7 && i < 11)) { if (c < 'A' || c > 'Z') return false; }
+        else if ((i >= 2 && i < 6) || (i >= 11 && i < 16) || (i >= 17 && i < 19)) {
+            if (c < '0' || c > '9') return false;
+        } else if (!(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9')) return false;
+    }
+    return true;
+}
+uint64_t bigEndian(const uint8_t* bytes, size_t count) {
+    uint64_t value = 0;
+    for (size_t i = 0; i < count; ++i) value = (value << 8) | bytes[i];
+    return value;
+}
+bool matchingBaseHeader(const uint8_t* header, uint64_t required) {
+    // PKG header offsets are documented in Maxton/LibOrbisPkg. Pin the
+    // requested identity and conservative base-package flags before publishing.
+    uint64_t flags = bigEndian(header + 0x78, 4);
+    const uint8_t magic[] = { 0x7f, 0x43, 0x4e, 0x54 };
+    return !memcmp(header, magic, sizeof(magic)) &&
+        !memcmp(header + 0x40, g_contentId, CONTENT_ID_BYTES) &&
+        bigEndian(header + 0x74, 4) == 0x1a &&
+        (flags == 0x0a000000 || flags == 0x0e000000) &&
+        bigEndian(header + 0x430, 8) == required;
+}
+
 // Exact hosts prevent credentials, ports, scheme downgrades and host suffix
 // tricks. Release redirects use signed query strings, which are never logged.
-bool safeUrl(const char* url, size_t* originLength = 0) {
+bool githubUrl(const char* url, size_t* originLength = 0) {
     size_t n = boundedLength(url, URL_CAP);
     if (n == URL_CAP || n < 10 || strncmp(url, "https://", 8)) return false;
     for (size_t i = 0; i < n; ++i)
@@ -137,6 +174,29 @@ bool safeUrl(const char* url, size_t* originLength = 0) {
         if (equalNoCase(start, hostLength, hosts[i])) allowed = true;
     if (allowed && originLength) *originLength = end - url;
     return allowed;
+}
+
+bool mediafirePage(const char* url) {
+    size_t length = boundedLength(url, URL_CAP);
+    return length < URL_CAP && peppyMediafire::isPageUrl(url, length);
+}
+bool mediafireCdn(const char* url) {
+    size_t length = boundedLength(url, URL_CAP);
+    return length < URL_CAP && peppyMediafire::isCdnUrl(url, length);
+}
+bool safeUrl(const char* url, size_t* originLength = 0) {
+    if (githubUrl(url, originLength)) return true;
+    size_t length = boundedLength(url, URL_CAP);
+    if (length == URL_CAP) return false;
+    return peppyMediafire::isPageUrl(url, length, originLength) ||
+           peppyMediafire::isCdnUrl(url, length, originLength);
+}
+bool allowedRedirect(const char* current, const char* next) {
+    // A source may redirect only within its own explicitly supported provider.
+    // In particular, CDN URLs cannot redirect back into a landing page.
+    if (githubUrl(current)) return githubUrl(next);
+    if (mediafirePage(current)) return mediafirePage(next) || mediafireCdn(next);
+    return mediafireCdn(current) && mediafireCdn(next);
 }
 
 bool redirectUrl(const char* current, const char* headers, size_t headerLength,
@@ -170,7 +230,7 @@ bool redirectUrl(const char* current, const char* headers, size_t headerLength,
     if (prefix) memcpy(output, current, prefix);
     memcpy(output + prefix, location, locationLength);
     output[prefix + locationLength] = 0;
-    return safeUrl(output);
+    return safeUrl(output) && allowedRedirect(current, output);
 }
 
 struct Sha256 {
@@ -295,6 +355,43 @@ struct HttpHandles {
     }
 };
 
+int resolveMediafire(int request, char* next) {
+    stage(DOWNLOAD_STAGE_SOURCE_READ);
+    int32_t lengthType = -1;
+    size_t declaredLength = 0;
+    int32_t rc = sceHttpGetResponseContentLength(request, &lengthType, &declaredLength);
+    if (rc < 0) return transferError(request, DOWNLOAD_STAGE_SOURCE_READ, rc);
+    bool knownLength = rc == 0 && lengthType == ORBIS_HTTP_CONTENTLEN_EXIST;
+    if (knownLength && declaredLength > peppyMediafire::HTML_CAP)
+        return fail(DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_READ, 0);
+    size_t capacity = knownLength ? declaredLength : peppyMediafire::HTML_CAP;
+    struct HtmlBuffer {
+        char* text;
+        explicit HtmlBuffer(size_t size) : text(static_cast<char*>(malloc(size + 1))) {}
+        ~HtmlBuffer() { free(text); }
+    } html(capacity);
+    if (!html.text) return fail(DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_READ, ENOMEM);
+    size_t used = 0;
+    unsigned char chunk[16384];
+    while (!cancelled()) {
+        rc = sceHttpReadData(request, chunk, sizeof(chunk));
+        if (rc < 0) return transferError(request, DOWNLOAD_STAGE_SOURCE_READ, rc);
+        if (!rc) break;
+        if (static_cast<size_t>(rc) > sizeof(chunk) || static_cast<size_t>(rc) > capacity - used)
+            return fail(DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_READ, 0);
+        memcpy(html.text + used, chunk, static_cast<size_t>(rc));
+        used += static_cast<size_t>(rc);
+    }
+    if (cancelled()) return 0;
+    if (knownLength && used != declaredLength)
+        return fail(DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_READ, 0);
+    html.text[used] = 0;
+    stage(DOWNLOAD_STAGE_SOURCE_PARSE);
+    if (!peppyMediafire::extractUrl(html.text, used, next, URL_CAP) || !mediafireCdn(next))
+        return fail(DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_PARSE, 0);
+    return 0;
+}
+
 int runTransfer() {
     if (cancelled()) return 0;
     stage(DOWNLOAD_STAGE_DIRECTORY);
@@ -391,6 +488,7 @@ int runTransfer() {
     char current[URL_CAP], next[URL_CAP];
     memcpy(current, g_url, strlen(g_url) + 1);
     int status = 0;
+    bool sourceResolved = false;
     for (int hop = 0;; ++hop) {
         if (cancelled()) return 0;
         stage(DOWNLOAD_STAGE_CONNECTION);
@@ -412,7 +510,20 @@ int runTransfer() {
         rc = sceHttpGetStatusCode(handles.req, &status);
         if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_STATUS, rc);
         logCall(DOWNLOAD_STAGE_STATUS, status);
-        if (status == 200) break;
+        if (status == 200) {
+            if (!mediafirePage(current)) break;
+            // Landing-page resolution consumes the same bounded hop budget
+            // as HTTP redirects. It never changes package progress or writes
+            // the HTML body to the PKG's partial file.
+            if (sourceResolved || hop >= MAX_REDIRECTS)
+                return fail(DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_PARSE, 0);
+            int sourceResult = resolveMediafire(handles.req, next);
+            if (sourceResult || cancelled()) return sourceResult;
+            sourceResolved = true;
+            handles.closeRequest();
+            memcpy(current, next, strlen(next) + 1);
+            continue;
+        }
         if (!(status == 301 || status == 302 || status == 303 || status == 307 || status == 308))
             return fail(DOWNLOAD_ERROR_HTTP, DOWNLOAD_STAGE_STATUS, status);
         if (hop >= MAX_REDIRECTS) return fail(DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, 0);
@@ -435,7 +546,7 @@ int runTransfer() {
     int lengthRc = sceHttpGetResponseContentLength(handles.req, &lengthType, &responseLength);
     logCall(DOWNLOAD_STAGE_CONTENT_LENGTH, lengthRc);
     bool knownLength = lengthRc == 0 && lengthType == ORBIS_HTTP_CONTENTLEN_EXIST;
-    if (knownLength && (responseLength < 4 || responseLength > MAX_PACKAGE_BYTES ||
+    if (knownLength && (responseLength < 4 || responseLength > PEPPY_MAX_PACKAGE_BYTES ||
         (g_expected && responseLength != g_expected))) return fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_CONTENT_LENGTH, 0);
     if (!g_expected && !knownLength) return fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_CONTENT_LENGTH, lengthRc);
     const uint64_t required = g_expected ? g_expected : responseLength;
@@ -448,6 +559,8 @@ int runTransfer() {
     uint64_t received = 0;
     uint8_t buffer[65536], magic[4] = {0,0,0,0};
     size_t magicCount = 0;
+    uint8_t packageHeader[PACKAGE_HEADER_BYTES];
+    size_t packageHeaderCount = 0;
     Sha256 hash;
     while (!cancelled()) {
         stage(DOWNLOAD_STAGE_READ);
@@ -460,6 +573,15 @@ int runTransfer() {
         for (int32_t i = 0; i < got && magicCount < 4; ++i) magic[magicCount++] = buffer[i];
         if (magicCount == 4 && (magic[0] != 0x7f || magic[1] != 0x43 ||
             magic[2] != 0x4e || magic[3] != 0x54)) { result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0); break; }
+        if (g_contentId[0] && packageHeaderCount < PACKAGE_HEADER_BYTES) {
+            size_t take = PACKAGE_HEADER_BYTES - packageHeaderCount;
+            if (take > static_cast<size_t>(got)) take = static_cast<size_t>(got);
+            memcpy(packageHeader + packageHeaderCount, buffer, take);
+            packageHeaderCount += take;
+            if (packageHeaderCount == PACKAGE_HEADER_BYTES && !matchingBaseHeader(packageHeader, required)) {
+                result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0); break;
+            }
+        }
         if (fwrite(buffer, 1, (size_t)got, file) != (size_t)got) {
             result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_WRITE, errno); break;
         }
@@ -467,6 +589,8 @@ int runTransfer() {
         received += (uint64_t)got;
         __atomic_store_n(&g_received, received, __ATOMIC_RELEASE);
     }
+    if (!result && !cancelled() && g_contentId[0] && packageHeaderCount != PACKAGE_HEADER_BYTES)
+        result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0);
     if (!result && !cancelled() && (received != required || magicCount != 4 ||
         (knownLength && received != responseLength))) result = fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_READ, 0);
     if (!result && !cancelled() && g_digest[0]) {
@@ -513,7 +637,7 @@ void* downloadWorker(void*) {
 }
 } // namespace
 
-bool startDownload(const DownloadSpec& spec) {
+bool startDownload(const DownloadSpec& spec, const char* expectedContentId) {
     int expected = 0;
     if (!__atomic_compare_exchange_n(&g_busy, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
         return false;
@@ -528,13 +652,16 @@ bool startDownload(const DownloadSpec& spec) {
     __atomic_store_n(&g_ssl, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_sslDetails, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_networkState, -1, __ATOMIC_RELEASE);
+    g_contentId[0] = 0;
+    bool verifyContentId = expectedContentId && expectedContentId[0];
     bool digestOkay = !spec.sha256 || !spec.sha256[0];
     if (!digestOkay && boundedLength(spec.sha256, 65) == 64) {
         digestOkay = true;
         for (int i = 0; i < 64; ++i) if (hex(spec.sha256[i]) < 0) digestOkay = false;
     }
     if (!safeUrl(spec.url) || !safeFilename(spec.filename) || !digestOkay ||
-        (spec.expectedBytes && spec.expectedBytes < 4) || spec.expectedBytes > MAX_PACKAGE_BYTES) {
+        (spec.expectedBytes && spec.expectedBytes < 4) || spec.expectedBytes > PEPPY_MAX_PACKAGE_BYTES ||
+        (verifyContentId && (!canonicalContentId(expectedContentId) || spec.expectedBytes < PACKAGE_HEADER_BYTES))) {
         __atomic_store_n(&g_error, DOWNLOAD_ERROR_SPEC, __ATOMIC_RELEASE);
         stage(DOWNLOAD_STAGE_SPEC);
         __atomic_store_n(&g_state, FAILED, __ATOMIC_RELEASE);
@@ -545,6 +672,7 @@ bool startDownload(const DownloadSpec& spec) {
     memcpy(g_filename, spec.filename, strlen(spec.filename) + 1);
     g_digest[0] = 0;
     if (spec.sha256 && spec.sha256[0]) memcpy(g_digest, spec.sha256, 65);
+    if (verifyContentId) memcpy(g_contentId, expectedContentId, CONTENT_ID_BYTES + 1);
     g_expected = spec.expectedBytes;
     __atomic_store_n(&g_state, RUNNING, __ATOMIC_RELEASE);
 
@@ -602,6 +730,7 @@ const char* downloadStageName(int value) {
         "Criar requisição", "Cabeçalho HTTP", "Envio HTTPS", "Resposta HTTP",
         "Destino HTTPS", "Tamanho do arquivo", "Abrir arquivo", "Receber arquivo",
         "Validar PKG", "Validar SHA-256", "Gravar arquivo", "Finalizar gravação",
-        "Fechar arquivo", "Salvar PKG", "Limpar parcial", "Concluído", "Iniciar tarefa", "Dados do download", "Limite de cabeçalhos"};
+        "Fechar arquivo", "Salvar PKG", "Limpar parcial", "Concluído", "Iniciar tarefa", "Dados do download", "Limite de cabeçalhos",
+        "Página da fonte", "Resolver link do PKG"};
     return value >= 0 && (size_t)value < sizeof(names)/sizeof(names[0]) ? names[value] : "Download";
 }

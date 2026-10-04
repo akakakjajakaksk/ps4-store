@@ -1,4 +1,5 @@
 #include "install.h"
+#include "package_limits.h"
 
 #ifndef PEPPY_PKG_SERVER_HEADER
 #define PEPPY_PKG_SERVER_HEADER "pkg_server.h"
@@ -17,6 +18,9 @@
 #include <orbis/Sysmodule.h>
 #include <orbis/AppInstUtil.h>
 #include <orbis/Bgft.h>
+
+static_assert(sizeof(size_t) == 8 && sizeof(off_t) == 8,
+              "PS4 package installation requires 64-bit lengths and file offsets");
 
 #if defined(__FreeBSD__) || defined(PS4)
 // These are PS4 open flags, rather than the host's Linux values.
@@ -116,7 +120,6 @@ extern "C" int32_t peppyInstallRestore(PeppyJailbreakBackup*) __asm__("sys_sdk_u
 
 namespace {
 const size_t NAME_CAP = 96, TITLE_CAP = 256, PATH_CAP = 512;
-const uint64_t MAX_PACKAGE_BYTES = 4ULL * 1024 * 1024 * 1024;
 const size_t HEADER_BYTES = 0x438, CONTENT_ID_OFFSET = 0x40, CONTENT_ID_BYTES = 36;
 const size_t BGFT_HEAP_BYTES = 1024 * 1024;
 const unsigned POLL_US = 250000;
@@ -670,7 +673,7 @@ bool startInstall(const InstallSpec& spec) {
     __atomic_store_n(&g_installHttpBytes, 0, __ATOMIC_RELEASE);
     stage(INSTALL_STAGE_SPEC);
     if (!validFilename(spec.filename) || !validName(spec.name) ||
-        spec.expectedBytes < HEADER_BYTES || spec.expectedBytes > MAX_PACKAGE_BYTES) {
+        spec.expectedBytes < HEADER_BYTES || spec.expectedBytes > PEPPY_MAX_PACKAGE_BYTES) {
         __atomic_store_n(&g_installError, INSTALL_ERROR_SPEC, __ATOMIC_RELEASE);
         __atomic_store_n(&g_installState, INSTALL_FAILED, __ATOMIC_RELEASE);
         __atomic_store_n(&g_installBusy, 0, __ATOMIC_RELEASE);

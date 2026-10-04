@@ -24,7 +24,8 @@ enum DownloadError {
     DOWNLOAD_ERROR_FILESYSTEM = -1300,
     DOWNLOAD_ERROR_LENGTH = -1400,
     DOWNLOAD_ERROR_PACKAGE = -1401,
-    DOWNLOAD_ERROR_HASH = -1402
+    DOWNLOAD_ERROR_HASH = -1402,
+    DOWNLOAD_ERROR_SOURCE = -1500
 };
 
 enum DownloadStage {
@@ -43,7 +44,8 @@ enum DownloadStage {
     DOWNLOAD_STAGE_HASH, DOWNLOAD_STAGE_FILE_WRITE, DOWNLOAD_STAGE_FILE_FLUSH,
     DOWNLOAD_STAGE_FILE_CLOSE, DOWNLOAD_STAGE_FILE_RENAME,
     DOWNLOAD_STAGE_FILE_CLEANUP, DOWNLOAD_STAGE_FINISHED,
-    DOWNLOAD_STAGE_THREAD, DOWNLOAD_STAGE_SPEC, DOWNLOAD_STAGE_HEADER_LIMIT
+    DOWNLOAD_STAGE_THREAD, DOWNLOAD_STAGE_SPEC, DOWNLOAD_STAGE_HEADER_LIMIT,
+    DOWNLOAD_STAGE_SOURCE_READ, DOWNLOAD_STAGE_SOURCE_PARSE
 };
 
 struct DownloadSnapshot {
@@ -63,7 +65,9 @@ struct DownloadSnapshot {
 // Completion means a downloaded file, not an installed application.
 // Start/cancel are serialized by the controller thread; the worker publishes
 // progress atomically. sha256 is optional plain 64-character hexadecimal text.
-bool startDownload(const DownloadSpec& spec);
+// A nonempty expectedContentId pins an external base package's canonical
+// Content ID, header kind and declared size. Its exact expectedBytes is required.
+bool startDownload(const DownloadSpec& spec, const char* expectedContentId = 0);
 void cancelDownload();
 DownloadSnapshot downloadSnapshot();
 const char* downloadStageName(int stage);

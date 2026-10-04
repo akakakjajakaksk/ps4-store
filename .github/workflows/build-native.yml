@@ -91,6 +91,12 @@ jobs:
             -o /tmp/peppy-install-tests
           /tmp/peppy-install-tests
 
+      - name: Test MediaFire source parsing on host
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror \
+            native/tests/downloads/mediafire_parser_test.cpp -o /tmp/peppy-mediafire-parser-tests
+          /tmp/peppy-mediafire-parser-tests
+
       - name: Test local package delivery on host
         run: |
           cd native
@@ -115,6 +121,12 @@ jobs:
 
       - name: Test package directory manifest
         run: python3 native/tests/gp4/normalize_test.py
+
+      - name: Test uploaded package inspection
+        run: python3 native/tests/catalog_import/inspect_test.py
+
+      - name: Test catalog sources
+        run: python3 native/tests/catalog/catalog_test.py
 
       - name: Build Peppy Store files
         run: |

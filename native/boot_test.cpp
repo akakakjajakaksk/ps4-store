@@ -84,7 +84,7 @@ static bool activateApp(int index) {
     DownloadSpec spec = {app.url, app.filename, app.sizeBytes, app.sha256};
     downloadingApp = index;
     autoInstallPending = true;
-    if (!startDownload(spec)) autoInstallPending = false;
+    if (!startDownload(spec, app.contentId)) autoInstallPending = false;
     return true;
 }
 
@@ -375,8 +375,13 @@ static void textWrapped(uint32_t* p, int x, int y, const char* s, const UiFont& 
 }
 
 static void sizeLabel(char* label, size_t capacity, uint64_t bytes) {
-    uint64_t tenths = bytes * 10 / (1024 * 1024);
-    snprintf(label, capacity, "%llu.%llu MB", (unsigned long long)(tenths / 10), (unsigned long long)(tenths % 10));
+    const uint64_t gib = 1024ULL * 1024 * 1024;
+    const uint64_t unit = bytes >= gib ? gib : 1024ULL * 1024;
+    const char* suffix = bytes >= gib ? "GB" : "MB";
+    uint64_t whole = bytes / unit;
+    uint64_t fraction = (bytes % unit) * 10 / unit;
+    snprintf(label, capacity, "%llu.%llu %s", (unsigned long long)whole,
+             (unsigned long long)fraction, suffix);
 }
 
 static int transferPercent(uint64_t received, uint64_t total) {
@@ -494,6 +499,7 @@ static const char* downloadErrorText(int code) {
     case DOWNLOAD_ERROR_LENGTH: return "Download incompleto. Tente novamente.";
     case DOWNLOAD_ERROR_PACKAGE: return "O arquivo recebido não é um PKG.";
     case DOWNLOAD_ERROR_HASH: return "O pacote não confere com o hash publicado.";
+    case DOWNLOAD_ERROR_SOURCE: return "Não foi possível obter o link do PKG nesta fonte. Tente novamente.";
     default: return "O download não foi concluído. Tente novamente.";
     }
 }
@@ -560,7 +566,7 @@ static void drawDetails(uint32_t* p, int selected) {
     int categoryWidth = textWidth(CATEGORY_NAMES[app.category], FONT_SMALL) + 32;
     pill(p, 348 - categoryWidth / 2, 725, CATEGORY_NAMES[app.category], 0x80212B3B, accent);
 
-    pill(p, 708, 252, "PKG  /  FONTE OFICIAL", 0x80212D41, BLUE);
+    pill(p, 708, 252, app.sourceBadge, 0x80212D41, BLUE);
     textElided(p, 704, 321, app.name, FONT_HEADING, WHITE, 1140);
     text(p, 708, 396, app.caption, FONT_BODY, MUTED);
     char info[192], size[40];
