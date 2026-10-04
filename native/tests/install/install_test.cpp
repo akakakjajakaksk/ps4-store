@@ -456,7 +456,7 @@ static void reset(Mode next, bool alias = true) {
     header[0] = 0x7f; header[1] = 'C'; header[2] = 'N'; header[3] = 'T';
     const char* id = next == SELF_APP ? "UP0001-BREW00001_00-0000000000000000"
                                       : "UP0001-APOL00004_00-0000000000000000";
-    assert(strlen(id) == 36); memcpy(header + CONTENT_ID_OFFSET, id, 36);
+    assert(strlen(id) == 36); memcpy(header + 0x40, id, 36);
     FILE* file = fopen((localDirectory + "/apollo.pkg").c_str(), "wb"); assert(file);
     assert(fwrite(header, 1, sizeof(header), file) == sizeof(header)); assert(fclose(file) == 0);
     if (alias) assert(link((localDirectory + "/apollo.pkg").c_str(),
