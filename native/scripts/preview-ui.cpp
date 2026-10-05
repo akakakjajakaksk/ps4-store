@@ -66,6 +66,8 @@ void musicNextTrack() { previewMusic.track = (previewMusic.track + 1) % 2; }
 void musicStop() { previewMusic.state = MUSIC_STOPPED; }
 void musicShutdown() { musicStop(); }
 const char* musicTrackName(int track) { return track == 1 ? "ACENDAOFAROL" : "FIGHT"; }
+static uint64_t previewTimeUs = 0;
+static uint64_t previewNowUs() { return previewTimeUs; }
 #include "../boot_test.cpp"
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,6 +85,8 @@ static void resetController() {
     downloadCalls = installCalls = cancelInstallCalls = 0;
     rejectDownload = rejectInstall = rejectInstallBusy = false;
     lastDownloadContentId = 0;
+    previewTimeUs = 0;
+    downloadMeter.reset();
 }
 
 static bool expect(bool condition, const char* message) {
@@ -93,6 +97,57 @@ static bool expect(bool condition, const char* message) {
 static void completeDownload(int index) {
     previewDownload.state = DONE;
     previewDownload.received = previewDownload.total = UI_APPS[index].sizeBytes;
+}
+
+static void samplePreviewDownload(uint64_t now, uint64_t received) {
+    previewTimeUs = now;
+    previewDownload.received = received;
+    downloadMeter.update(previewDownload.state == RUNNING, previewDownload.received,
+                         previewDownload.total, previewNowUs());
+}
+
+static bool verifyMeasurementUi() {
+    resetController();
+    if (!expect(activateApp(0), "a new download starts the measurement baseline")) return false;
+    char label[96];
+    transferMeasurementLabel(label, sizeof(label), previewDownload);
+    if (!expect(strcmp(label, "Medindo a velocidade...") == 0,
+                "a new transfer does not invent a speed or ETA")) return false;
+    samplePreviewDownload(1000000, 1000000);
+    transferMeasurementLabel(label, sizeof(label), previewDownload);
+    if (!expect(strstr(label, "1.00 MB/s | Estimativa:") == label,
+                "one million delivered bytes per second displays decimal MB/s and an estimate")) return false;
+    samplePreviewDownload(4000000, 1000000);
+    transferMeasurementLabel(label, sizeof(label), previewDownload);
+    if (!expect(strcmp(label, "0.00 MB/s | Aguardando dados...") == 0,
+                "a stalled transfer reports zero without reusing a stale ETA")) return false;
+    samplePreviewDownload(4200000, previewDownload.total);
+    transferMeasurementLabel(label, sizeof(label), previewDownload);
+    if (!expect(strcmp(label, "Finalizando o download...") == 0,
+                "the final bytes do not promise validation or installation completed")) return false;
+
+    previewDownload.state = CANCELLED;
+    previewTimeUs = 5000000;
+    if (!expect(activateApp(0) && !downloadMeter.measurement().rateAvailable,
+                "an accepted same-app retry discards the previous measurement")) return false;
+    samplePreviewDownload(6000000, 1000000);
+    completeDownload(0);
+    downloadMeter.update(false, previewDownload.received, previewDownload.total, 6200000);
+    int networkStarts = downloadCalls;
+    downloadedBytes[0] = UI_APPS[0].sizeBytes;
+    if (!expect(activateApp(0) && downloadCalls == networkStarts && !downloadMeter.measurement().rateAvailable,
+                "installing a saved PKG does not start a fictitious network measurement")) return false;
+
+    resetController();
+    previewDownload.state = RUNNING;
+    previewDownload.total = 0;
+    samplePreviewDownload(0, 0);
+    samplePreviewDownload(1000000, 1000000);
+    transferMeasurementLabel(label, sizeof(label), previewDownload);
+    if (!expect(strcmp(label, "1.00 MB/s | Calculando tempo restante...") == 0,
+                "an unknown total can show measured speed while withholding ETA")) return false;
+    resetController();
+    return true;
 }
 
 // Exercise the user-visible handoff: one validated download, one automatic
@@ -202,8 +257,9 @@ static bool verifyController() {
         if (!expect((strcmp(UI_APPS[i].sourceBadge, "PKG / FONTE OFICIAL") == 0) == official,
                     "checked packages display the badge for their actual source")) return false;
     }
+    if (!verifyMeasurementUi()) return false;
     resetController();
-    puts("Checked automatic install handoff, retry, cancellation, cleanup, music and package size labels.");
+    puts("Checked automatic install handoff, retry, cancellation, cleanup, music, size labels and measured download speed.");
     return true;
 }
 
@@ -224,9 +280,50 @@ static bool saveState(const char* prefix, const char* state, const uint32_t* fra
     return size > 0 && (size_t)size < sizeof(path) && save(path, frame);
 }
 
+static bool previewMeasurementStates(const char* prefix) {
+    uint32_t* allocation = static_cast<uint32_t*>(malloc(((size_t)W * H + 2) * sizeof(uint32_t)));
+    if (!allocation) return false;
+    const uint32_t canary = 0xBAADF00D;
+    allocation[0] = allocation[(size_t)W * H + 1] = canary;
+    uint32_t* frame = allocation + 1;
+    resetController();
+    int selected = 0;
+    for (int i = 0; i < UI_APP_COUNT; ++i) {
+        if (UI_APPS[i].category == 3 && UI_APPS[i].sizeBytes >= 20ULL * 1024 * 1024 * 1024) {
+            selected = i;
+            break;
+        }
+    }
+    downloadingApp = selected;
+    previewDownload.state = RUNNING;
+    previewDownload.total = UI_APPS[selected].sizeBytes;
+    samplePreviewDownload(0, 0);
+    drawDetails(frame, selected);
+    bool okay = saveState(prefix, "download-measuring", frame);
+    samplePreviewDownload(1000000, 1200000);
+    samplePreviewDownload(2000000, 2400000);
+    drawDetails(frame, selected);
+    okay = saveState(prefix, "download-rate-eta", frame) && okay;
+    samplePreviewDownload(5000000, 2400000);
+    drawDetails(frame, selected);
+    okay = saveState(prefix, "download-stalled", frame) && okay;
+    samplePreviewDownload(6000000, 4800000);
+    drawStore(frame, selected, 2);
+    okay = saveState(prefix, "download-footer-rate", frame) && okay;
+    samplePreviewDownload(6200000, previewDownload.total);
+    drawDetails(frame, selected);
+    okay = saveState(prefix, "download-finalizing", frame) && okay;
+    okay = allocation[0] == canary && allocation[(size_t)W * H + 1] == canary && okay;
+    free(allocation);
+    resetController();
+    return okay;
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && strcmp(argv[1], "--check-controller") == 0) return verifyController() ? 0 : 1;
-    if (argc != 2) { fprintf(stderr, "Usage: %s output-prefix | --check-controller\n", argv[0]); return 1; }
+    if (argc == 3 && strcmp(argv[1], "--preview-download-meter") == 0)
+        return verifyController() && previewMeasurementStates(argv[2]) ? 0 : 1;
+    if (argc != 2) { fprintf(stderr, "Usage: %s output-prefix | --check-controller | --preview-download-meter prefix\n", argv[0]); return 1; }
     if (!verifyController()) return 1;
     uint32_t* allocation = (uint32_t*)malloc(((size_t)W * H + 2) * sizeof(uint32_t));
     if (!allocation) return 1;

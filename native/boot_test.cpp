@@ -12,6 +12,7 @@
 #include "ui_assets.h"
 #include "ui_catalog.h"
 #include "downloads.h"
+#include "download_meter.h"
 #include "install.h"
 #include "music.h"
 
@@ -25,6 +26,15 @@ static int activeCategory = 0, downloadingApp = -1, installingApp = -1;
 static bool autoInstallPending = false, installCancelRequested = false;
 static uint64_t downloadedBytes[UI_APP_COUNT] = {};
 static bool installedApps[UI_APP_COUNT] = {};
+static DownloadMeter downloadMeter;
+
+static uint64_t downloadNowUs() {
+#ifdef PEPPY_UI_PREVIEW
+    return previewNowUs();
+#else
+    return sceKernelGetProcessTime();
+#endif
+}
 
 static bool validApp(int index) { return index >= 0 && index < UI_APP_COUNT; }
 
@@ -84,7 +94,12 @@ static bool activateApp(int index) {
     DownloadSpec spec = {app.url, app.filename, app.sizeBytes, app.sha256};
     downloadingApp = index;
     autoInstallPending = true;
+    uint64_t startedAt = downloadNowUs();
     if (!startDownload(spec, app.contentId)) autoInstallPending = false;
+    else {
+        downloadMeter.reset();
+        downloadMeter.update(true, 0, app.sizeBytes, startedAt);
+    }
     return true;
 }
 
@@ -390,6 +405,37 @@ static int transferPercent(uint64_t received, uint64_t total) {
     return (int)((double)received * 100.0 / (double)total);
 }
 
+static void transferMeasurementLabel(char* label, size_t capacity,
+                                     const DownloadSnapshot& status) {
+    if (status.total && status.received >= status.total) {
+        snprintf(label, capacity, "Finalizando o download...");
+        return;
+    }
+    DownloadMeasurement meter = downloadMeter.measurement();
+    if (!meter.rateAvailable) {
+        snprintf(label, capacity, "Medindo a velocidade...");
+        return;
+    }
+    // MB/s is decimal, matching network speed units. The measured counter
+    // includes the downloader's file writes and optional hash verification.
+    double mbps = meter.bytesPerSecond / 1000000.0;
+    if (!meter.etaAvailable) {
+        snprintf(label, capacity, "%.2f MB/s | %s", mbps,
+                 meter.bytesPerSecond > 0.0 ? "Calculando tempo restante..." : "Aguardando dados...");
+    } else if (meter.remainingSeconds >= 3600) {
+        snprintf(label, capacity, "%.2f MB/s | Estimativa: %llu h %llu min", mbps,
+                 (unsigned long long)(meter.remainingSeconds / 3600),
+                 (unsigned long long)(meter.remainingSeconds % 3600 / 60));
+    } else if (meter.remainingSeconds >= 60) {
+        snprintf(label, capacity, "%.2f MB/s | Estimativa: %llu min %llu s", mbps,
+                 (unsigned long long)(meter.remainingSeconds / 60),
+                 (unsigned long long)(meter.remainingSeconds % 60));
+    } else {
+        snprintf(label, capacity, "%.2f MB/s | Estimativa: %llu s", mbps,
+                 (unsigned long long)meter.remainingSeconds);
+    }
+}
+
 static int installPercent(const InstallSnapshot& status) {
     return status.percent < 0 ? 0 : (status.percent > 100 ? 100 : status.percent);
 }
@@ -436,8 +482,13 @@ static void footer(uint32_t* p, bool details, int selectedIndex) {
                  installStageName(install.stage), installPercent(install));
         statusColor = BLUE;
     } else if (download.state == RUNNING && validApp(downloadingApp)) {
-        snprintf(label, sizeof(label), "Baixando: %s  |  %d%%", UI_APPS[downloadingApp].name,
-                 transferPercent(download.received, download.total));
+        DownloadMeasurement meter = downloadMeter.measurement();
+        if (meter.rateAvailable && (!download.total || download.received < download.total))
+            snprintf(label, sizeof(label), "Baixando: %d%% | %.2f MB/s | %s",
+                     transferPercent(download.received, download.total), meter.bytesPerSecond / 1000000.0,
+                     UI_APPS[downloadingApp].name);
+        else snprintf(label, sizeof(label), "Baixando: %s | %d%%", UI_APPS[downloadingApp].name,
+                      transferPercent(download.received, download.total));
         statusColor = BLUE;
     } else if (install.state == INSTALL_FAILED && validApp(installingApp)) {
         snprintf(label, sizeof(label), "Falha ao instalar: %s  |  0x%08X",
@@ -581,6 +632,7 @@ static void drawDetails(uint32_t* p, int selected) {
 
     DownloadSnapshot status = downloadSnapshot();
     InstallSnapshot install = installSnapshot();
+    char measurementLabel[96] = {};
     bool mine = downloadingApp == index, myInstall = installingApp == index;
     const char* action = "Baixar e instalar";
     uint32_t button = 0x8032609A;
@@ -631,6 +683,7 @@ static void drawDetails(uint32_t* p, int selected) {
         char received[40], total[40];
         sizeLabel(received, sizeof(received), status.received);
         sizeLabel(total, sizeof(total), status.total);
+        transferMeasurementLabel(measurementLabel, sizeof(measurementLabel), status);
         snprintf(info, sizeof(info), "%s de %s", received, total);
     } else if (mine && status.state == DONE && autoInstallPending) {
         snprintf(info, sizeof(info), "Download validado. Preparando a instalação automática.");
@@ -640,6 +693,8 @@ static void drawDetails(uint32_t* p, int selected) {
     else if (*app.sha256) snprintf(info, sizeof(info), "SHA-256 conferido ao concluir o download.");
     else snprintf(info, sizeof(info), "Hash não informado pela fonte.");
     textWrapped(p, 708, 861, info, FONT_SMALL, MUTED, 1140, 2);
+    if (measurementLabel[0])
+        textElided(p, 708, 861 + FONT_SMALL.lineHeight, measurementLabel, FONT_SMALL, BLUE, 1140);
     if (install.cleanupCode || (myInstall && install.state == INSTALL_FAILED)) {
         char diagnostic[192];
         snprintf(diagnostic, sizeof(diagnostic), "%s | 0x%08X | tarefa %d | limpeza 0x%08X",
@@ -741,7 +796,9 @@ int main(void){
   }
   if(++progressTicks>=12){
    progressTicks=0;
+   uint64_t measuredAt=downloadNowUs();
    DownloadSnapshot progress=downloadSnapshot();
+   if(downloadMeter.update(progress.state==RUNNING,progress.received,progress.total,measuredAt)) changed=true;
    if(progress.state!=previousProgress.state || progress.received!=previousProgress.received || progress.errorCode!=previousProgress.errorCode) changed=true;
    previousProgress=progress;
    InstallSnapshot install=installSnapshot();

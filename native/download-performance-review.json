@@ -1,0 +1,48 @@
+{
+  "scope": "Cloud proxy samples only. Not PS4 bandwidth, not full-package integrity. Up to12MiB total payload across3games, plus3240headerbytes.",
+  "results": [
+    {
+      "game": "A Hat in Time",
+      "host": "ia600705.us.archive.org",
+      "etag": "\"67ffdf8e-1cdb90000\"",
+      "sample_bytes": 2097152,
+      "one_seconds": 6.1961,
+      "two_seconds": 2.5986,
+      "one_mib_s": 0.3228,
+      "two_mib_s": 0.7696,
+      "identical_sample": true,
+      "sample_sha256": "e8f3dbbf9fb780e02cb0deb4e800a9698269a66d0b79790c78b2a02132e0a22d"
+    },
+    {
+      "game": "Hades",
+      "host": "dn721707.ca.archive.org",
+      "etag": "\"6803d693-1dc0f0000\"",
+      "sample_bytes": 2097152,
+      "one_seconds": 3.9716,
+      "two_seconds": 4.0256,
+      "one_mib_s": 0.5036,
+      "two_mib_s": 0.4968,
+      "identical_sample": true,
+      "sample_sha256": "8c50f2e33b93dcb7ea5fc05ac6a1b3b8364e7743866a4dbf8b341707602f8f7c"
+    },
+    {
+      "game": "Grand Theft Auto V",
+      "host": "ia601004.us.archive.org",
+      "etag": "\"6832f9a6-15b2640000\"",
+      "sample_bytes": 2097152,
+      "one_seconds": 16.5257,
+      "two_seconds": 11.0579,
+      "one_mib_s": 0.121,
+      "two_mib_s": 0.1809,
+      "identical_sample": true,
+      "sample_sha256": "dd0315213d8253456a7ee522e8403ecbfc4ce436c49fbb260feb9f5d70d5dea9"
+    }
+  ],
+  "date": "2026-10-05",
+  "method": "One sequential 2 MiB byte range versus two concurrent adjacent 1 MiB ranges from the same approved final HTTPS URL; exact 206, Content-Range, Content-Length and equal strong ETag validated. Samples were compared byte-for-byte.",
+  "limitations": [
+    "Small public samples through the development proxy, not a sustained PS4 test.",
+    "Sample hashes identify only the sampled bytes; no complete PKG was downloaded or hashed.",
+    "This does not predict bandwidth on the user’s Claro Wi-Fi or guarantee a speed increase."
+  ]
+}

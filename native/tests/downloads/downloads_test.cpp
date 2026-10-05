@@ -55,6 +55,8 @@ static size_t packageMallocCalls, packageSetvbufCalls, packageBufferLifetimeChec
 static size_t packageDataReads, packageMaxReadRequest, packageMaxReadBytes;
 static FILE* trackedPackageFile;
 static unsigned char* trackedStdioBuffer;
+struct JoinableThreadMock { std::thread* thread; void* result; JoinableThreadMock():thread(0),result(0){} };
+static std::vector<JoinableThreadMock*> joinableThreads;
 static SourceResponse& sourceResponse() {
     assert(requests > 0 && (size_t)requests <= sourceResponses.size());
     return sourceResponses[(size_t)requests - 1];
@@ -101,8 +103,25 @@ extern "C" int __wrap_fclose(FILE* f){
 extern "C" int32_t sceKernelUsleep(uint32_t n){std::this_thread::sleep_for(std::chrono::microseconds(n==100000?100:n));return 0;}
 extern "C" int32_t scePthreadAttrInit(OrbisPthreadAttr* a){*a=0;return mode==25?(int32_t)0x80020022:0;}
 extern "C" int32_t scePthreadAttrDestroy(OrbisPthreadAttr*){return 0;}
-extern "C" int32_t scePthreadAttrSetdetachstate(OrbisPthreadAttr* a,int n){assert(n==1);*a=1;return mode==26?(int32_t)0x80020016:0;}
-extern "C" int32_t scePthreadCreate(OrbisPthread* t,const OrbisPthreadAttr* a,void*(*f)(void*),void* p,const char*){assert(*a==1);if(mode==27)return (int32_t)0x8002000c;*t=1;std::thread(f,p).detach();return 0;}
+extern "C" int32_t scePthreadAttrSetdetachstate(OrbisPthreadAttr* a,int n){assert(n==0||n==1);*a=n;return mode==26?(int32_t)0x80020016:0;}
+extern "C" int32_t scePthreadCreate(OrbisPthread* t,const OrbisPthreadAttr* a,void*(*f)(void*),void* p,const char*){
+    assert(*a==0||*a==1);if(mode==27)return (int32_t)0x8002000c;
+    if(*a==1){*t=1;std::thread(f,p).detach();}
+    else{JoinableThreadMock* slot=new JoinableThreadMock;joinableThreads.push_back(slot);*t=(int)joinableThreads.size()+1;slot->thread=new std::thread([slot,f,p](){slot->result=f(p);});}
+    return 0;
+}
+extern "C" int32_t scePthreadJoin(OrbisPthread thread,void** result){
+    assert(thread>=2&&(size_t)(thread-2)<joinableThreads.size());
+    JoinableThreadMock* slot=joinableThreads[(size_t)thread-2];assert(slot&&slot->thread);
+    slot->thread->join();if(result)*result=slot->result;delete slot->thread;delete slot;
+    joinableThreads[(size_t)thread-2]=0;return 0;
+}
+extern "C" int64_t mockParallelPwrite(int32_t,const void*,size_t,int64_t) __asm__("sceKernelPwrite");
+extern "C" int64_t mockParallelPwrite(int32_t fd,const void* bytes,size_t count,int64_t offset){return (int64_t)pwrite(fd,bytes,count,(off_t)offset);}
+extern "C" int64_t mockParallelPread(int32_t,void*,size_t,int64_t) __asm__("sceKernelPread");
+extern "C" int64_t mockParallelPread(int32_t fd,void* bytes,size_t count,int64_t offset){return (int64_t)pread(fd,bytes,count,(off_t)offset);}
+extern "C" int32_t mockParallelFstat(int32_t,PeppyParallelFileInfo*) __asm__("sceKernelFstat");
+extern "C" int32_t mockParallelFstat(int32_t fd,PeppyParallelFileInfo* out){struct stat info;int rc=fstat(fd,&info);if(rc)return (int32_t)0x80020005;memset(out,0,sizeof(*out));out->mode=(uint16_t)info.st_mode;out->size=(int64_t)info.st_size;return 0;}
 extern "C" uint32_t sceSysmoduleLoadModuleInternal(OrbisSysModuleInternal){++moduleLoads;return mode==16||mode==17?0x805a1001:0;}
 extern "C" int32_t mockIsLoaded(OrbisSysModuleInternal) __asm__("sceSysmoduleIsLoadedInternal");
 extern "C" int32_t mockIsLoaded(OrbisSysModuleInternal){++moduleProbes;return mode==15||(mode==16&&moduleProbes%2==0)?0:-1;}

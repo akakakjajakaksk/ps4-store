@@ -84,6 +84,28 @@ jobs:
             -o /tmp/peppy-download-tests
           /tmp/peppy-download-tests
 
+      - name: Test HTTP range framing on host
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror \
+            native/tests/downloads/http_range_test.cpp -o /tmp/peppy-http-range-tests
+          /tmp/peppy-http-range-tests
+
+      - name: Test measured download speed on host
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror \
+            native/tests/download_meter/meter_test.cpp -o /tmp/peppy-download-meter-tests
+          /tmp/peppy-download-meter-tests
+
+      - name: Test concurrent package downloads on host
+        run: |
+          cd native
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
+            -Itests/parallel_download/stubs tests/parallel_download/parallel_test.cpp \
+            -Wl,--wrap=malloc -Wl,--wrap=close -Wl,--wrap=fsync \
+            -Wl,--wrap=fclose -Wl,--wrap=fflush \
+            -o /tmp/peppy-parallel-download-tests
+          /tmp/peppy-parallel-download-tests
+
       - name: Test native installation on host
         run: |
           cd native

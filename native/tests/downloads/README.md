@@ -19,6 +19,18 @@ g++ -std=c++11 -O2 -Wall -Wextra -Werror \
 /tmp/peppy-mediafire-parser-tests
 ```
 
+The strict HTTP range/strong-validator parser has a standalone suite:
+
+```sh
+g++ -std=c++11 -O2 -Wall -Wextra -Werror \
+  tests/downloads/http_range_test.cpp -o /tmp/peppy-http-range-tests
+/tmp/peppy-http-range-tests
+```
+
+Concurrent Archive transfer, offset writes, cancellation and fallback have
+a separate integration suite in [../parallel_download/README.md](../parallel_download/README.md).
+The speed/ETA calculation is tested in [../download_meter/README.md](../download_meter/README.md).
+
 The shim preserves the OpenOrbis 0.5.4 declarations needed by the downloader, including incomplete SDK declarations handled through asm aliases. It replaces network and thread calls with deterministic host mocks and uses a unique temporary directory per run. It does not contact GitHub, MediaFire or a PS4. All source pages, CDN paths and tokens are synthetic fixtures.
 
 Coverage includes four SHA-256 NIST vectors, fragmented PKG magic, normal and redirected transfers, strict HTTPS/host/filename checks, redirect limits, HTTP/TLS errors, truncation and overflow, missing content lengths, mismatched digests, write/flush/close failures, preservation of an existing complete file on a failed replacement, detached worker creation, one transfer at a time, cancellation, and handle/partial-file cleanup. Initialization checks cover already-loaded modules, a failed load with a confirmed loaded probe, failed module loading, NetCtl initialization/state errors, bounded local-IP readiness, cancellation during readiness, pool errors, individual timeout errors, original native/SSL diagnostics, and repeated download cleanup. Error fixture numbers are mock values, not a whitelist of hardware errors.

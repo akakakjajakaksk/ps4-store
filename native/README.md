@@ -9,6 +9,7 @@ Interface nativa para PS4 homebrew, compilada com OpenOrbis PS4 Toolchain.
 - Fonte suave com caracteres em português, preparada durante a build.
 - Catálogo de 845 PKGs, com categorias, páginas e detalhes.
 - Downloads HTTPS de releases oficiais, MediaFire e fontes diretas revisadas, em segundo plano.
+- Duas conexões para PKGs grandes do Archive quando o servidor permite; velocidade medida e tempo estimado na tela.
 - Instalação local integrada após concluir e validar o download.
 - Playlist FIGHT → ACENDAOFAROL, com opção para silenciar e trocar a faixa.
 
@@ -40,7 +41,7 @@ Uma falha permite tentar instalar novamente o arquivo já baixado.
 Download e instalação usam o mesmo limite de 256 GiB por pacote, com tamanhos
 e progresso de 64 bits. A interface mostra GB a partir de 1 GiB. O conteúdo
 continua sendo transferido em blocos pequenos; o limite não reserva essa
-quantidade de memória. A transferência usa um buffer de leitura de 256 KiB
+quantidade de memória. A transferência comum usa um buffer de leitura de 256 KiB
 na heap e outro de 256 KiB para a gravação, fornecido explicitamente a
 `setvbuf`. Esses dois buffers somam 512 KiB fixos, além dos recursos de rede.
 O SHA-256 só é calculado quando existe um hash esperado no catálogo; nesse
@@ -48,6 +49,31 @@ caso a comparação continua obrigatória. Isso reduz trabalho sem remover as
 verificações de tamanho, identidade e tipo. Não foi medida a velocidade real
 de transferência no PS4. Os testes de pacotes grandes usam respostas simuladas
 e arquivos esparsos, sem comprovar uma transferência completa no console.
+
+PKGs do Archive com pelo menos 32 MiB, Content ID e tamanho HTTP conhecido
+podem usar duas conexões HTTPS. A loja divide o mesmo arquivo em dois
+intervalos contíguos e grava cada parte em sua posição, com dois buffers de
+256 KiB e contextos HTTP independentes. Antes de gravar, ambos os pedidos
+precisam responder `206`, com intervalo e tamanho exatos e o mesmo ETag forte
+do pedido inicial. `If-Range` fixa essa versão do recurso; os dois pedidos
+usam a mesma URL final, com validação TLS e sem aceitar novos redirecionamentos.
+Sem um ETag forte, a loja mantém o download comum. Se o servidor não oferecer
+intervalos ou faltar um recurso antes de iniciar a gravação, a loja faz um
+novo pedido comum. Uma falha durante a transferência encerra as duas conexões
+e remove o parcial, preservando qualquer PKG anterior. A publicação ainda
+confere o arquivo recebido e calcula SHA-256 em ordem quando houver um hash
+esperado. O modo paralelo mantém memória limitada e offsets de 64 bits.
+
+A tela mede os bytes efetivamente gravados usando o relógio monotônico do
+console e mostra MB/s e uma estimativa de tempo restante. O valor usa amostras
+recentes, com atualização aproximadamente a cada segundo; se a transferência
+parar, mostra espera por dados. A estimativa depende dessa velocidade e pode
+mudar. Após receber todos os bytes, a tela mostra a etapa de finalização.
+O servidor, a rede e o armazenamento continuam determinando a velocidade.
+Em três amostras pequenas feitas no ambiente de desenvolvimento, duas
+conexões melhoraram duas delas e tiveram desempenho semelhante na outra.
+O método e as medidas estão em [download-performance-review.json](download-performance-review.json).
+Esses resultados não medem o Wi-Fi nem a velocidade do PS4.
 
 Quando o HTTP informa `Content-Length`, esse tamanho precisa coincidir com
 o tamanho do catálogo. A leitura termina assim que recebe essa quantidade,
@@ -209,9 +235,16 @@ g++ -std=c++11 -O2 native/scripts/preview-ui.cpp -o /tmp/peppy-preview
 
 O programa gera arquivos PPM para biblioteca e detalhes de todos os itens
 e categorias, além dos estados de download, usando o renderizador nativo.
+Para gerar somente cinco estados do medidor de download:
 
-Os testes de transferência, instalação, entrega local, música e inspeção em `tests/downloads/`,
-`tests/install/`, `tests/pkg_server/`, `tests/music/` e `tests/catalog_import/` também são executados na workflow antes da
+```sh
+/tmp/peppy-preview --preview-download-meter /tmp/peppy-meter
+```
+
+Os testes de transferência, intervalos, concorrência, medição, instalação,
+entrega local, música e inspeção em `tests/downloads/`, `tests/parallel_download/`,
+`tests/download_meter/`, `tests/install/`, `tests/pkg_server/`, `tests/music/`
+e `tests/catalog_import/` também são executados na workflow antes da
 compilação nativa. Os mocks verificam controle e falhas; instalação e áudio
 reais ainda precisam de teste no PS4 com o GoldHEN ativo.
 

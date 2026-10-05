@@ -2,6 +2,8 @@
 #include "package_limits.h"
 #include "mediafire_source.h"
 #include "archive_sources.h"
+#include "http_range.h"
+#include "parallel_download.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -10,6 +12,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <orbis/libkernel.h>
 #include <orbis/Sysmodule.h>
 #include <orbis/Net.h>
@@ -51,7 +54,7 @@ const int MAX_REDIRECTS = 5;
 
 int g_state = IDLE, g_busy = 0, g_cancel = 0, g_error = 0, g_committed = 0;
 uint64_t g_received = 0, g_total = 0;
-int g_reqLock = 0, g_request = -1;
+int g_reqLock = 0, g_request = -1, g_parallelRequest = -1;
 int g_stage = DOWNLOAD_STAGE_NONE, g_native = 0, g_network = 0, g_ssl = 0;
 uint32_t g_sslDetails = 0;
 int g_networkState = -1;
@@ -90,9 +93,16 @@ void requestLock() {
 }
 void requestUnlock() { __atomic_store_n(&g_reqLock, 0, __ATOMIC_RELEASE); }
 bool cancelled() { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE) != 0; }
-void publishRequest(int request) {
+void publishRequest(int request, int slot = 0) {
     requestLock();
-    __atomic_store_n(&g_request, request, __ATOMIC_RELEASE);
+    __atomic_store_n(slot ? &g_parallelRequest : &g_request, request, __ATOMIC_RELEASE);
+    requestUnlock();
+}
+void abortRequests() {
+    requestLock();
+    const int requests[] = {g_request, g_parallelRequest};
+    for (size_t i = 0; i < 2; ++i)
+        if (requests[i] >= 0) sceHttpAbortRequest(requests[i]);
     requestUnlock();
 }
 
@@ -427,10 +437,13 @@ int ensureModule(OrbisSysModuleInternal module, int where) {
 }
 
 struct HttpHandles {
-    int net, ssl, http, tmpl, conn, req;
-    HttpHandles() : net(-1), ssl(-1), http(-1), tmpl(-1), conn(-1), req(-1) {}
-    void closeRequest() {
-        publishRequest(-1);
+    int net, ssl, http, tmpl, conn, req, slot;
+    explicit HttpHandles(int requestSlot = 0) : net(-1), ssl(-1), http(-1), tmpl(-1), conn(-1), req(-1), slot(requestSlot) {}
+    void closeRequest(bool abort = false) {
+        requestLock();
+        __atomic_store_n(slot ? &g_parallelRequest : &g_request, -1, __ATOMIC_RELEASE);
+        if (abort && req >= 0) sceHttpAbortRequest(req);
+        requestUnlock();
         if (req >= 0) { sceHttpDeleteRequest(req); req = -1; }
         if (conn >= 0) { sceHttpDeleteConnection(conn); conn = -1; }
     }
@@ -444,6 +457,49 @@ struct HttpHandles {
         // features. Do not tear down global network or unload their modules.
     }
 };
+
+int initHttpContext(HttpHandles& handles, const char* name) {
+    stage(DOWNLOAD_STAGE_NET_POOL);
+    handles.net = sceNetPoolCreate(name, 1024 * 1024, 0);
+    if (handles.net < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_NET_POOL, handles.net, networkErrno());
+    logCall(DOWNLOAD_STAGE_NET_POOL, handles.net);
+    stage(DOWNLOAD_STAGE_SSL_INIT);
+    handles.ssl = sceSslInit(256 * 1024);
+    if (handles.ssl < 0) return fail(DOWNLOAD_ERROR_TLS, DOWNLOAD_STAGE_SSL_INIT, handles.ssl);
+    stage(DOWNLOAD_STAGE_HTTP_INIT);
+    handles.http = sceHttpInit(handles.net, handles.ssl, 1024 * 1024);
+    if (handles.http < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_HTTP_INIT, handles.http);
+    stage(DOWNLOAD_STAGE_TEMPLATE);
+    handles.tmpl = sceHttpCreateTemplate(handles.http, "PeppyStore/1.0", ORBIS_HTTP_VERSION_1_1, 0);
+    if (handles.tmpl < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_TEMPLATE, handles.tmpl);
+    int32_t rc;
+    // GitHub security and signed-release redirect headers exceed libSceHttp's
+    // small default. Configure a finite cap before connections inherit it;
+    // the redirect parser enforces the same cap independently.
+    stage(DOWNLOAD_STAGE_HEADER_LIMIT);
+    rc = peppyHttpSetResponseHeaderMaxSize(handles.tmpl, RESPONSE_HEADER_CAP);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_HEADER_LIMIT, rc);
+    stage(DOWNLOAD_STAGE_TLS_OPTIONS);
+    rc = sceHttpsEnableOption(handles.tmpl, TLS_CHECKS);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_TLS, DOWNLOAD_STAGE_TLS_OPTIONS, rc);
+    stage(DOWNLOAD_STAGE_REDIRECT_OPTION);
+    rc = peppyHttpSetAutoRedirect(handles.tmpl, 0);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_REDIRECT_OPTION, rc);
+    stage(DOWNLOAD_STAGE_RESOLVE_TIMEOUT);
+    rc = sceHttpSetResolveTimeOut(handles.tmpl, 10000000);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_RESOLVE_TIMEOUT, rc);
+    stage(DOWNLOAD_STAGE_CONNECT_TIMEOUT);
+    rc = sceHttpSetConnectTimeOut(handles.tmpl, 10000000);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_CONNECT_TIMEOUT, rc);
+    stage(DOWNLOAD_STAGE_SEND_TIMEOUT);
+    rc = sceHttpSetSendTimeOut(handles.tmpl, 15000000);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_SEND_TIMEOUT, rc);
+    stage(DOWNLOAD_STAGE_RECV_TIMEOUT);
+    rc = peppyHttpSetRecvTimeOut(handles.tmpl, 15000000);
+    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_RECV_TIMEOUT, rc);
+
+    return 0;
+}
 
 int resolveMediafire(int request, char* next) {
     stage(DOWNLOAD_STAGE_SOURCE_READ);
@@ -486,6 +542,204 @@ int resolveMediafire(int request, char* next) {
     if (!peppyMediafire::extractUrl(html.text, used, next, URL_CAP) || !mediafireCdn(next))
         return fail(DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_PARSE, 0);
     return 0;
+}
+
+enum ParallelAttempt { PARALLEL_KEEP_RESPONSE, PARALLEL_RESTART_SINGLE, PARALLEL_FINISHED };
+void clearAttemptDiagnostics() {
+    __atomic_store_n(&g_native, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_network, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_ssl, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_sslDetails, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_received, 0, __ATOMIC_RELEASE);
+}
+bool openRange(HttpHandles& handles, const char* url, uint64_t first, uint64_t last,
+               uint64_t total, const peppyHttpRange::Metadata& seed) {
+    stage(DOWNLOAD_STAGE_CONNECTION);
+    handles.conn = sceHttpCreateConnectionWithURL(handles.tmpl, url, false);
+    if (handles.conn < 0) { fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_CONNECTION, handles.conn); return false; }
+    stage(DOWNLOAD_STAGE_REQUEST);
+    handles.req = sceHttpCreateRequestWithURL(handles.conn, ORBIS_METHOD_GET, url, 0);
+    if (handles.req < 0) { fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_REQUEST, handles.req); return false; }
+    publishRequest(handles.req, handles.slot);
+    if (cancelled()) return false;
+    char range[80];
+    int n = snprintf(range, sizeof(range), "bytes=%llu-%llu", (unsigned long long)first, (unsigned long long)last);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(range)) return false;
+    stage(DOWNLOAD_STAGE_REQUEST_HEADER);
+    int32_t rc = sceHttpAddRequestHeader(handles.req, "Accept-Encoding", "identity", 0);
+    if (!rc) rc = sceHttpAddRequestHeader(handles.req, "Range", range, 0);
+    if (!rc) rc = sceHttpAddRequestHeader(handles.req, "If-Range", seed.etag, 0);
+    if (rc < 0) { fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_REQUEST_HEADER, rc); return false; }
+    stage(DOWNLOAD_STAGE_SEND);
+    rc = sceHttpSendRequest(handles.req, 0, 0);
+    if (rc < 0) { transferError(handles.req, DOWNLOAD_STAGE_SEND, rc); return false; }
+    if (cancelled()) return false;
+    int32_t status = 0;
+    rc = sceHttpGetStatusCode(handles.req, &status);
+    if (rc < 0) { fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_STATUS, rc); return false; }
+    if (status != 206) { logCall(DOWNLOAD_STAGE_STATUS, status); return false; }
+    char* headers = 0; size_t length = 0;
+    rc = sceHttpGetAllResponseHeaders(handles.req, &headers, &length);
+    if (rc < 0) { fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_HEADERS, rc); return false; }
+    peppyHttpRange::Metadata metadata;
+    if (!peppyHttpRange::parseHeaders(headers, length, &metadata) ||
+        !peppyHttpRange::matchesRange(metadata, first, last, total) ||
+        !peppyHttpRange::sameStrongEtag(seed, metadata)) return false;
+    int32_t type = -1; size_t bytes = 0;
+    rc = sceHttpGetResponseContentLength(handles.req, &type, &bytes);
+    if (rc < 0 || type != ORBIS_HTTP_CONTENTLEN_EXIST || bytes != last - first + 1) {
+        logCall(DOWNLOAD_STAGE_CONTENT_LENGTH, rc); return false;
+    }
+    return !cancelled();
+}
+int32_t parallelRead(void* value, void* buffer, size_t bytes) {
+    return sceHttpReadData(static_cast<HttpHandles*>(value)->req, buffer, static_cast<uint32_t>(bytes));
+}
+void parallelReadFailure(void* value, int32_t native, peppyParallelDownload::Failure* failure) {
+    int request = static_cast<HttpHandles*>(value)->req;
+    int32_t ssl = 0; uint32_t details = 0;
+    int32_t sslRc = peppyHttpsGetSslError(request, &ssl, &details);
+    int32_t network = 0;
+    if (sceHttpGetLastErrno(request, &network) < 0) network = networkErrno();
+    failure->category = static_cast<uint32_t>(native) == 0x80431073U ? DOWNLOAD_ERROR_RESPONSE_HEADERS :
+        sslRc == 0 && (ssl || details) ? DOWNLOAD_ERROR_TLS : DOWNLOAD_ERROR_NETWORK;
+    failure->where = DOWNLOAD_STAGE_READ; failure->native = native;
+    failure->network = network; failure->ssl = sslRc == 0 ? ssl : sslRc; failure->sslDetails = details;
+}
+bool parallelCancelled(void*) { return cancelled(); }
+void parallelAbort(void*) { abortRequests(); }
+void parallelProgress(void*, uint64_t bytes) { __atomic_add_fetch(&g_received, bytes, __ATOMIC_ACQ_REL); }
+int reportParallelFailure(const peppyParallelDownload::Failure& value) {
+    __atomic_store_n(&g_ssl, value.ssl, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_sslDetails, value.sslDetails, __ATOMIC_RELEASE);
+    return fail(value.category, value.where, value.native, value.network);
+}
+ParallelAttempt tryParallel(HttpHandles& primary, const char* url, uint64_t required,
+                            const char* partPath, const char* finalPath, int& result) {
+    result = 0;
+    char* headers = 0; size_t headerBytes = 0;
+    int32_t rc = sceHttpGetAllResponseHeaders(primary.req, &headers, &headerBytes);
+    peppyHttpRange::Metadata seed;
+    // A normal GET with no usable validator stays on its existing body stream.
+    if (rc < 0 || !peppyHttpRange::parseHeaders(headers, headerBytes, &seed) || !seed.hasStrongEtag)
+        return PARALLEL_KEEP_RESPONSE;
+    uint8_t packageHeader[PACKAGE_HEADER_BYTES]; size_t received = 0;
+    while (!cancelled() && received < PACKAGE_HEADER_BYTES) {
+        size_t requested = PACKAGE_HEADER_BYTES - received;
+        stage(DOWNLOAD_STAGE_READ);
+        rc = sceHttpReadData(primary.req, packageHeader + received, static_cast<uint32_t>(requested));
+        if (rc < 0) { result = transferError(primary.req, DOWNLOAD_STAGE_READ, rc); return PARALLEL_FINISHED; }
+        if (!rc || static_cast<size_t>(rc) > requested) {
+            result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, rc); return PARALLEL_FINISHED;
+        }
+        received += static_cast<size_t>(rc);
+    }
+    if (cancelled()) return PARALLEL_FINISHED;
+    if (!matchingBaseHeader(packageHeader, required)) {
+        result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0); return PARALLEL_FINISHED;
+    }
+    primary.closeRequest(true);
+    HttpHandles secondary(1);
+    if (initHttpContext(secondary, "peppy-range")) return PARALLEL_RESTART_SINGLE;
+    const uint64_t middle = required / 2;
+    if (!openRange(primary, url, 0, middle - 1, required, seed) ||
+        !openRange(secondary, url, middle, required - 1, required, seed)) {
+        primary.closeRequest(true); secondary.closeRequest(true);
+        return cancelled() ? PARALLEL_FINISHED : PARALLEL_RESTART_SINGLE;
+    }
+    stage(DOWNLOAD_STAGE_FILE_OPEN);
+    int fd = open(partPath, O_RDWR | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+        result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, errno);
+        primary.closeRequest(true); secondary.closeRequest(true); return PARALLEL_FINISHED;
+    }
+    peppyParallelDownload::Plan plan = {};
+    plan.fd = fd; plan.context = 0; plan.cancelled = parallelCancelled;
+    plan.abort = parallelAbort; plan.progress = parallelProgress;
+    plan.lanes[0] = {&primary, parallelRead, parallelReadFailure, 0, middle};
+    plan.lanes[1] = {&secondary, parallelRead, parallelReadFailure, middle, required - middle};
+    stage(DOWNLOAD_STAGE_READ);
+    peppyParallelDownload::Outcome outcome = peppyParallelDownload::run(plan);
+    primary.closeRequest(true); secondary.closeRequest(true);
+    // The helper returns only once every worker's last access has finished.
+    // Before any data thread started, setup failures can safely use one stream.
+    if (!outcome.started && !cancelled()) {
+        reportParallelFailure(outcome.failure);
+        if (close(fd) != 0) {
+            result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_CLOSE, errno);
+            removePartial(partPath); return PARALLEL_FINISHED;
+        }
+        if (!removePartial(partPath)) {
+            result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_CLEANUP, errno); return PARALLEL_FINISHED;
+        }
+        return PARALLEL_RESTART_SINGLE;
+    }
+    if (outcome.failure.category) result = reportParallelFailure(outcome.failure);
+    if (!result && !cancelled()) {
+        PeppyParallelFileInfo info = {};
+        int32_t statRc = peppyParallelFstat(fd, &info);
+        if (statRc) result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_PACKAGE, statRc);
+        else if (info.size < 0 || static_cast<uint64_t>(info.size) != required ||
+                 (info.mode & 0170000) != 0100000 ||
+                 __atomic_load_n(&g_received, __ATOMIC_ACQUIRE) != required)
+            result = fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_PACKAGE, 0);
+    }
+    if (!result && !cancelled()) {
+        // Verify the header actually assembled by the range responses too.
+        // The initial validator probe never substitutes for the published PKG.
+        stage(DOWNLOAD_STAGE_PACKAGE);
+        size_t offset = 0; unsigned interruptions = 0;
+        while (!result && !cancelled() && offset < PACKAGE_HEADER_BYTES) {
+            size_t count = PACKAGE_HEADER_BYTES - offset;
+            int64_t bytes = peppyParallelPread(fd, packageHeader + offset, count, static_cast<int64_t>(offset));
+            if (static_cast<uint32_t>(bytes) == 0x80020004U && interruptions++ < 8) continue;
+            if (bytes <= 0 || static_cast<uint64_t>(bytes) > count) {
+                result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_PACKAGE,
+                    bytes ? static_cast<int32_t>(bytes) : EIO); break;
+            }
+            interruptions = 0; offset += static_cast<size_t>(bytes);
+        }
+        if (!result && !cancelled() && !matchingBaseHeader(packageHeader, required))
+            result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0);
+    }
+    if (!result && !cancelled() && g_digest[0]) {
+        stage(DOWNLOAD_STAGE_HASH);
+        uint8_t* buffer = static_cast<uint8_t*>(malloc(READ_BUFFER_BYTES));
+        if (!buffer) result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_HASH, ENOMEM);
+        Sha256 hash; uint64_t offset = 0; unsigned interruptions = 0;
+        while (buffer && !result && !cancelled() && offset < required) {
+            size_t count = required - offset < READ_BUFFER_BYTES ? static_cast<size_t>(required - offset) : READ_BUFFER_BYTES;
+            int64_t bytes = peppyParallelPread(fd, buffer, count, static_cast<int64_t>(offset));
+            if (static_cast<uint32_t>(bytes) == 0x80020004U && interruptions++ < 8) continue;
+            if (bytes <= 0 || static_cast<uint64_t>(bytes) > count) {
+                result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_HASH, bytes ? static_cast<int32_t>(bytes) : EIO); break;
+            }
+            interruptions = 0;
+            hash.update(buffer, static_cast<size_t>(bytes)); offset += static_cast<uint64_t>(bytes);
+        }
+        if (!result && !cancelled()) {
+            uint8_t digest[32]; hash.finish(digest);
+            for (int i = 0; i < 32; ++i)
+                if (digest[i] != static_cast<uint8_t>((hex(g_digest[2*i]) << 4) | hex(g_digest[2*i+1])))
+                    result = fail(DOWNLOAD_ERROR_HASH, DOWNLOAD_STAGE_HASH, 0);
+        }
+        free(buffer);
+    }
+    if (!result && !cancelled() && fsync(fd) != 0)
+        result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_FLUSH, errno);
+    if (close(fd) != 0 && !result)
+        result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_CLOSE, errno);
+    if (!result) {
+        requestLock();
+        if (!cancelled()) {
+            if (rename(partPath, finalPath) != 0) result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_RENAME, errno);
+            else __atomic_store_n(&g_committed, 1, __ATOMIC_RELEASE);
+        }
+        requestUnlock();
+    }
+    if ((result || cancelled()) && !removePartial(partPath) && !result)
+        result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_CLEANUP, errno);
+    return PARALLEL_FINISHED;
 }
 
 int runTransfer() {
@@ -542,50 +796,17 @@ int runTransfer() {
     // Official OpenOrbis/Apollo and SSPI validate usable pool creation after
     // sceNetInit. Its original return is retained in the diagnostic log even
     // when a preexisting global network lets pool creation succeed.
-    stage(DOWNLOAD_STAGE_NET_POOL);
-    handles.net = sceNetPoolCreate("peppy-download", 1024 * 1024, 0);
-    if (handles.net < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_NET_POOL, handles.net, networkErrno());
-    logCall(DOWNLOAD_STAGE_NET_POOL, handles.net);
-    stage(DOWNLOAD_STAGE_SSL_INIT);
-    handles.ssl = sceSslInit(256 * 1024);
-    if (handles.ssl < 0) return fail(DOWNLOAD_ERROR_TLS, DOWNLOAD_STAGE_SSL_INIT, handles.ssl);
-    stage(DOWNLOAD_STAGE_HTTP_INIT);
-    handles.http = sceHttpInit(handles.net, handles.ssl, 1024 * 1024);
-    if (handles.http < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_HTTP_INIT, handles.http);
-    stage(DOWNLOAD_STAGE_TEMPLATE);
-    handles.tmpl = sceHttpCreateTemplate(handles.http, "PeppyStore/1.0", ORBIS_HTTP_VERSION_1_1, 0);
-    if (handles.tmpl < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_TEMPLATE, handles.tmpl);
-    int32_t rc;
-    // GitHub security and signed-release redirect headers exceed libSceHttp's
-    // small default. Configure a finite cap before connections inherit it;
-    // the redirect parser enforces the same cap independently.
-    stage(DOWNLOAD_STAGE_HEADER_LIMIT);
-    rc = peppyHttpSetResponseHeaderMaxSize(handles.tmpl, RESPONSE_HEADER_CAP);
-    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_HEADER_LIMIT, rc);
-    stage(DOWNLOAD_STAGE_TLS_OPTIONS);
-    rc = sceHttpsEnableOption(handles.tmpl, TLS_CHECKS);
-    if (rc < 0) return fail(DOWNLOAD_ERROR_TLS, DOWNLOAD_STAGE_TLS_OPTIONS, rc);
-    stage(DOWNLOAD_STAGE_REDIRECT_OPTION);
-    rc = peppyHttpSetAutoRedirect(handles.tmpl, 0);
-    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_REDIRECT_OPTION, rc);
-    stage(DOWNLOAD_STAGE_RESOLVE_TIMEOUT);
-    rc = sceHttpSetResolveTimeOut(handles.tmpl, 10000000);
-    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_RESOLVE_TIMEOUT, rc);
-    stage(DOWNLOAD_STAGE_CONNECT_TIMEOUT);
-    rc = sceHttpSetConnectTimeOut(handles.tmpl, 10000000);
-    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_CONNECT_TIMEOUT, rc);
-    stage(DOWNLOAD_STAGE_SEND_TIMEOUT);
-    rc = sceHttpSetSendTimeOut(handles.tmpl, 15000000);
-    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_SEND_TIMEOUT, rc);
-    stage(DOWNLOAD_STAGE_RECV_TIMEOUT);
-    rc = peppyHttpSetRecvTimeOut(handles.tmpl, 15000000);
-    if (rc < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_RECV_TIMEOUT, rc);
+    int32_t rc = initHttpContext(handles, "peppy-download");
+    if (rc) return rc;
 
     char current[URL_CAP], next[URL_CAP];
     memcpy(current, g_url, strlen(g_url) + 1);
     int status = 0;
     bool sourceResolved = false;
-    for (int hop = 0;; ++hop) {
+    bool parallelAttempted = false;
+    int redirects = 0;
+openResponse:
+    for (int hop = redirects;; ++hop) {
         if (cancelled()) return 0;
         stage(DOWNLOAD_STAGE_CONNECTION);
         handles.conn = sceHttpCreateConnectionWithURL(handles.tmpl, current, false);
@@ -593,7 +814,7 @@ int runTransfer() {
         stage(DOWNLOAD_STAGE_REQUEST);
         handles.req = sceHttpCreateRequestWithURL(handles.conn, ORBIS_METHOD_GET, current, 0);
         if (handles.req < 0) return fail(DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_REQUEST, handles.req);
-        publishRequest(handles.req);
+        publishRequest(handles.req, handles.slot);
         if (cancelled()) return 0;
         stage(DOWNLOAD_STAGE_REQUEST_HEADER);
         rc = sceHttpAddRequestHeader(handles.req, "Accept-Encoding", "identity", 0);
@@ -616,6 +837,7 @@ int runTransfer() {
             int sourceResult = resolveMediafire(handles.req, next);
             if (sourceResult || cancelled()) return sourceResult;
             sourceResolved = true;
+            ++redirects;
             handles.closeRequest();
             memcpy(current, next, strlen(next) + 1);
             continue;
@@ -633,6 +855,7 @@ int runTransfer() {
         if (!redirectUrl(current, responseHeaders, responseHeaderLength, next))
             return fail(DOWNLOAD_ERROR_REDIRECT, DOWNLOAD_STAGE_HEADERS, 0);
         handles.closeRequest();
+        ++redirects;
         memcpy(current, next, strlen(next) + 1);
     }
 
@@ -648,6 +871,21 @@ int runTransfer() {
     const uint64_t required = g_expected ? g_expected : responseLength;
     __atomic_store_n(&g_total, required, __ATOMIC_RELEASE);
     if (cancelled()) return 0;
+    if (!parallelAttempted && knownLength && required >= 32ULL * 1024 * 1024 &&
+        g_contentId[0] && archiveUrl(current)) {
+        parallelAttempted = true;
+        int parallelResult = 0;
+        ParallelAttempt attempt = tryParallel(handles, current, required, partPath, finalPath, parallelResult);
+        if (attempt == PARALLEL_FINISHED) return parallelResult;
+        if (attempt == PARALLEL_RESTART_SINGLE) {
+            handles.closeRequest(true);
+            if (cancelled()) return 0;
+            clearAttemptDiagnostics();
+            // Restart the already validated final URL, keeping the original
+            // redirect budget and never reusing a partially consumed body.
+            goto openResponse;
+        }
+    }
     stage(DOWNLOAD_STAGE_FILE_OPEN);
     struct TransferBuffers {
         uint8_t* read;
@@ -820,6 +1058,8 @@ void cancelDownload() {
         !__atomic_load_n(&g_committed, __ATOMIC_ACQUIRE)) {
         __atomic_store_n(&g_cancel, 1, __ATOMIC_RELEASE);
         int request = __atomic_load_n(&g_request, __ATOMIC_ACQUIRE);
+        if (request >= 0) sceHttpAbortRequest(request);
+        request = __atomic_load_n(&g_parallelRequest, __ATOMIC_ACQUIRE);
         if (request >= 0) sceHttpAbortRequest(request);
     }
     requestUnlock();
