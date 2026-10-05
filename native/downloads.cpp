@@ -464,10 +464,16 @@ int resolveMediafire(int request, char* next) {
     size_t used = 0;
     unsigned char chunk[16384];
     while (!cancelled()) {
-        rc = sceHttpReadData(request, chunk, sizeof(chunk));
+        // Content-Length frames the body independently of connection closure.
+        if (knownLength && used == declaredLength) break;
+        size_t remaining = capacity - used;
+        size_t requested = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+        // An unknown-length response still needs EOF, including at the cap.
+        if (!requested) requested = 1;
+        rc = sceHttpReadData(request, chunk, requested);
         if (rc < 0) return transferError(request, DOWNLOAD_STAGE_SOURCE_READ, rc);
         if (!rc) break;
-        if (static_cast<size_t>(rc) > sizeof(chunk) || static_cast<size_t>(rc) > capacity - used)
+        if (static_cast<size_t>(rc) > requested || static_cast<size_t>(rc) > remaining)
             return fail(DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_READ, 0);
         memcpy(html.text + used, chunk, static_cast<size_t>(rc));
         used += static_cast<size_t>(rc);
@@ -669,11 +675,18 @@ int runTransfer() {
     size_t packageHeaderCount = 0;
     Sha256 hash;
     while (!result && !cancelled()) {
+        // A verified Content-Length completes the HTTP body at this byte count;
+        // waiting for a further EOF can time out after a complete download.
+        if (knownLength && received == responseLength) break;
+        uint64_t remaining = required - received;
+        size_t requested = remaining < READ_BUFFER_BYTES ? static_cast<size_t>(remaining) : READ_BUFFER_BYTES;
+        // Without HTTP framing, the catalog length alone does not prove EOF.
+        if (!requested) requested = 1;
         stage(DOWNLOAD_STAGE_READ);
-        int32_t got = sceHttpReadData(handles.req, buffer, READ_BUFFER_BYTES);
+        int32_t got = sceHttpReadData(handles.req, buffer, requested);
         if (got < 0) { result = transferError(handles.req, DOWNLOAD_STAGE_READ, got); break; }
         if (got == 0) break;
-        if ((size_t)got > READ_BUFFER_BYTES || (uint64_t)got > required - received) {
+        if ((size_t)got > requested || (uint64_t)got > remaining) {
             result = fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_READ, got); break;
         }
         for (int32_t i = 0; i < got && magicCount < 4; ++i) magic[magicCount++] = buffer[i];

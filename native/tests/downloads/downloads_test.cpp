@@ -23,6 +23,7 @@ static int contentLengthCalls=0;
 static const int32_t LARGE_READ_ERROR=(int32_t)0x80431ff0U;
 static const int MODE_MEDIAFIRE = 32;
 static const int32_t SOURCE_NATIVE_ERROR = (int32_t)0x80431fe0U;
+static const int32_t EOF_TIMEOUT_ERROR = (int32_t)0x80431068U;
 static const size_t SOURCE_BODY_LIMIT = 1024 * 1024;
 static const char* SOURCE_PAGE_URL = "https://www.mediafire.com/file/ABC123/sample.pkg/file";
 static const char* SOURCE_CDN_URL = "https://download2392.mediafire.com/token/sample.pkg?key=a&part=b";
@@ -34,13 +35,14 @@ struct SourceResponse {
     int status, statusRc, sendRc, headersRc, lengthRc, lengthType, readRc, sslCode;
     uint32_t sslDetail;
     uint64_t length;
-    size_t readFailureAfter, blockAfter, fragment;
-    bool page, overrideLength;
+    size_t readFailureAfter, blockAfter, fragment, oversizedReadAfter;
+    std::vector<uint32_t> readRequests;
+    bool page, overrideLength, cancelOnCompleteRead;
     SourceResponse(const char* expectedUrl, bool sourcePage = false)
         : url(expectedUrl), status(200), statusRc(0), sendRc(0), headersRc(0), lengthRc(0),
           lengthType(ORBIS_HTTP_CONTENTLEN_EXIST), readRc(0), sslCode(0),
           sslDetail(0), length(0), readFailureAfter(SIZE_MAX), blockAfter(SIZE_MAX),
-          fragment(3), page(sourcePage), overrideLength(false) {}
+          fragment(3), oversizedReadAfter(SIZE_MAX), page(sourcePage), overrideLength(false), cancelOnCompleteRead(false) {}
 };
 static std::vector<SourceResponse> sourceResponses;
 static std::vector<std::string> sourceRequestUrls;
@@ -136,16 +138,19 @@ extern "C" int32_t sceHttpSendRequest(int32_t,const void*,size_t){assert(secure&
 extern "C" int32_t sceHttpGetStatusCode(int32_t,int32_t* out){if(mode==MODE_MEDIAFIRE){*out=sourceResponse().status;return sourceResponse().statusRc;}*out=((mode==1||mode==28)&&requests==1)||mode==2||mode==8?302:mode==3?404:200;return 0;}
 extern "C" int32_t sceHttpGetLastErrno(int32_t,int32_t* out){*out=mode==29?(int32_t)0x80431073:netError;return 0;}
 extern "C" int32_t sceHttpGetAllResponseHeaders(int32_t,char** out,size_t* n){static char good[]="HTTP/1.1 302 Found\r\nLocation: https://release-assets.githubusercontent.com/file.pkg?token=abc\r\n\r\n";static char evil[]="Location: https://github.com.evil.example/file.pkg\r\n";static char empty[]="";static std::string large;if(mode==MODE_MEDIAFIRE){SourceResponse& response=sourceResponse();std::string& headers=response.headers;*out=headers.empty()?empty:&headers[0];*n=headers.size();return response.headersRc;}if(mode==28){large=std::string(good)+"X-Security: "+std::string(8000,'a')+"\r\n";*out=&large[0];*n=large.size();}else{*out=mode==2?evil:good;*n=strlen(*out);}return 0;}
-extern "C" int32_t sceHttpGetResponseContentLength(int32_t,int32_t* type,size_t* n){++contentLengthCalls;if(mode==MODE_MEDIAFIRE){SourceResponse& value=sourceResponse();*type=value.lengthType;*n=(size_t)(value.overrideLength?value.length:value.body.size());return value.lengthRc;}*type=mode==14?1:ORBIS_HTTP_CONTENTLEN_EXIST;*n=advertisedLength?(size_t)advertisedLength:mode==9||mode==10?8:payload.size()+(mode==4?1:0);return 0;}
+extern "C" int32_t sceHttpGetResponseContentLength(int32_t,int32_t* type,size_t* n){++contentLengthCalls;if(mode==MODE_MEDIAFIRE){SourceResponse& value=sourceResponse();*type=value.lengthType;*n=(size_t)(value.overrideLength?value.length:value.body.size());return value.lengthRc;}*type=mode==14||mode==10?1:ORBIS_HTTP_CONTENTLEN_EXIST;*n=advertisedLength?(size_t)advertisedLength:mode==9||mode==10?8:payload.size()+(mode==4?1:0);return 0;}
 extern "C" int32_t sceHttpReadData(int32_t,void* out,uint32_t max){
     if(mode==MODE_MEDIAFIRE){
         SourceResponse& value=sourceResponse();
+        value.readRequests.push_back(max);
         if(value.page){
             ++sourceReadCalls;
             assert(downloadSnapshot().received==0);
             assert(access(outputPath(true).c_str(),F_OK)!=0);
         }else{++packageReadCalls;if(max>packageMaxReadRequest)packageMaxReadRequest=max;}
         if(sourceCursor>=value.blockAfter){blocked=true;while(!aborted.load()&&!releaseRead.load())sceKernelUsleep(1000);if(aborted.load())return -1;value.blockAfter=SIZE_MAX;}
+        // Report an impossible byte count without writing beyond the native buffer.
+        if(sourceCursor>=value.oversizedReadAfter)return (int32_t)max+1;
         if(sourceCursor>=value.readFailureAfter)return value.readRc;
         if(sourceCursor==value.body.size())return 0;
         size_t n=value.body.size()-sourceCursor;
@@ -154,6 +159,7 @@ extern "C" int32_t sceHttpReadData(int32_t,void* out,uint32_t max){
         memcpy(out,value.body.data()+sourceCursor,n);sourceCursor+=n;
         if(value.page)sourceBytes+=n;
         else{++packageDataReads;if(n>packageMaxReadBytes)packageMaxReadBytes=n;}
+        if(value.cancelOnCompleteRead&&sourceCursor==value.body.size())cancelDownload();
         return (int32_t)n;
     }
     if(cursor==payload.size())return mode==31?LARGE_READ_ERROR:0;
@@ -252,7 +258,7 @@ void sourceBodyTests(const DownloadSpec& spec) {
     assert(startDownload(spec));
     DownloadSnapshot value = finished();
     assert(value.state == DONE && value.received == 8 && value.total == 8);
-    assert(requests == 2 && contentLengthCalls == 2 && sourceReadCalls > 2 && packageReadCalls == 4);
+    assert(requests == 2 && contentLengthCalls == 2 && sourceReadCalls > 2 && packageReadCalls == 3);
     assert(sourceRequestUrls[0] == SOURCE_PAGE_URL && sourceRequestUrls[1] == SOURCE_CDN_URL);
     assert(sourceBytes == sourceResponses[0].body.size() && templateCreates == 1 && tlsEnables == 1);
     cleanHandles();
@@ -302,8 +308,9 @@ void sourceBodyTests(const DownloadSpec& spec) {
     sourceResponses[0].length = sourceResponses[0].body.size() + 1;
     checkSourceFailure(spec, DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_READ);
     resetSource(); sourceResponses[0].overrideLength = true;
-    sourceResponses[0].length = sourceResponses[0].body.size() - 1;
-    checkSourceFailure(spec, DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_READ);
+    sourceResponses[0].length = sourceAnchor().find("href=") + 12;
+    // Content-Length frames a prefix ending inside the href, so parsing fails.
+    checkSourceFailure(spec, DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_PARSE);
 
     resetSource(); sourceResponses[0].blockAfter = 3;
     seedPrevious(); assert(startDownload(spec));
@@ -412,7 +419,7 @@ void sourceIntegrityTests(DownloadSpec spec) {
     assert(value.received == 5 && requests == 2); cleanHandles(); checkPrevious();
 
     resetSource(); sourceResponses[1].body.resize(11, 'x'); sourceResponses[1].overrideLength = true;
-    sourceResponses[1].length = 8;
+    sourceResponses[1].length = 8; sourceResponses[1].lengthType = 1;
     seedPrevious(); assert(startDownload(spec)); value = finished();
     assert(value.errorCode == DOWNLOAD_ERROR_LENGTH && value.stage == DOWNLOAD_STAGE_READ);
     assert(value.received <= 8 && requests == 2); cleanHandles(); checkPrevious();
@@ -1067,7 +1074,7 @@ void packageBufferThroughputTests() {
         seedPrevious(); assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
         assert(value.received == bytes && value.total == bytes && sourceCursor == bytes);
         assert(packageMaxReadRequest == BUFFER_TEST_BYTES && packageMaxReadBytes == BUFFER_TEST_BYTES);
-        assert(packageDataReads == 4 && packageReadCalls == 5 && packageDataReads < baselineDataReads);
+        assert(packageDataReads == 4 && packageReadCalls == 4 && packageDataReads < baselineDataReads);
         assert(packageMallocCalls == 2 && packageSetvbufCalls == 1 && packageBufferLifetimeChecks == 1);
         assert(!trackedPackageFile && !trackedStdioBuffer); cleanHandles();
         if (integrity == 2) {
@@ -1077,6 +1084,110 @@ void packageBufferThroughputTests() {
             assert(value.state == DONE); checkPackageOutput(payload);
         }
     }
+}
+
+void knownLengthCompletionTests() {
+    const size_t bytes = CID_TEST_HEADER + 5; // A final two-byte fragment.
+    for (int integrity : { 0, 1, 2 }) {
+        reset(MODE_MEDIAFIRE); payload = contentIdPackage(bytes);
+        SourceResponse response = sourcePackage(CID_GITHUB_URL);
+        response.readFailureAfter = bytes; response.readRc = EOF_TIMEOUT_ERROR;
+        sourceResponses.push_back(response);
+        DownloadSpec spec = binarySourceSpec(CID_GITHUB_URL, bytes);
+        std::string digest;
+        if (integrity == 1) {
+            digest = hashText(std::string((char*)payload.data(), payload.size())); spec.sha256 = digest.c_str();
+        } else if (integrity == 2) {
+            spec.sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+        }
+        seedPrevious(); assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
+        assert(value.received == bytes && value.total == bytes);
+        const std::vector<uint32_t>& limits = sourceResponses[0].readRequests;
+        assert(limits.size() == (bytes + 2) / 3 && packageReadCalls == packageDataReads);
+        size_t remaining = bytes;
+        for (uint32_t requested : limits) {
+            assert(requested == remaining); remaining -= remaining < 3 ? remaining : 3;
+        }
+        assert(!remaining && limits.back() == 2); cleanHandles();
+        if (integrity == 2) {
+            assert(value.state == FAILED && value.errorCode == DOWNLOAD_ERROR_HASH && value.stage == DOWNLOAD_STAGE_HASH);
+            checkPrevious();
+        } else { assert(value.state == DONE); checkPackageOutput(payload); }
+    }
+    resetBinarySource(CID_GITHUB_URL, CID_TEST_VALUE);
+    sourceResponses[0].readFailureAfter = 3; sourceResponses[0].readRc = EOF_TIMEOUT_ERROR;
+    netError = EOF_TIMEOUT_ERROR;
+    checkBinaryFailure(binarySourceSpec(CID_GITHUB_URL), CID_TEST_VALUE,
+                       DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_READ, EOF_TIMEOUT_ERROR);
+    assert(downloadSnapshot().received == 3 && downloadSnapshot().networkCode == EOF_TIMEOUT_ERROR);
+
+    // Larger reads retain their 256 KiB cap and request only the final remainder.
+    reset(MODE_MEDIAFIRE); payload = contentIdPackage(BUFFER_TEST_BYTES + 7);
+    SourceResponse response = sourcePackage(CID_GITHUB_URL); response.fragment = SIZE_MAX;
+    response.readFailureAfter = payload.size(); response.readRc = EOF_TIMEOUT_ERROR;
+    sourceResponses.push_back(response); DownloadSpec spec = binarySourceSpec(CID_GITHUB_URL, payload.size());
+    assert(startDownload(spec, CID_TEST_VALUE)); assert(finished().state == DONE);
+    assert(sourceResponses[0].readRequests.size() == 2 && packageReadCalls == 2);
+    assert(sourceResponses[0].readRequests[0] == BUFFER_TEST_BYTES && sourceResponses[0].readRequests[1] == 7);
+    cleanHandles(); checkPackageOutput(payload);
+
+    // A cancellation delivered by the final native read still precedes commit.
+    resetBinarySource(CID_GITHUB_URL, CID_TEST_VALUE); sourceResponses[0].cancelOnCompleteRead = true;
+    seedPrevious(); spec = binarySourceSpec(CID_GITHUB_URL);
+    assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
+    assert(value.state == CANCELLED && aborted.load() && value.received == CID_TEST_HEADER);
+    assert(packageReadCalls == (CID_TEST_HEADER + 2) / 3); cleanHandles(); checkPrevious();
+}
+void unknownLengthCompletionTests() {
+    const size_t bytes = 1024 * 1024;
+    for (int ending : { 0, 1, 2 }) {
+        reset(MODE_MEDIAFIRE); payload = contentIdPackage(bytes);
+        SourceResponse response = sourcePackage(CID_GITHUB_URL);
+        response.fragment = SIZE_MAX; response.lengthType = 1;
+        if (ending == 1) response.body.push_back('x');
+        if (ending == 2) {
+            response.readFailureAfter = bytes; response.readRc = EOF_TIMEOUT_ERROR; netError = EOF_TIMEOUT_ERROR;
+        }
+        sourceResponses.push_back(response); DownloadSpec spec = binarySourceSpec(CID_GITHUB_URL, bytes);
+        seedPrevious(); assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
+        assert(value.received == bytes && value.total == bytes && packageReadCalls == 5);
+        assert(sourceResponses[0].readRequests.back() == 1); cleanHandles();
+        if (!ending) {
+            assert(value.state == DONE && packageDataReads == 4); checkPackageOutput(payload);
+        } else {
+            assert(value.state == FAILED && value.stage == DOWNLOAD_STAGE_READ); checkPrevious();
+            if (ending == 1) assert(value.errorCode == DOWNLOAD_ERROR_LENGTH && value.nativeCode == 1);
+            else assert(value.errorCode == DOWNLOAD_ERROR_NETWORK && value.nativeCode == EOF_TIMEOUT_ERROR &&
+                        value.networkCode == EOF_TIMEOUT_ERROR);
+        }
+    }
+}
+void sourceFramingCompletionTests() {
+    resetSource(); payload = contentIdPackage(); sourceResponses[1].body = payload;
+    const std::string html = sourceAnchor();
+    const std::string framed = html + "bytes outside this response";
+    sourceResponses[0].body.assign(framed.begin(), framed.end());
+    sourceResponses[0].overrideLength = true; sourceResponses[0].length = html.size();
+    sourceResponses[0].readFailureAfter = html.size(); sourceResponses[0].readRc = EOF_TIMEOUT_ERROR;
+    sourceResponses[1].readFailureAfter = payload.size(); sourceResponses[1].readRc = EOF_TIMEOUT_ERROR;
+    DownloadSpec spec = binarySourceSpec(SOURCE_PAGE_URL);
+    std::string digest = hashText(std::string((char*)payload.data(), payload.size())); spec.sha256 = digest.c_str();
+    assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
+    assert(value.state == DONE && value.received == CID_TEST_HEADER && sourceBytes == html.size());
+    const uint32_t tail = (uint32_t)(html.size() % 3 ? html.size() % 3 : 3);
+    assert(sourceResponses[0].readRequests.back() == tail); cleanHandles(); checkPackageOutput(payload);
+
+    resetSource(); sourceResponses[0].lengthType = 1;
+    sourceResponses[0].readFailureAfter = sourceResponses[0].body.size(); sourceResponses[0].readRc = EOF_TIMEOUT_ERROR;
+    DownloadSpec small = { SOURCE_PAGE_URL, "sample.pkg", 8, 0 };
+    checkSourceFailure(small, DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_SOURCE_READ, EOF_TIMEOUT_ERROR);
+
+    resetBinarySource(CID_GITHUB_URL, CID_TEST_VALUE); sourceResponses[0].oversizedReadAfter = 0;
+    checkBinaryFailure(binarySourceSpec(CID_GITHUB_URL), CID_TEST_VALUE,
+                       DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_READ, (int32_t)CID_TEST_HEADER + 1);
+    assert(downloadSnapshot().received == 0 && packageReadCalls == 1 && !packageDataReads);
+    resetSource(); sourceResponses[0].oversizedReadAfter = 0;
+    checkSourceFailure(small, DOWNLOAD_ERROR_SOURCE, DOWNLOAD_STAGE_SOURCE_READ);
 }
 
 void largePackageTests(DownloadSpec& spec) {
@@ -1172,6 +1283,9 @@ int main(){
  pinnedItemzflowMirrorTests();
  packageBufferFailureTests();
  packageBufferThroughputTests();
+ knownLengthCompletionTests();
+ unknownLengthCompletionTests();
+ sourceFramingCompletionTests();
  spec.filename="../sample.pkg";assert(!startDownload(spec));assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC);
  FILE* log=fopen((std::string(testDirectory())+"/download.log").c_str(),"rb");assert(log);char logged[8192]={0};size_t loggedBytes=fread(logged,1,sizeof(logged)-1,log);assert(loggedBytes>0&&!ferror(log));assert(__real_fclose(log)==0);assert(!strstr(logged,"https://")&&!strstr(logged,"token="));
  unlink(outputPath().c_str());unlink((std::string(testDirectory())+"/download.log").c_str());rmdir(testDirectory());

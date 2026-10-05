@@ -48,6 +48,19 @@ caso a comparação continua obrigatória. Isso reduz trabalho sem remover as
 verificações de tamanho, identidade e tipo. Não foi medida a velocidade real
 de transferência no PS4. Os testes de pacotes grandes usam respostas simuladas
 e arquivos esparsos, sem comprovar uma transferência completa no console.
+
+Quando o HTTP informa `Content-Length`, esse tamanho precisa coincidir com
+o tamanho do catálogo. A leitura termina assim que recebe essa quantidade,
+sem esperar outra leitura ou o fechamento da conexão. Content ID, tipo/flags,
+tamanho e SHA-256 disponível continuam sendo verificados antes de publicar
+o arquivo e iniciar a instalação. A leitura extra após 100% podia retornar
+o timeout `0x80431068` e descartar uma transferência já completa.
+Respostas sem tamanho HTTP conhecido ainda precisam terminar por EOF e
+recusam bytes além do tamanho esperado. A mesma regra de conclusão pelo
+tamanho declarado vale para a página MediaFire, com limite de 1 MiB.
+Esse comportamento segue o [RFC 9112, §6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3)
+e é coberto por respostas simuladas; o teste final continua sendo no PS4.
+
 O instalador abre os arquivos com `O_NOFOLLOW` e verifica o descritor com
 `sceKernelFstat`, usando a estrutura nativa de 120 bytes. A chamada `lstat`
 da biblioteca musl para PS4 não está implementada

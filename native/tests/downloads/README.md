@@ -37,6 +37,16 @@ the common 256 GiB limit and UINT64_MAX are rejected at their proper stages.
 Production download and installation bounds share `package_limits.h` and
 require 64-bit file offsets and native response lengths.
 
+The end-of-body regression injects HTTP timeout `0x80431068` only on a read
+after the complete declared body. A matching, known HTTP Content-Length
+must finish without that read and still pass Content ID, package type/flags,
+size, optional SHA-256, flush and close checks. Reads are bounded by the
+remaining body bytes. Unknown HTTP lengths still require EOF: an extra byte
+or timeout while checking the ending must fail and preserve the previous
+completed package. Early EOF and timeout before the declared length remain
+failures. MediaFire HTML with a known length follows the same HTTP framing
+rule, while unknown-length HTML retains its size cap and ending check.
+
 MediaFire integration cases distinguish the original `/file/<id>/<name>/file`
 page from the resolved `download<digits>.mediafire.com` HTTPS request. They
 read both HTML and PKG in three-byte fragments, decode `&amp;` in the quoted
