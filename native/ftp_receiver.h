@@ -1,7 +1,15 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 
 enum FtpReceiveKind { FTP_BASE=0, FTP_UPDATE=1, FTP_DLC=2 };
+
+struct FtpInboxItem {
+    int kind;
+    uint64_t bytes;
+    char name[96];
+    char path[256];
+};
 
 struct FtpReceiverSnapshot {
     bool running;
@@ -20,3 +28,7 @@ struct FtpReceiverSnapshot {
 bool ftpReceiverStart();
 void ftpReceiverStop();
 FtpReceiverSnapshot ftpReceiverSnapshot();
+
+// Enumerates completed PKGs in /data/peppy-store/inbox/{base,update,dlc}.
+// Partial .part uploads are never exposed to the installer.
+int ftpInboxList(FtpInboxItem* items, int capacity);
