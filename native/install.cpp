@@ -547,8 +547,8 @@ int runInstall() {
         int32_t isApp = -1;
         rc = sceAppInstUtilGetTitleIdFromPkg(systemPath, parsedTitleId, &isApp);
         if (rc) return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, rc);
-        if (!validTitleId(parsedTitleId) || (isApp != 0 && isApp != 1) ||
-            strcmp(parsedTitleId, titleId))
+        bool appFlagOk = packageKind == 0 ? isApp == 1 : (isApp == 0 || isApp == 1);
+        if (!validTitleId(parsedTitleId) || !appFlagOk || strcmp(parsedTitleId, titleId))
             return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
     }
     if (!strcmp(titleId, PEPPY_TITLE_ID))
