@@ -10,7 +10,7 @@ TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
 INTDIR := build
 
-CPPFILES := boot_test.cpp downloads.cpp install.cpp pkg_server.cpp goldhen_bridge.cpp music.cpp
+CPPFILES := boot_test.cpp downloads.cpp install.cpp pkg_server.cpp goldhen_bridge.cpp music.cpp ftp_receiver.cpp
 OBJS := $(CPPFILES:%.cpp=$(INTDIR)/%.o)
 MUSIC_ASSETS := assets/music/fight.wav assets/music/acendaofarol.wav
 
@@ -68,14 +68,14 @@ $(MUSIC_ASSETS): ../fight-ps4.mp3 ../acendaofarol-ps4.mp3 scripts/prepare-music.
 # Both tracks are prepared together; serialize the packaging prerequisites.
 .NOTPARALLEL: pkg.gp4
 
-$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h catalog_search.h downloads.h download_meter.h install.h music.h
+$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h catalog_search.h downloads.h download_meter.h install.h music.h ftp_receiver.h
 archive_sources.h: archive_sources.json scripts/archive_policy.py
 	python3 scripts/archive_policy.py --policy archive_sources.json --output $@
 
 $(INTDIR)/downloads.o: downloads.h package_limits.h mediafire_source.h archive_sources.h http_range.h parallel_download.h
 $(INTDIR)/install.o: install.h pkg_server.h package_limits.h
 $(INTDIR)/pkg_server.o: pkg_server.h
-$(INTDIR)/music.o: music.h
+$(INTDIR)/music.o: music.h\n$(INTDIR)/ftp_receiver.o: ftp_receiver.h
 $(INTDIR)/goldhen_bridge.o: third_party/goldhen/GoldHEN.h
 
 $(INTDIR)/%.o: %.cpp
