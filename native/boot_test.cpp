@@ -15,7 +15,8 @@
 #include "downloads.h"
 #include "download_meter.h"
 #include "install.h"
-#include "music.h"\n#ifndef PEPPY_UI_PREVIEW
+#include "music.h"
+#ifndef PEPPY_UI_PREVIEW
 #include "ftp_receiver.h"
 #endif
 
