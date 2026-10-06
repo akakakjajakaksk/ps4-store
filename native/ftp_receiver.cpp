@@ -11,6 +11,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <errno.h>
 
 namespace {
 
@@ -18,7 +21,7 @@ const uint16_t CONTROL_PORT = 2121;
 const uint16_t PASSIVE_FIRST = 2122;
 const uint16_t PASSIVE_LAST = 2141;
 const size_t LINE_CAP = 512;
-const size_t IO_CAP = 64 * 1024;
+const size_t IO_CAP = 256 * 1024;
 
 struct SocketAddress {
     uint8_t length;
@@ -41,6 +44,23 @@ static int32_t g_listener = -1;
 static int32_t g_control = -1;
 static int32_t g_dataListener = -1;
 static int32_t g_data = -1;
+static char g_ioBuffer[IO_CAP];
+
+struct PeppyFileInfo {
+    uint32_t st_dev, st_ino;
+    uint16_t st_mode, st_nlink;
+    uint32_t st_uid, st_gid, st_rdev;
+    int64_t accessTime[2], modificationTime[2], changeTime[2];
+    int64_t st_size, st_blocks;
+    int32_t st_blksize;
+    uint32_t st_flags, st_gen;
+    int32_t st_lspare;
+    int64_t birthTime[2];
+};
+static_assert(sizeof(PeppyFileInfo) == 120 &&
+              offsetof(PeppyFileInfo, st_size) == 72,
+              "PS4 native file metadata ABI");
+extern "C" int32_t peppyFtpFstat(int32_t, PeppyFileInfo*) __asm__("sceKernelFstat");
 
 static char lowerAscii(char c) {
     return (c >= 'A' && c <= 'Z') ? char(c + ('a' - 'A')) : c;
@@ -290,16 +310,14 @@ static bool receivePackage(int32_t dataFd, int kind, const char* name,
 
     bool ok = true;
     bytes = 0;
-    char buffer[IO_CAP];
-
     while (!g_stop) {
-        int32_t n = sceNetRecv(dataFd, buffer, sizeof(buffer), 0);
+        int32_t n = sceNetRecv(dataFd, g_ioBuffer, sizeof(g_ioBuffer), 0);
         if (n == 0) break;
-        if (n < 0 || size_t(n) > sizeof(buffer)) {
+        if (n < 0 || size_t(n) > sizeof(g_ioBuffer)) {
             ok = false;
             break;
         }
-        if (fwrite(buffer, 1, size_t(n), f) != size_t(n)) {
+        if (fwrite(g_ioBuffer, 1, size_t(n), f) != size_t(n)) {
             ok = false;
             break;
         }
@@ -320,6 +338,89 @@ static bool receivePackage(int32_t dataFd, int kind, const char* name,
 
     if (!ok) remove(tempPath);
     return ok;
+}
+
+static bool inboxFileSize(const char* path, uint64_t& bytes) {
+    bytes = 0;
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return false;
+
+    PeppyFileInfo info = {};
+    int rc = peppyFtpFstat(fd, &info);
+    int closeRc = close(fd);
+    if (rc != 0 || closeRc != 0 || !S_ISREG(info.st_mode) || info.st_size <= 0)
+        return false;
+
+    bytes = uint64_t(info.st_size);
+    return true;
+}
+
+static int appendInboxKind(FtpInboxItem* items, int count, int capacity, int kind) {
+    if (!items || capacity <= 0 || count >= capacity) return count;
+
+    char directory[160];
+    int length = snprintf(directory, sizeof(directory),
+                          "/data/peppy-store/inbox/%s", kindName(kind));
+    if (length <= 0 || size_t(length) >= sizeof(directory)) return count;
+
+    DIR* dir = opendir(directory);
+    if (!dir) return count;
+
+    while (count < capacity) {
+        dirent* entry = readdir(dir);
+        if (!entry) break;
+
+        const char* name = entry->d_name;
+        if (!safeName(name)) continue;
+
+        char path[256];
+        int used = snprintf(path, sizeof(path), "%s/%s", directory, name);
+        if (used <= 0 || size_t(used) >= sizeof(path)) continue;
+
+        uint64_t bytes = 0;
+        if (!inboxFileSize(path, bytes)) continue;
+
+        FtpInboxItem& item = items[count++];
+        item.kind = kind;
+        item.bytes = bytes;
+        snprintf(item.name, sizeof(item.name), "%s", name);
+        snprintf(item.path, sizeof(item.path), "%s", path);
+    }
+
+    closedir(dir);
+    return count;
+}
+
+static void sortInbox(FtpInboxItem* items, int count) {
+    if (!items || count <= 1) return;
+
+    for (int i = 1; i < count; ++i) {
+        FtpInboxItem value = items[i];
+        int j = i - 1;
+        while (j >= 0) {
+            bool after = items[j].kind > value.kind ||
+                         (items[j].kind == value.kind &&
+                          strcmp(items[j].name, value.name) > 0);
+            if (!after) break;
+            items[j + 1] = items[j];
+            --j;
+        }
+        items[j + 1] = value;
+    }
+}
+
+static void sendInboxListing(int32_t dataFd, int kind) {
+    FtpInboxItem items[64];
+    int count = appendInboxKind(items, 0, 64, kind);
+    sortInbox(items, count);
+
+    for (int i = 0; i < count && !g_stop; ++i) {
+        char line[320];
+        snprintf(line, sizeof(line),
+                 "-rw-r--r-- 1 peppy peppy %llu Jan 01 00:00 %s\r\n",
+                 (unsigned long long)items[i].bytes, items[i].name);
+        if (!sendAll(dataFd, line)) break;
+    }
 }
 
 static void refreshConfiguredIp() {
@@ -501,6 +602,8 @@ static void* worker(void*) {
                             "drwxr-xr-x 1 peppy peppy 0 Jan 01 00:00 base\r\n"
                             "drwxr-xr-x 1 peppy peppy 0 Jan 01 00:00 update\r\n"
                             "drwxr-xr-x 1 peppy peppy 0 Jan 01 00:00 dlc\r\n");
+                } else {
+                    sendInboxListing(dataFd, cwdKind);
                 }
 
                 closeSocket(g_data);
@@ -584,4 +687,16 @@ void ftpReceiverStop() {
 
 FtpReceiverSnapshot ftpReceiverSnapshot() {
     return g;
+}
+
+int ftpInboxList(FtpInboxItem* items, int capacity) {
+    if (!items || capacity <= 0) return 0;
+
+    ensureInbox();
+    int count = 0;
+    count = appendInboxKind(items, count, capacity, FTP_BASE);
+    count = appendInboxKind(items, count, capacity, FTP_UPDATE);
+    count = appendInboxKind(items, count, capacity, FTP_DLC);
+    sortInbox(items, count);
+    return count;
 }
