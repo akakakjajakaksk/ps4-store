@@ -15,7 +15,7 @@
 #include "downloads.h"
 #include "download_meter.h"
 #include "install.h"
-#include "music.h"
+#include "music.h"\n#include "ftp_receiver.h"
 
 static const int W = 1920, H = 1080;
 static const uint32_t BG = 0x800B0F17, PANEL = 0x80131925;
@@ -871,7 +871,7 @@ int main(void){
   userRc=sceUserServiceInitialize(&usp);
   if(userRc==0) userRc=sceUserServiceGetInitialUser(&userId);
  }
- musicStart(userId);
+ musicStart(userId);\n ftpReceiverStart();
  int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
  int32_t padInit=(padModule>=0)?scePadInit():padModule;
  int32_t pad=(padInit==0 && userRc==0)?scePadOpen(userId,0,0,0):-1;
