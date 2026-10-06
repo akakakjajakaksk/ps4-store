@@ -34,6 +34,27 @@ static uint64_t downloadedBytes[UI_APP_COUNT] = {};
 static bool installedApps[UI_APP_COUNT] = {};
 static DownloadMeter downloadMeter;
 
+#ifndef PEPPY_UI_PREVIEW
+static const int FTP_INBOX_CAPACITY = 128;
+static FtpInboxItem ftpInboxItems[FTP_INBOX_CAPACITY];
+static int ftpInboxCount = 0;
+static int ftpInboxSelected = 0;
+static bool ftpInboxOpen = false;
+static uint32_t ftpInboxInstallGeneration = 0;
+static char ftpInboxInstallName[96] = {};
+static int ftpInboxInstallKind = -1;
+
+static bool refreshFtpInbox() {
+    int previousCount = ftpInboxCount;
+    ftpInboxCount = ftpInboxList(ftpInboxItems, FTP_INBOX_CAPACITY);
+    if (ftpInboxCount < 0) ftpInboxCount = 0;
+    if (ftpInboxSelected >= ftpInboxCount)
+        ftpInboxSelected = ftpInboxCount ? ftpInboxCount - 1 : 0;
+    if (ftpInboxSelected < 0) ftpInboxSelected = 0;
+    return ftpInboxCount != previousCount;
+}
+#endif
+
 static uint64_t downloadNowUs() {
 #ifdef PEPPY_UI_PREVIEW
     return previewNowUs();
