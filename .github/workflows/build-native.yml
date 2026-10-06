@@ -11,6 +11,9 @@ on:
       - "acendaofarol-ps4.mp3"
       - ".github/workflows/build-native.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -201,3 +204,19 @@ jobs:
           name: peppy-store-native-ps4
           path: native/IV0000-BREW00001_00-ORBISSTORE000001.pkg
           if-no-files-found: error
+
+      - name: Publish Peppy Store GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.0"
+          PKG="native/IV0000-BREW00001_00-ORBISSTORE000001.pkg"
+          test -f "$PKG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$PKG" --clobber
+          else
+            gh release create "$TAG" "$PKG" \
+              --target "$GITHUB_SHA" \
+              --title "Peppy Store v1.0.0" \
+              --notes "Peppy Store para PS4. Build nativa validada pelo pipeline. Inclui navegador de PKGs recebidos via FTP para arquivos próprios, homebrew e conteúdo autorizado."
+          fi
