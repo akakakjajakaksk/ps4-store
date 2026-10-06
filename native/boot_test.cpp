@@ -945,6 +945,180 @@ static void drawDetails(uint32_t* p, int selected) {
 }
 
 #ifndef PEPPY_UI_PREVIEW
+static const char* ftpKindLabel(int kind) {
+    if (kind == FTP_UPDATE) return "UPDATE";
+    if (kind == FTP_DLC) return "DLC";
+    return "BASE";
+}
+
+static uint32_t ftpKindColor(int kind) {
+    if (kind == FTP_UPDATE) return BLUE;
+    if (kind == FTP_DLC) return 0x80B9A2F9;
+    return 0x807BDECC;
+}
+
+static void drawFtpInbox(uint32_t* p) {
+    header(p);
+
+    FtpReceiverSnapshot ftp = ftpReceiverSnapshot();
+    InstallSnapshot install = installSnapshot();
+    bool mine = ftpInboxInstallGeneration &&
+                install.generation == ftpInboxInstallGeneration;
+
+    text(p, 72, 164, "PKGs recebidos", FONT_HEADING, WHITE);
+    text(p, 72, 218,
+         "Envie seus próprios PKGs pelo celular ou PC e instale direto pela Peppy Store.",
+         FONT_BODY, MUTED);
+
+    char endpoint[192];
+    if (ftp.running && ftp.ip[0]) {
+        snprintf(endpoint, sizeof(endpoint), "FTP  %s:%u", ftp.ip, unsigned(ftp.port));
+        pill(p, 72, 258, endpoint, 0x80212D41, BLUE);
+    } else if (ftp.running) {
+        pill(p, 72, 258, "FTP ativo | obtendo IP...", 0x80212D41, BLUE);
+    } else {
+        snprintf(endpoint, sizeof(endpoint), "FTP indisponível | erro 0x%08X",
+                 (unsigned)ftp.lastError);
+        pill(p, 72, 258, endpoint, 0x8024344A, 0x80EBA5B4);
+    }
+
+    char stats[160], uploaded[40];
+    sizeLabel(uploaded, sizeof(uploaded), ftp.bytesReceived);
+    snprintf(stats, sizeof(stats), "%d arquivos prontos | %u enviados nesta sessão | %s",
+             ftpInboxCount, unsigned(ftp.filesReceived), uploaded);
+    text(p, 410, 264, stats, FONT_SMALL, MUTED);
+
+    roundRect(p, 72, 312, 1168, 620, 22, PANEL);
+    outline(p, 72, 312, 1168, 620, 22, 1, LINE);
+    roundRect(p, 1264, 312, 584, 620, 22, PANEL);
+    outline(p, 1264, 312, 584, 620, 22, 1, LINE);
+
+    text(p, 104, 342, "Arquivos", FONT_TITLE, WHITE);
+    text(p, 104, 384, "BASE / UPDATE / DLC", FONT_SMALL, MUTED);
+
+    if (!ftpInboxCount) {
+        text(p, 104, 458, "Nenhum PKG concluído no inbox ainda.", FONT_BODY, WHITE);
+        text(p, 104, 514, "No app FTP do celular, conecte ao endereço acima.", FONT_SMALL, MUTED);
+        text(p, 104, 550, "Entre em /base, /update ou /dlc e envie os arquivos .pkg.", FONT_SMALL, MUTED);
+        text(p, 104, 586, "Uploads incompletos ficam como .part e não aparecem aqui.", FONT_SMALL, BLUE);
+    } else {
+        const int visible = 7;
+        int first = (ftpInboxSelected / visible) * visible;
+        for (int slot = 0; slot < visible && first + slot < ftpInboxCount; ++slot) {
+            int index = first + slot;
+            const FtpInboxItem& item = ftpInboxItems[index];
+            bool focus = index == ftpInboxSelected;
+            int y = 420 + slot * 68;
+            uint32_t accent = ftpKindColor(item.kind);
+
+            if (focus) roundRect(p, 96, y - 3, 1120, 62, 13, 0x80243A58);
+            outline(p, 96, y - 3, 1120, 62, 13, focus ? 2 : 1,
+                    focus ? BLUE : 0x801E2838);
+
+            pill(p, 116, y + 9, ftpKindLabel(item.kind),
+                 mix(PANEL, accent, 22), accent);
+            textElided(p, 260, y + 8, item.name, FONT_BODY,
+                       focus ? WHITE : 0x80D3DBE8, 700);
+
+            char size[48];
+            sizeLabel(size, sizeof(size), item.bytes);
+            text(p, 1184 - textWidth(size, FONT_SMALL), y + 14,
+                 size, FONT_SMALL, MUTED);
+        }
+
+        char page[64];
+        snprintf(page, sizeof(page), "Página %d/%d",
+                 ftpInboxSelected / visible + 1,
+                 (ftpInboxCount + visible - 1) / visible);
+        text(p, 104, 892, page, FONT_SMALL, MUTED);
+    }
+
+    text(p, 1296, 342, "Instalação local", FONT_TITLE, WHITE);
+    rect(p, 1296, 390, 520, 1, LINE);
+
+    if (ftpInboxCount > 0 && ftpInboxSelected < ftpInboxCount) {
+        const FtpInboxItem& item = ftpInboxItems[ftpInboxSelected];
+        uint32_t accent = ftpKindColor(item.kind);
+        pill(p, 1296, 422, ftpKindLabel(item.kind), mix(PANEL, accent, 22), accent);
+        textWrapped(p, 1296, 482, item.name, FONT_BODY, WHITE, 500, 3);
+
+        char size[48];
+        sizeLabel(size, sizeof(size), item.bytes);
+        text(p, 1296, 584, size, FONT_SMALL, MUTED);
+        textElided(p, 1296, 620, item.path, FONT_SMALL, MUTED, 500);
+
+        const char* action = "Instalar PKG";
+        uint32_t button = 0x8032609A;
+        if (install.cleanupCode) {
+            action = "Reabra a Peppy Store";
+            button = 0x8024344A;
+        } else if (install.state == INSTALL_RUNNING) {
+            action = mine ? "Instalando..." : "Outra instalação em andamento";
+            button = 0x8024344A;
+        } else if (mine && install.state == INSTALL_DONE) {
+            action = "Instalado no PS4";
+            button = 0x80254B43;
+        } else if (mine && install.state == INSTALL_FAILED) {
+            action = "Tentar instalar novamente";
+        } else if (mine && install.state == INSTALL_CANCELLED) {
+            action = "Instalar novamente";
+        }
+
+        roundRect(p, 1296, 682, 500, 68, 15, button);
+        crossButton(p, 1331, 716);
+        textElided(p, 1366, 699, action, FONT_BODY, WHITE, 405);
+
+        char status[512];
+        if (install.cleanupCode) {
+            snprintf(status, sizeof(status),
+                     "A instalação precisa de reinício da loja. Limpeza: 0x%08X.",
+                     (unsigned)install.cleanupCode);
+        } else if (mine && install.state == INSTALL_RUNNING) {
+            snprintf(status, sizeof(status), "%s | %d%%",
+                     installStageName(install.stage), installPercent(install));
+        } else if (mine && install.state == INSTALL_FAILED) {
+            snprintf(status, sizeof(status), "%s | código %d | nativo 0x%08X",
+                     installErrorText(install.errorCode), install.errorCode,
+                     (unsigned)install.nativeCode);
+        } else if (mine && install.state == INSTALL_DONE) {
+            snprintf(status, sizeof(status),
+                     "Concluído. O arquivo original continua salvo no inbox.");
+        } else if (mine && install.state == INSTALL_CANCELLED) {
+            snprintf(status, sizeof(status),
+                     "Instalação cancelada. O PKG foi preservado.");
+        } else {
+            snprintf(status, sizeof(status),
+                     "X instala direto deste arquivo, sem duplicar no cache de downloads.");
+        }
+        textWrapped(p, 1296, 790, status, FONT_SMALL,
+                    (mine && install.state == INSTALL_FAILED) ? 0x80EBA5B4 : MUTED,
+                    500, 4);
+    } else {
+        textWrapped(p, 1296, 440,
+                    "Quando um upload terminar, ele aparece aqui pronto para instalar.",
+                    FONT_BODY, MUTED, 500, 4);
+    }
+
+    rect(p, 72, 978, W - 144, 1, LINE);
+    crossButton(p, 88, 1011);
+    text(p, 120, 997, "Instalar", FONT_SMALL, WHITE);
+    ring(p, 262, 1011, 10, 2, 0x80EBA5B4);
+    text(p, 288, 997, "Voltar", FONT_SMALL, WHITE);
+    text(p, 430, 997, "Quadrado  Atualizar", FONT_SMALL, MUTED);
+    triangleButton(p, 650, 1011);
+    text(p, 678, 997, "Cancelar instalação", FONT_SMALL, MUTED);
+    text(p, 910, 997, "Direcional  Navegar", FONT_SMALL, MUTED);
+    ring(p, 1198, 1011, 18, 2, MUTED);
+    text(p, 1183, 997, "L3", FONT_SMALL, MUTED);
+    text(p, 1231, 997, "Próxima faixa", FONT_SMALL, MUTED);
+
+    text(p, 72, 1038,
+         "Use somente PKGs próprios ou que você tenha autorização para instalar.",
+         FONT_SMALL, MUTED);
+}
+#endif
+
+#ifndef PEPPY_UI_PREVIEW
 int main(void){
  sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_VIDEO_OUT);
  int32_t video=sceVideoOutOpen(ORBIS_VIDEO_USER_MAIN,ORBIS_VIDEO_OUT_BUS_MAIN,0,0);
