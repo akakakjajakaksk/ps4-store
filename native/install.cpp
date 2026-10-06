@@ -485,9 +485,6 @@ int runInstall() {
     const unsigned char magic[] = { 0x7f, 'C', 'N', 'T' };
     if (memcmp(header, magic, sizeof(magic)))
         return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
-    uint64_t headerSize = readBe64(header + 0x430);
-    if (headerSize != g_installExpected)
-        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
     const char* packageType = 0;
     bool patchPackage = false;
     int packageKind = classifyPackage(header, packageType, patchPackage);
