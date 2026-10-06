@@ -80,6 +80,9 @@ VERIFIED_REPOSITORIES = frozenset({
     "EmiiBytee/np2kai-ps4",
     "bizkut/ps4-mgba",
     "Mayo1970/ioQuake3-PS4",
+    "kalaposfos13/ps4-homebrew-base",
+    "GoldHEN/GoldHEN_Cheat_Manager",
+    "Ninedark9/PS4PackageLink",
 })
 
 TEXT_FIELDS = (
