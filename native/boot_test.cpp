@@ -689,6 +689,9 @@ static void footer(uint32_t* p, bool details, int selectedIndex) {
         ring(p, 1111, 1044, 18, 2, MUTED);
         text(p, 1096, 1030, "R3", FONT_SMALL, MUTED);
         text(p, 1145, 1030, "Buscar", FONT_SMALL, WHITE);
+#ifndef PEPPY_UI_PREVIEW
+        text(p, 1325, 1030, "OPTIONS  PKGs recebidos", FONT_SMALL, WHITE);
+#endif
     }
 }
 
@@ -709,6 +712,7 @@ static const char* installErrorText(int code) {
     case INSTALL_ERROR_RESTORE: return "Não foi possível encerrar a preparação de instalação.";
     case INSTALL_ERROR_SERVER: return "Não foi possível entregar o PKG ao instalador.";
     case INSTALL_ERROR_USER: return "Não foi possível identificar o usuário do PS4 para instalar.";
+    case INSTALL_ERROR_BASE_REQUIRED: return "Instale primeiro o jogo/base correspondente a este update ou DLC.";
     default: return "A instalação não foi concluída.";
     }
 }
