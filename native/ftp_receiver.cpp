@@ -367,7 +367,7 @@ static int appendInboxKind(FtpInboxItem* items, int count, int capacity, int kin
     if (!dir) return count;
 
     while (count < capacity) {
-        dirent* entry = readdir(dir);
+        struct dirent* entry = readdir(dir);
         if (!entry) break;
 
         const char* name = entry->d_name;
