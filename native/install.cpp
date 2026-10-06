@@ -168,8 +168,11 @@ bool validFilename(const char* value) {
         asciiLower(value[size - 1]) != 'g') return false;
     for (size_t i = 0; i < size; ++i) {
         unsigned char ch = (unsigned char)value[i];
-        if (ch < 32 || ch == 127 || ch == '/' || ch == '\\' || ch == ':')
-            return false;
+        bool allowed = (ch >= 'a' && ch <= 'z') ||
+                       (ch >= 'A' && ch <= 'Z') ||
+                       (ch >= '0' && ch <= '9') ||
+                       ch == '_' || ch == '-' || ch == '.';
+        if (!allowed) return false;
     }
     return true;
 }

@@ -102,7 +102,11 @@ static bool safeName(const char* s) {
 
     for (const unsigned char* p =
              reinterpret_cast<const unsigned char*>(s); *p; ++p) {
-        if (*p < 32 || *p == 127 || *p == ':') return false;
+        bool allowed = (*p >= 'a' && *p <= 'z') ||
+                       (*p >= 'A' && *p <= 'Z') ||
+                       (*p >= '0' && *p <= '9') ||
+                       *p == '_' || *p == '-' || *p == '.';
+        if (!allowed) return false;
     }
     return endsPkg(s);
 }
