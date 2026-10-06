@@ -82,6 +82,8 @@ extern "C" int32_t peppyBgftRegister(PeppyBgftParamEx*, int32_t*)
     __asm__("sceBgftServiceIntDownloadRegisterTaskByStorageEx");
 extern "C" int32_t peppyBgftRegisterHttp(PeppyBgftParam*, int32_t*)
     __asm__("sceBgftServiceIntDownloadRegisterTask");
+extern "C" int32_t peppyBgftRegisterDebug(PeppyBgftParam*, int32_t*)
+    __asm__("sceBgftServiceIntDebugDownloadRegisterPkg");
 extern "C" int32_t peppyBgftProgress(int32_t, PeppyBgftProgress*)
     __asm__("sceBgftServiceDownloadGetProgress");
 extern "C" int32_t peppyInstallForegroundUser(int32_t*)
@@ -114,6 +116,9 @@ extern "C" int32_t peppyInstallRestore(PeppyJailbreakBackup*) __asm__("sys_sdk_u
 #ifndef PEPPY_INSTALL_ROOT_DIRECTORY
 #define PEPPY_INSTALL_ROOT_DIRECTORY "/user/data/peppy-store"
 #endif
+#define PEPPY_INBOX_BASE_DIRECTORY "/data/peppy-store/inbox/base"
+#define PEPPY_INBOX_UPDATE_DIRECTORY "/data/peppy-store/inbox/update"
+#define PEPPY_INBOX_DLC_DIRECTORY "/data/peppy-store/inbox/dlc"
 #ifndef PEPPY_TITLE_ID
 #define PEPPY_TITLE_ID "BREW00001"
 #endif
@@ -139,6 +144,8 @@ uint32_t g_installHttpRequests = 0;
 int32_t g_installHttpStatus = 0;
 uint64_t g_installHttpBytes = 0;
 char g_installFilename[NAME_CAP], g_installName[TITLE_CAP];
+char g_installSourcePath[PATH_CAP];
+int g_installInboxKind = -1;
 uint64_t g_installExpected = 0;
 FILE* g_installLog = 0;
 
@@ -148,16 +155,69 @@ size_t lengthBounded(const char* value, size_t maximum) {
     while (size < maximum && value[size]) ++size;
     return size;
 }
+char asciiLower(char c) {
+    return c >= 'A' && c <= 'Z' ? char(c + ('a' - 'A')) : c;
+}
 bool validFilename(const char* value) {
     size_t size = lengthBounded(value, NAME_CAP);
-    if (size < 5 || size >= NAME_CAP || value[0] == '.' ||
-        strcmp(value + size - 4, ".pkg") || strstr(value, "..")) return false;
+    if (size < 5 || size >= NAME_CAP || value[0] == '.' || strstr(value, ".."))
+        return false;
+    if (value[size - 4] != '.' ||
+        asciiLower(value[size - 3]) != 'p' ||
+        asciiLower(value[size - 2]) != 'k' ||
+        asciiLower(value[size - 1]) != 'g') return false;
     for (size_t i = 0; i < size; ++i) {
-        char c = value[i];
-        if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
-            !(c >= '0' && c <= '9') && c != '_' && c != '-' && c != '.') return false;
+        unsigned char ch = (unsigned char)value[i];
+        if (ch < 32 || ch == 127 || ch == '/' || ch == '\\' || ch == ':')
+            return false;
     }
     return true;
+}
+uint32_t readBe32(const unsigned char* p) {
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+           (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+uint64_t readBe64(const unsigned char* p) {
+    return (uint64_t(readBe32(p)) << 32) | uint64_t(readBe32(p + 4));
+}
+int classifyPackage(const unsigned char* header, const char*& packageType, bool& patch) {
+    const uint32_t contentType = readBe32(header + 0x74);
+    const uint32_t flags = readBe32(header + 0x78);
+    const uint32_t FIRST_PATCH = 0x00100000;
+    const uint32_t SUBSEQUENT_PATCH = 0x40000000;
+    const uint32_t DELTA_PATCH = 0x41000000;
+    const uint32_t CUMULATIVE_PATCH = 0x60000000;
+
+    patch = false;
+    if (contentType == 0x1A) packageType = "PS4GD";
+    else if (contentType == 0x1B) packageType = "PS4AC";
+    else if (contentType == 0x1C) packageType = "PS4AL";
+    else if (contentType == 0x1E) packageType = "PS4DP";
+    else return -1;
+
+    patch = contentType == 0x1E ||
+            (flags & FIRST_PATCH) ||
+            (flags & SUBSEQUENT_PATCH) ||
+            (flags & DELTA_PATCH) ||
+            (flags & CUMULATIVE_PATCH);
+    if (patch) return 1;
+    if (contentType == 0x1B || contentType == 0x1C) return 2;
+    return 0;
+}
+const char* inboxDirectory(int kind) {
+    if (kind == 0) return PEPPY_INBOX_BASE_DIRECTORY;
+    if (kind == 1) return PEPPY_INBOX_UPDATE_DIRECTORY;
+    if (kind == 2) return PEPPY_INBOX_DLC_DIRECTORY;
+    return 0;
+}
+bool validInboxSource(const char* path, int kind, const char* filename) {
+    const char* root = inboxDirectory(kind);
+    if (!root || !path || !filename) return false;
+    size_t rootLength = strlen(root);
+    if (strncmp(path, root, rootLength) || path[rootLength] != '/') return false;
+    const char* leaf = path + rootLength + 1;
+    return validFilename(leaf) && !strcmp(leaf, filename) &&
+           lengthBounded(path, PATH_CAP) < PATH_CAP;
 }
 bool validName(const char* value) {
     size_t size = lengthBounded(value, TITLE_CAP);
@@ -386,16 +446,22 @@ int systemFile(InstallResources& owned, const PeppyFileInfo& source, char* desti
 int runInstall() {
     InstallResources owned;
     char localPath[PATH_CAP], systemPath[PATH_CAP];
-    int localLength = snprintf(localPath, sizeof(localPath), "%s/%s", PEPPY_DOWNLOAD_DIRECTORY,
-                               g_installFilename);
-    int systemLength = snprintf(systemPath, sizeof(systemPath), "%s/%s", PEPPY_INSTALL_SYSTEM_DIRECTORY,
-                                g_installFilename);
-    if (localLength < 0 || (size_t)localLength >= sizeof(localPath) ||
+    const char* sourceDirectory = g_installInboxKind >= 0
+        ? inboxDirectory(g_installInboxKind) : PEPPY_DOWNLOAD_DIRECTORY;
+    int localLength = g_installSourcePath[0]
+        ? snprintf(localPath, sizeof(localPath), "%s", g_installSourcePath)
+        : snprintf(localPath, sizeof(localPath), "%s/%s", PEPPY_DOWNLOAD_DIRECTORY,
+                   g_installFilename);
+    int systemLength = !strncmp(localPath, "/data/", 6)
+        ? snprintf(systemPath, sizeof(systemPath), "/user%s", localPath)
+        : snprintf(systemPath, sizeof(systemPath), "%s/%s", PEPPY_INSTALL_SYSTEM_DIRECTORY,
+                   g_installFilename);
+    if (!sourceDirectory || localLength < 0 || (size_t)localLength >= sizeof(localPath) ||
         systemLength < 0 || (size_t)systemLength >= sizeof(systemPath))
         return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, ENAMETOOLONG);
     stage(INSTALL_STAGE_FILE);
     PeppyFileInfo directoryInfo, after;
-    int directoryError = pathInfo(PEPPY_DOWNLOAD_DIRECTORY, true, directoryInfo);
+    int directoryError = pathInfo(sourceDirectory, true, directoryInfo);
     if (directoryError) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, directoryError);
     int descriptor = open(localPath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     if (descriptor < 0) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_FILE, errno);
@@ -418,6 +484,14 @@ int runInstall() {
     if (got != sizeof(header)) return fail(INSTALL_ERROR_FILE, INSTALL_STAGE_PACKAGE, errno ? errno : EIO);
     const unsigned char magic[] = { 0x7f, 'C', 'N', 'T' };
     if (memcmp(header, magic, sizeof(magic)))
+        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
+    uint64_t headerSize = readBe64(header + 0x430);
+    if (headerSize != g_installExpected)
+        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
+    const char* packageType = 0;
+    bool patchPackage = false;
+    int packageKind = classifyPackage(header, packageType, patchPackage);
+    if (packageKind < 0 || !packageType)
         return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
     char contentId[CONTENT_ID_BYTES + 1];
     memcpy(contentId, header + CONTENT_ID_OFFSET, CONTENT_ID_BYTES);
@@ -479,7 +553,8 @@ int runInstall() {
         int32_t isApp = -1;
         rc = sceAppInstUtilGetTitleIdFromPkg(systemPath, parsedTitleId, &isApp);
         if (rc) return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, rc);
-        if (!validTitleId(parsedTitleId) || isApp != 1 || strcmp(parsedTitleId, titleId))
+        if (!validTitleId(parsedTitleId) || (isApp != 0 && isApp != 1) ||
+            strcmp(parsedTitleId, titleId))
             return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_TITLE, EINVAL);
     }
     if (!strcmp(titleId, PEPPY_TITLE_ID))
@@ -488,7 +563,10 @@ int runInstall() {
     int32_t exists = 0;
     rc = sceAppInstUtilAppExists(titleId, &exists);
     if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_EXISTS, rc);
-    if (exists) return fail(INSTALL_ERROR_ALREADY_INSTALLED, INSTALL_STAGE_EXISTS, 0);
+    if (packageKind == 0 && exists)
+        return fail(INSTALL_ERROR_ALREADY_INSTALLED, INSTALL_STAGE_EXISTS, 0);
+    if (packageKind != 0 && !exists)
+        return fail(INSTALL_ERROR_BASE_REQUIRED, INSTALL_STAGE_EXISTS, 0);
     if (cancelled()) return 0;
     int32_t userId = 0;
     if (!storage) {
@@ -545,16 +623,17 @@ int runInstall() {
     // HTTP follows RPI's CDN-query option; BGFT can still append optional
     // query parameters, which the loopback server accepts.
     params.params.option = storage ? 0x2 : 0x10002;
-    if (!storage) {
-        params.params.packageType = "PS4GD";
-        params.params.packageSubType = "";
-    }
+    if (packageKind != 0) params.params.option |= 0x8; // FORCE_UPDATE for patch/add-on.
+    params.params.packageType = packageType;
+    params.params.packageSubType = "";
     params.params.packageSize = g_installExpected;
     params.slot = 0;
     stage(INSTALL_STAGE_REGISTER);
     int32_t candidate = -1;
     rc = storage ? peppyBgftRegister(&params, &candidate)
-                 : peppyBgftRegisterHttp(&params.params, &candidate);
+                 : (patchPackage
+                    ? peppyBgftRegisterDebug(&params.params, &candidate)
+                    : peppyBgftRegisterHttp(&params.params, &candidate));
     if (!storage) sampleHttp(owned.server);
     if (rc) {
         uint32_t native = (uint32_t)rc;
@@ -645,7 +724,8 @@ void* installWorker(void*) {
 }
 }
 
-bool startInstall(const InstallSpec& spec) {
+static bool startInstallInternal(const InstallSpec& spec,
+                                 const char* sourcePath, int inboxKind) {
     // Failed native stop/term/restore may leave an owned task or service alive.
     // Do not overwrite its backing copy or reinitialize it in this process.
     if (__atomic_load_n(&g_installUnsafe, __ATOMIC_ACQUIRE)) return false;
@@ -672,7 +752,9 @@ bool startInstall(const InstallSpec& spec) {
     __atomic_store_n(&g_installHttpStatus, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_installHttpBytes, 0, __ATOMIC_RELEASE);
     stage(INSTALL_STAGE_SPEC);
-    if (!validFilename(spec.filename) || !validName(spec.name) ||
+    bool sourceOk = !sourcePath ||
+        validInboxSource(sourcePath, inboxKind, spec.filename);
+    if (!validFilename(spec.filename) || !validName(spec.name) || !sourceOk ||
         spec.expectedBytes < HEADER_BYTES || spec.expectedBytes > PEPPY_MAX_PACKAGE_BYTES) {
         __atomic_store_n(&g_installError, INSTALL_ERROR_SPEC, __ATOMIC_RELEASE);
         __atomic_store_n(&g_installState, INSTALL_FAILED, __ATOMIC_RELEASE);
@@ -681,6 +763,12 @@ bool startInstall(const InstallSpec& spec) {
     }
     strcpy(g_installFilename, spec.filename);
     strcpy(g_installName, spec.name);
+    g_installSourcePath[0] = 0;
+    g_installInboxKind = -1;
+    if (sourcePath) {
+        snprintf(g_installSourcePath, sizeof(g_installSourcePath), "%s", sourcePath);
+        g_installInboxKind = inboxKind;
+    }
     g_installExpected = spec.expectedBytes;
     __atomic_store_n(&g_installState, INSTALL_RUNNING, __ATOMIC_RELEASE);
     stage(INSTALL_STAGE_THREAD);
@@ -700,6 +788,19 @@ bool startInstall(const InstallSpec& spec) {
     }
     return true;
 }
+bool startInstall(const InstallSpec& spec) {
+    return startInstallInternal(spec, 0, -1);
+}
+
+bool startInboxInstall(const char* path, const char* displayName,
+                       uint64_t expectedBytes, int kind) {
+    if (!path || !displayName) return false;
+    const char* leaf = strrchr(path, '/');
+    if (!leaf || !leaf[1]) return false;
+    InstallSpec spec = {leaf + 1, displayName, expectedBytes};
+    return startInstallInternal(spec, path, kind);
+}
+
 void cancelInstall() {
     if (__atomic_load_n(&g_installBusy, __ATOMIC_ACQUIRE))
         __atomic_store_n(&g_installCancel, 1, __ATOMIC_RELEASE);
