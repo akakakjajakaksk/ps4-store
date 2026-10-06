@@ -1151,6 +1151,8 @@ int main(void){
  }
  musicStart(userId);
  ftpReceiverStart();
+ refreshFtpInbox();
+ uint32_t ftpReceivedSeen=ftpReceiverSnapshot().filesReceived;
  int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
  int32_t padInit=(padModule>=0)?scePadInit():padModule;
  int32_t pad=(padInit==0 && userRc==0)?scePadOpen(userId,0,0,0):-1;
@@ -1184,7 +1186,15 @@ int main(void){
    if(edge&ORBIS_PAD_BUTTON_L3) pressed|=CATALOG_L3;
    if(edge&ORBIS_PAD_BUTTON_R3) pressed|=CATALOG_R3;
    if(edge&ORBIS_PAD_BUTTON_OPTIONS) pressed|=CATALOG_OPTIONS;
-   changed=handleCatalogController(pressed,selected,details) || changed;
+   if(ftpInboxOpen) {
+    changed=handleFtpInboxController(pressed) || changed;
+   } else if(!catalogSearch.open && !details && (pressed&CATALOG_OPTIONS)) {
+    refreshFtpInbox();
+    ftpInboxOpen=true;
+    changed=true;
+   } else {
+    changed=handleCatalogController(pressed,selected,details) || changed;
+   }
    prev=now;
   }
   if(++progressTicks>=12){
@@ -1209,10 +1219,17 @@ int main(void){
    if(music.state!=previousMusic.state || music.track!=previousMusic.track || music.volume!=previousMusic.volume ||
       music.muted!=previousMusic.muted || music.errorCode!=previousMusic.errorCode) changed=true;
    previousMusic=music;
+   FtpReceiverSnapshot ftp=ftpReceiverSnapshot();
+   if(ftp.filesReceived!=ftpReceivedSeen){
+    ftpReceivedSeen=ftp.filesReceived;
+    refreshFtpInbox();
+    changed=true;
+   }
   }
   if(changed){
    front=1-front;
-   if(catalogSearch.open) drawCatalogSearch(fb[front],selected);
+   if(ftpInboxOpen) drawFtpInbox(fb[front]);
+   else if(catalogSearch.open) drawCatalogSearch(fb[front],selected);
    else if(details) drawDetails(fb[front],selected); else drawStore(fb[front],selected,2);
    sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
   }
