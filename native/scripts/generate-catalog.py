@@ -80,6 +80,19 @@ VERIFIED_REPOSITORIES = frozenset({
     "EmiiBytee/np2kai-ps4",
     "bizkut/ps4-mgba",
     "Mayo1970/ioQuake3-PS4",
+    "JaimeJimenezG/Moonlight-ps4",
+    "iHaiDeeZ/DolphinPS4",
+    "01cedric/WoWPS",
+    "diasurgical/DevilutionX",
+    "marcussacana/FridayNightFunkin",
+    "cy33hc/ps4-webdav-client",
+    "victorrjimenezz/PS4-4PT",
+    "kekeeek/KEKE-HOME",
+    "xXxTheDarkprogramerxXx/PS4-PluginX",
+    "Al-Azif/ps4-payload-guest",
+    "kalaposfos13/ps4-homebrew-base",
+    "GoldHEN/GoldHEN_Cheat_Manager",
+    "Ninedark9/PS4PackageLink",
 })
 
 TEXT_FIELDS = (
