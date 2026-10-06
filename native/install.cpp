@@ -177,9 +177,6 @@ uint32_t readBe32(const unsigned char* p) {
     return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
            (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
-uint64_t readBe64(const unsigned char* p) {
-    return (uint64_t(readBe32(p)) << 32) | uint64_t(readBe32(p + 4));
-}
 int classifyPackage(const unsigned char* header, const char*& packageType, bool& patch) {
     const uint32_t contentType = readBe32(header + 0x74);
     const uint32_t flags = readBe32(header + 0x78);
