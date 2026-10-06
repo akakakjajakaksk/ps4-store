@@ -305,8 +305,8 @@ static bool receivePackage(int32_t dataFd, int kind, const char* name,
     ensureInbox();
     remove(tempPath);
 
-    FILE* f = fopen(tempPath, "wb");
-    if (!f) return false;
+    int fileFd = open(tempPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+    if (fileFd < 0) return false;
 
     bool ok = true;
     bytes = 0;
@@ -317,18 +317,23 @@ static bool receivePackage(int32_t dataFd, int kind, const char* name,
             ok = false;
             break;
         }
-        if (fwrite(g_ioBuffer, 1, size_t(n), f) != size_t(n)) {
-            ok = false;
-            break;
+
+        size_t offset = 0;
+        while (offset < size_t(n)) {
+            ssize_t written = write(fileFd, g_ioBuffer + offset, size_t(n) - offset);
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0) {
+                ok = false;
+                break;
+            }
+            offset += size_t(written);
         }
+        if (!ok) break;
         bytes += uint64_t(n);
     }
 
-    if (fflush(f) != 0) ok = false;
-    int fileFd = fileno(f);
-    if (fileFd >= 0 && fsync(fileFd) != 0) ok = false;
-    if (fclose(f) != 0) ok = false;
-
+    if (ok && !g_stop && fsync(fileFd) != 0) ok = false;
+    if (close(fileFd) != 0) ok = false;
     if (g_stop) ok = false;
 
     if (ok) {
