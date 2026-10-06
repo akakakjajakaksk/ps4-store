@@ -75,7 +75,8 @@ archive_sources.h: archive_sources.json scripts/archive_policy.py
 $(INTDIR)/downloads.o: downloads.h package_limits.h mediafire_source.h archive_sources.h http_range.h parallel_download.h
 $(INTDIR)/install.o: install.h pkg_server.h package_limits.h
 $(INTDIR)/pkg_server.o: pkg_server.h
-$(INTDIR)/music.o: music.h\n$(INTDIR)/ftp_receiver.o: ftp_receiver.h
+$(INTDIR)/music.o: music.h
+$(INTDIR)/ftp_receiver.o: ftp_receiver.h
 $(INTDIR)/goldhen_bridge.o: third_party/goldhen/GoldHEN.h
 
 $(INTDIR)/%.o: %.cpp
