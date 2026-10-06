@@ -874,7 +874,8 @@ int main(void){
   userRc=sceUserServiceInitialize(&usp);
   if(userRc==0) userRc=sceUserServiceGetInitialUser(&userId);
  }
- musicStart(userId);\n ftpReceiverStart();
+ musicStart(userId);
+ ftpReceiverStart();
  int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
  int32_t padInit=(padModule>=0)?scePadInit():padModule;
  int32_t pad=(padInit==0 && userRc==0)?scePadOpen(userId,0,0,0):-1;
