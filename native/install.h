@@ -28,7 +28,8 @@ enum InstallError {
     INSTALL_ERROR_SELF = -2304, INSTALL_ERROR_SDK = -2400,
     INSTALL_ERROR_JAILBREAK = -2401, INSTALL_ERROR_GLOBAL_PATH = -2402,
     INSTALL_ERROR_COPY = -2403, INSTALL_ERROR_RESTORE = -2404,
-    INSTALL_ERROR_SERVER = -2500, INSTALL_ERROR_USER = -2501
+    INSTALL_ERROR_SERVER = -2500, INSTALL_ERROR_USER = -2501,
+    INSTALL_ERROR_BASE_REQUIRED = -2502
 };
 
 enum InstallStage {
@@ -69,8 +70,14 @@ struct InstallSnapshot {
 
 // The controller serializes start/cancel. Only completed, validated downloads
 // may be passed here; expectedBytes must be their exact final size. Installation
-// keeps the PKG and never removes or overwrites an existing application.
+// keeps the PKG and never removes or overwrites an existing base application.
 bool startInstall(const InstallSpec& spec);
+
+// Installs a completed PKG received through Peppy's FTP inbox without copying it
+// into the download cache first. kind is FtpReceiveKind (base/update/dlc).
+// The installer still validates the PKG header and chooses the native BGFT mode.
+bool startInboxInstall(const char* path, const char* displayName,
+                       uint64_t expectedBytes, int kind);
 void cancelInstall();
 InstallSnapshot installSnapshot();
 const char* installStageName(int stage);
