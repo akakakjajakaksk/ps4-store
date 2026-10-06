@@ -223,6 +223,82 @@ static bool handleCatalogController(uint32_t pressed, int& selected, bool& detai
     return changed;
 }
 
+#ifndef PEPPY_UI_PREVIEW
+static bool beginFtpInboxInstall() {
+    if (ftpInboxSelected < 0 || ftpInboxSelected >= ftpInboxCount) return false;
+
+    InstallSnapshot before = installSnapshot();
+    if (before.state == INSTALL_RUNNING || before.cleanupCode) return false;
+
+    const FtpInboxItem& item = ftpInboxItems[ftpInboxSelected];
+    bool accepted = startInboxInstall(item.path, item.name, item.bytes, item.kind);
+    InstallSnapshot after = installSnapshot();
+
+    if (accepted || after.generation != before.generation) {
+        ftpInboxInstallGeneration = after.generation;
+        ftpInboxInstallKind = item.kind;
+        snprintf(ftpInboxInstallName, sizeof(ftpInboxInstallName), "%s", item.name);
+        installingApp = -1;
+        autoInstallPending = false;
+        installCancelRequested = false;
+    }
+    return accepted;
+}
+
+static bool handleFtpInboxController(uint32_t pressed) {
+    bool changed = false;
+
+    if (pressed & CATALOG_CIRCLE) {
+        ftpInboxOpen = false;
+        return true;
+    }
+
+    if (pressed & CATALOG_SQUARE) {
+        refreshFtpInbox();
+        changed = true;
+    }
+
+    if (ftpInboxCount > 0) {
+        if (pressed & CATALOG_UP) {
+            ftpInboxSelected = (ftpInboxSelected + ftpInboxCount - 1) % ftpInboxCount;
+            changed = true;
+        }
+        if (pressed & CATALOG_DOWN) {
+            ftpInboxSelected = (ftpInboxSelected + 1) % ftpInboxCount;
+            changed = true;
+        }
+        if (pressed & CATALOG_LEFT) {
+            ftpInboxSelected = (ftpInboxSelected + ftpInboxCount - 8) % ftpInboxCount;
+            if (ftpInboxSelected < 0) ftpInboxSelected += ftpInboxCount;
+            changed = true;
+        }
+        if (pressed & CATALOG_RIGHT) {
+            ftpInboxSelected = (ftpInboxSelected + 8) % ftpInboxCount;
+            changed = true;
+        }
+        if (pressed & CATALOG_CROSS) {
+            changed = beginFtpInboxInstall() || changed;
+        }
+    }
+
+    InstallSnapshot install = installSnapshot();
+    bool mine = ftpInboxInstallGeneration &&
+                install.generation == ftpInboxInstallGeneration;
+    if ((pressed & CATALOG_TRIANGLE) && mine && install.state == INSTALL_RUNNING) {
+        cancelInstall();
+        installCancelRequested = true;
+        changed = true;
+    }
+
+    if (pressed & CATALOG_L3) {
+        musicNextTrack();
+        changed = true;
+    }
+
+    return changed;
+}
+#endif
+
 static uint32_t mix(uint32_t a, uint32_t b, int t) {
     if (t <= 0) return a;
     if (t >= 255) return b;
