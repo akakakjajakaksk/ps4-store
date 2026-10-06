@@ -15,7 +15,9 @@
 #include "downloads.h"
 #include "download_meter.h"
 #include "install.h"
-#include "music.h"\n#include "ftp_receiver.h"
+#include "music.h"\n#ifndef PEPPY_UI_PREVIEW
+#include "ftp_receiver.h"
+#endif
 
 static const int W = 1920, H = 1080;
 static const uint32_t BG = 0x800B0F17, PANEL = 0x80131925;
