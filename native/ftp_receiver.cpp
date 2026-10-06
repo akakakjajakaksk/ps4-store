@@ -645,21 +645,24 @@ bool ftpReceiverStart() {
     sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
     sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NETCTL);
 
+    // Raw FTP sockets only require libnet itself. A separate libnet pool is
+    // useful when available, but some real PS4 setups return resolver/internal
+    // errors while raw LAN sockets still work. Do not make that optional pool
+    // a hard startup dependency.
     sceNetInit();
     sceNetCtlInit();
 
     g_pool = sceNetPoolCreate("peppy-ftp", 1024 * 1024, 0);
-    if (g_pool < 0) {
-        g.lastError = g_pool;
-        return false;
-    }
+    if (g_pool < 0) g_pool = -1;
 
     refreshConfiguredIp();
     g_listener = makeListener(CONTROL_PORT, "peppy-ftp-control");
     if (g_listener < 0) {
         g.lastError = g_listener;
-        sceNetPoolDestroy(g_pool);
-        g_pool = -1;
+        if (g_pool >= 0) {
+            sceNetPoolDestroy(g_pool);
+            g_pool = -1;
+        }
         return false;
     }
 
@@ -668,11 +671,16 @@ bool ftpReceiverStart() {
     if (rc != 0) {
         g.lastError = rc;
         closeSocket(g_listener);
-        sceNetPoolDestroy(g_pool);
-        g_pool = -1;
+        if (g_pool >= 0) {
+            sceNetPoolDestroy(g_pool);
+            g_pool = -1;
+        }
         return false;
     }
 
+    // Listener + worker are authoritative for FTP availability. Clear any
+    // non-fatal setup warning once the server is actually running.
+    g.lastError = 0;
     g.running = true;
     g.port = CONTROL_PORT;
     return true;
