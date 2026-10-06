@@ -8,6 +8,7 @@ Interface nativa para PS4 homebrew, compilada com OpenOrbis PS4 Toolchain.
 - Arte PEPPY no banner e no ícone do menu do PS4.
 - Fonte suave com caracteres em português, preparada durante a build.
 - Catálogo de 845 PKGs, com categorias, páginas e detalhes.
+- Pesquisa por nome ou identificador, com teclado na tela operado pelo controle.
 - Downloads HTTPS de releases oficiais, MediaFire e fontes diretas revisadas, em segundo plano.
 - Duas conexões para PKGs grandes do Archive quando o servidor permite; velocidade medida e tempo estimado na tela.
 - Instalação local integrada após concluir e validar o download.
@@ -30,6 +31,26 @@ O catálogo também inclui Itemzflow de um espelho não oficial fixado por
 commit e SHA-256. O catálogo não representa todos os aplicativos existentes
 para PS4, e os cabeçalhos não comprovam funcionamento no firmware 13.52.
 A interface e os downloads não se conectam a servidores da PlayStation.
+
+A biblioteca permite pesquisar pelo nome, pelo identificador do catálogo
+ou pelo Content ID/CUSA. A busca ignora maiúsculas e acentos portugueses e
+combina as palavras digitadas com a categoria selecionada. R3 abre o teclado
+na tela; o filtro permanece até ser alterado ou apagado. As abas Atualizações
+e DLCs são separadas dos jogos e mostram um estado vazio enquanto não houver
+downloads disponíveis nessas categorias. Nenhum patch ou DLC foi apresentado
+como jogo completo para preencher essas abas. O downloader e o instalador
+atuais continuam aceitando os pacotes base conferidos do catálogo.
+
+Uma revisão adicional do SuperPSX reuniu 6.583 links de hospedadores em
+espelhos públicos, associados a 1.812 nomes. Esses registros não comprovam
+um catálogo completo e atualizado do site. Os 47 links MediaFire encontrados
+anunciam 46 RARs e um patch em PKG; não há base em PKG nesse conjunto.
+Sete candidatos a PKG base no Datanodes foram consultados e retornaram 404.
+Nenhum download instalável foi importado dessa revisão, e a contagem da loja
+permanece 845. O relatório com o escopo, fontes e resultados está em
+[superpsx-review.json](superpsx-review.json). As páginas que exigem navegador,
+arquivos compactados e pacotes separados exigem um fluxo próprio antes de
+entrarem no download direto da loja.
 
 O download verifica tamanho e magic de PKG, e confere SHA-256 quando
 há um hash revisado. A magic não valida a assinatura criptográfica do pacote. Pacotes concluídos ficam em
@@ -175,6 +196,9 @@ o controle. Usar o perfil na saída de áudio retornava `0x809B0001`
 - Triângulo: cancelar o download ou a instalação atual.
 - Quadrado: silenciar/reativar a música.
 - L3: próxima faixa.
+- R3 na biblioteca: abrir a pesquisa.
+- No teclado de pesquisa: direcional navega, X digita, Quadrado apaga,
+  Triângulo insere espaço, Options aplica e Bolinha cancela a edição.
 
 ## PKGs enviados e novas fontes
 
@@ -233,16 +257,24 @@ g++ -std=c++11 -O2 native/scripts/preview-ui.cpp -o /tmp/peppy-preview
 /tmp/peppy-preview /tmp/peppy
 ```
 
-O programa gera arquivos PPM para biblioteca e detalhes de todos os itens
-e categorias, além dos estados de download, usando o renderizador nativo.
+O programa gera arquivos PPM para biblioteca e detalhes, amostrando até
+quatro itens por categoria, além dos estados de download, usando o
+renderizador nativo.
 Para gerar somente cinco estados do medidor de download:
 
 ```sh
 /tmp/peppy-preview --preview-download-meter /tmp/peppy-meter
 ```
 
-Os testes de transferência, intervalos, concorrência, medição, instalação,
-entrega local, música e inspeção em `tests/downloads/`, `tests/parallel_download/`,
+Para verificar a pesquisa e gerar somente seus estados de exemplo:
+
+```sh
+/tmp/peppy-preview --check-search
+/tmp/peppy-preview --preview-search /tmp/peppy-search
+```
+
+Os testes de pesquisa, transferência, intervalos, concorrência, medição, instalação,
+entrega local, música e inspeção em `tests/catalog_search/`, `tests/downloads/`, `tests/parallel_download/`,
 `tests/download_meter/`, `tests/install/`, `tests/pkg_server/`, `tests/music/`
 e `tests/catalog_import/` também são executados na workflow antes da
 compilação nativa. Os mocks verificam controle e falhas; instalação e áudio

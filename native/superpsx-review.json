@@ -1,0 +1,175 @@
+{
+  "source": "https://www.superpsx.com/",
+  "checked_on": "2026-10-05",
+  "scope": "Public metadata and bounded response samples only; no complete game PKGs downloaded. This review does not inventory every current SuperPSX article or establish firmware compatibility.",
+  "store_catalog_entries": 845,
+  "new_installable_entries": 0,
+  "official_ps4_category_claimed_publications": 2525,
+  "public_mirror": {
+    "games.json": {
+      "url": "https://github.com/tutw/SuperPSX-PS4/blob/main/games.json",
+      "sha256": "33ae6228601e91e11f49a863c55634d9d400e8dd44b91fce8828037d07f693dc",
+      "landing_links": 1063
+    },
+    "other_servers.json": {
+      "url": "https://github.com/tutw/SuperPSX-PS4/blob/main/other_servers.json",
+      "sha256": "dbd08f51b99d8d3bc89fb5065c9d336e5931c40ec64014b6cfc091fbe6a48aa4",
+      "landing_links": 536
+    },
+    "1fichier.json": {
+      "url": "https://github.com/tutw/SuperPSX-PS4/blob/main/1fichier.json",
+      "sha256": "3cd22db642989f8e8130f67eb1808d01f69e4412b8f47c2d6c7eca7d560c135e",
+      "landing_links": 4984
+    }
+  },
+  "mirror_unique_landing_links": 6583,
+  "mirror_source_names": 1812,
+  "mediafire_named_files": {
+    "rar": 46,
+    "pkg_patch": 1,
+    "pkg_base": 0
+  },
+  "datanodes_base_candidates_checked": 7,
+  "datanodes_results": [
+    {
+      "name": "Call Of Duty Black Ops 6",
+      "url": "https://datanodes.to/9kjl8x2avyqc/UP0002-CUSA23827_00-COREGAME00000001-A0100-V0100-TheWorldismine-CyB1K.pkg",
+      "role": "Game ⇛",
+      "status": 404,
+      "final_url": "https://datanodes.to/download",
+      "content_type": "text/html; charset=UTF-8",
+      "content_length": null,
+      "content_range": null,
+      "sample_bytes": 29123,
+      "pkg_magic": false,
+      "page_title": [
+        "\n        \n            Download \n                \n    "
+      ],
+      "captcha_present": false,
+      "login_present": true
+    },
+    {
+      "name": "GTA The Trilogy",
+      "url": "https://datanodes.to/5dookn2exj8e/%5BSPSX%5D-GTA.3.TDE-CUSA23501-USA-Game-v1.07-PS4-CyB1K.pkg",
+      "role": "Game (v1.07) ⇛",
+      "status": 404,
+      "final_url": "https://datanodes.to/download",
+      "content_type": "text/html; charset=UTF-8",
+      "content_length": null,
+      "content_range": null,
+      "sample_bytes": 29123,
+      "pkg_magic": false,
+      "page_title": [
+        "\n        \n            Download \n                \n    "
+      ],
+      "captcha_present": false,
+      "login_present": true
+    },
+    {
+      "name": "GTA The Trilogy",
+      "url": "https://datanodes.to/3w90c2mksoag/%5BSPSX%5D-GTA.Vice.City.TDE-CUSA26615-USA-Game-v1.07-PS4-CyB1K.pkg",
+      "role": "Game (v1.07) ⇛",
+      "status": 404,
+      "final_url": "https://datanodes.to/download",
+      "content_type": "text/html; charset=UTF-8",
+      "content_length": null,
+      "content_range": null,
+      "sample_bytes": 29123,
+      "pkg_magic": false,
+      "page_title": [
+        "\n        \n            Download \n                \n    "
+      ],
+      "captcha_present": false,
+      "login_present": true
+    },
+    {
+      "name": "GTA The Trilogy",
+      "url": "https://datanodes.to/thlfdb8ffm50/%5BSPSX%5D-GTA.San_Andreas.TDE-CUSA26618-USA-Game-v1.07-PS4-CyB1K.pkg",
+      "role": "Game (v1.07) ⇛",
+      "status": 404,
+      "final_url": "https://datanodes.to/download",
+      "content_type": "text/html; charset=UTF-8",
+      "content_length": null,
+      "content_range": null,
+      "sample_bytes": 29123,
+      "pkg_magic": false,
+      "page_title": [
+        "\n        \n            Download \n                \n    "
+      ],
+      "captcha_present": false,
+      "login_present": true
+    },
+    {
+      "name": "Persona 3 Reload",
+      "url": "https://datanodes.to/5lo33rakxf2x/%5BSuperPSX%5D-Persona.3.Reload_CUSA37522_v1.00_%5B9.00%5D-PS4.pkg",
+      "role": "Game (9.00+) ⇛",
+      "status": 404,
+      "final_url": "https://datanodes.to/download",
+      "content_type": "text/html; charset=UTF-8",
+      "content_length": null,
+      "content_range": null,
+      "sample_bytes": 29123,
+      "pkg_magic": false,
+      "page_title": [
+        "\n        \n            Download \n                \n    "
+      ],
+      "captcha_present": false,
+      "login_present": true
+    },
+    {
+      "name": "Wwe 2K25",
+      "url": "https://datanodes.to/cme045snve73/%5BSuperPSX.com%5D-WWE.2K25_CUSA48576_v1.00_%5B12.00%5D_OPOISSO893.pkg",
+      "role": "Game (12.00) ⇛",
+      "status": 404,
+      "final_url": "https://datanodes.to/download",
+      "content_type": "text/html; charset=UTF-8",
+      "content_length": null,
+      "content_range": null,
+      "sample_bytes": 29123,
+      "pkg_magic": false,
+      "page_title": [
+        "\n        \n            Download \n                \n    "
+      ],
+      "captcha_present": false,
+      "login_present": true
+    },
+    {
+      "name": "Ys X Nordics Ultimate Edition",
+      "url": "https://datanodes.to/0x29x9pbrpho/%5BSPSX%5D-Ys.X.Nordics.Ultimate.Edition-CUSA47529-USA-Game-PS4.pkg",
+      "role": "Game ⇛",
+      "status": 404,
+      "final_url": "https://datanodes.to/download",
+      "content_type": "text/html; charset=UTF-8",
+      "content_length": null,
+      "content_range": null,
+      "sample_bytes": 29123,
+      "pkg_magic": false,
+      "page_title": [
+        "\n        \n            Download \n                \n    "
+      ],
+      "captcha_present": false,
+      "login_present": true
+    }
+  ],
+  "other_blockers": [
+    "Viking share pages require a browser challenge before generating download links.",
+    "The checked Mocha share page exposed filename and rounded size, but no reviewed byte-stream PKG link.",
+    "Mirror audio packs and patches cannot be treated as full Portuguese base games.",
+    "Patch/DLC installation needs a distinct validated package/dependency flow; the store currently accepts base packages."
+  ],
+  "conclusion": "No reviewed complete public PKG could be imported from these examined links. Pending source records remain research metadata, separate from the installable native catalog.",
+  "additional_host_sample": {
+    "url": "https://buzzheavier.com/xm7sceilyyvb",
+    "final_url": "https://buzzheavier.com/xm7sceilyyvb",
+    "status": 404,
+    "content_type": "text/html; charset=utf-8",
+    "bytes_sampled": 3101,
+    "truncated": false,
+    "title": [
+      "Not Found"
+    ],
+    "file_hints": [
+      "    <script src=\"https://challenges.cloudflare.com/turnstile/v0/api.js\" defer></script>"
+    ]
+  }
+}

@@ -68,7 +68,7 @@ $(MUSIC_ASSETS): ../fight-ps4.mp3 ../acendaofarol-ps4.mp3 scripts/prepare-music.
 # Both tracks are prepared together; serialize the packaging prerequisites.
 .NOTPARALLEL: pkg.gp4
 
-$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h downloads.h download_meter.h install.h music.h
+$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h catalog_search.h downloads.h download_meter.h install.h music.h
 archive_sources.h: archive_sources.json scripts/archive_policy.py
 	python3 scripts/archive_policy.py --policy archive_sources.json --output $@
 

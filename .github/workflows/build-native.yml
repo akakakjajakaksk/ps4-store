@@ -96,6 +96,9 @@ jobs:
             native/tests/download_meter/meter_test.cpp -o /tmp/peppy-download-meter-tests
           /tmp/peppy-download-meter-tests
 
+      - name: Test catalog search on host
+        run: sh native/tests/catalog_search/run.sh
+
       - name: Test concurrent package downloads on host
         run: |
           cd native
@@ -143,6 +146,7 @@ jobs:
           python3 native/scripts/generate-catalog.py --catalog native/catalog.json --output native/ui_catalog.h
           g++ -std=c++11 -O2 -Wall -Wextra -Werror native/scripts/preview-ui.cpp -o /tmp/peppy-ui-controls
           /tmp/peppy-ui-controls --check-controller
+          /tmp/peppy-ui-controls --check-search
 
       - name: Test package directory manifest
         run: python3 native/tests/gp4/normalize_test.py

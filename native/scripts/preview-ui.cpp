@@ -75,6 +75,7 @@ static uint64_t previewNowUs() { return previewTimeUs; }
 
 static void resetController() {
     activeCategory = 0;
+    catalogSearch = CatalogSearchState();
     downloadingApp = installingApp = -1;
     autoInstallPending = installCancelRequested = false;
     memset(downloadedBytes, 0, sizeof(downloadedBytes));
@@ -104,6 +105,91 @@ static void samplePreviewDownload(uint64_t now, uint64_t received) {
     previewDownload.received = received;
     downloadMeter.update(previewDownload.state == RUNNING, previewDownload.received,
                          previewDownload.total, previewNowUs());
+}
+
+static bool verifySearchController() {
+    resetController();
+    int selected = UI_APP_COUNT - 1;
+    bool details = false;
+    if (!expect(categoryCount() == UI_APP_COUNT && appIndex(selected) == selected,
+                "an empty search retains the full verified catalog")) return false;
+    handleCatalogController(CATALOG_RIGHT, selected, details);
+    if (!expect(selected == 0, "library navigation wraps the filtered selection")) return false;
+    handleCatalogController(CATALOG_L1, selected, details);
+    if (!expect(activeCategory == 6 && selected == 0,
+                "category navigation reaches the separate DLC tab")) return false;
+    handleCatalogController(CATALOG_R1, selected, details);
+    if (!expect(activeCategory == 0, "all seven categories wrap back to Todos")) return false;
+
+    activateApp(0);
+    handleCatalogController(CATALOG_R3 | CATALOG_CROSS | CATALOG_SQUARE, selected, details);
+    if (!expect(catalogSearch.open && !details && !previewMusic.muted && !catalogSearch.draft[0],
+                "opening search consumes simultaneous outside controls")) return false;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    handleCatalogController(CATALOG_TRIANGLE, selected, details);
+    if (!expect(strcmp(catalogSearch.draft, "A ") == 0 && previewDownload.state == RUNNING,
+                "modal X types and Triangle inserts a space without cancelling a download")) return false;
+    handleCatalogController(CATALOG_SQUARE | CATALOG_R1 | CATALOG_L3, selected, details);
+    if (!expect(strcmp(catalogSearch.draft, "A") == 0 && !previewMusic.muted &&
+                previewMusic.track == 0 && activeCategory == 0,
+                "modal erase isolates music and category controls")) return false;
+    handleCatalogController(CATALOG_CIRCLE | CATALOG_TRIANGLE | CATALOG_CROSS, selected, details);
+    if (!expect(!catalogSearch.open && !catalogSearch.query[0] && !details &&
+                previewDownload.state == RUNNING && downloadCalls == 1 && installCalls == 0,
+                "cancelling the editor preserves the committed filter and active transfer")) return false;
+
+    resetController();
+    selected = UI_APP_COUNT - 1;
+    handleCatalogController(CATALOG_R3, selected, details);
+    snprintf(catalogSearch.draft, sizeof(catalogSearch.draft), "%s", UI_APPS[0].id);
+    handleCatalogController(CATALOG_OPTIONS | CATALOG_CROSS | CATALOG_SQUARE, selected, details);
+    if (!expect(!catalogSearch.open && selected == 0 && !details && !previewMusic.muted &&
+                categoryCount() > 0 && appIndex(0) == 0 && downloadCalls == 0,
+                "applying an ID query safely resets selection and consumes other actions")) return false;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(details && appIndex(selected) == 0, "search results open the correct package details")) return false;
+    handleCatalogController(CATALOG_R3, selected, details);
+    if (!expect(!catalogSearch.open, "details retain their existing controls")) return false;
+    handleCatalogController(CATALOG_CIRCLE, selected, details);
+    handleCatalogController(CATALOG_R1, selected, details);
+    if (!expect(activeCategory == 1 && appIndex(selected) == 0 && catalogSearch.query[0],
+                "changing categories preserves and combines the query")) return false;
+    handleCatalogController(CATALOG_R1, selected, details);
+    handleCatalogController(CATALOG_CROSS | CATALOG_LEFT | CATALOG_RIGHT, selected, details);
+    if (!expect(categoryCount() == 0 && selected == 0 && !details && appIndex(selected) == -1 && downloadCalls == 0,
+                "an empty filtered category cannot open or download an unrelated package")) return false;
+
+    resetController();
+    for (int i = 0; i < UI_APP_COUNT; ++i) {
+        if (!UI_APPS[i].contentId[0]) continue;
+        snprintf(catalogSearch.query, sizeof(catalogSearch.query), "%s", UI_APPS[i].contentId);
+        if (!expect(categoryCount() > 0 && appIndex(0) == i,
+                    "a full Content ID finds its actual verified catalog entry")) return false;
+        break;
+    }
+    catalogSearch = CatalogSearchState();
+    snprintf(catalogSearch.query, sizeof(catalogSearch.query), "__NO_SUCH_PKG_74C6__");
+    selected = UI_APP_COUNT + 12;
+    details = true;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(categoryCount() == 0 && selected == 0 && !details && downloadCalls == 0,
+                "a stale selection is clamped safely when no query results remain")) return false;
+    handleCatalogController(CATALOG_R3, selected, details);
+    catalogSearch.draft[0] = 0;
+    handleCatalogController(CATALOG_OPTIONS, selected, details);
+    if (!expect(categoryCount() == UI_APP_COUNT && selected == 0,
+                "applying an empty query restores the full category")) return false;
+    for (int category = 5; category < CATEGORY_COUNT; ++category) {
+        activeCategory = category;
+        selected = 0;
+        handleCatalogController(CATALOG_CROSS, selected, details);
+        if (!expect(categoryCount() || (!details && appIndex(selected) == -1 && downloadCalls == 0),
+                    "empty update and DLC tabs cannot launch an action")) return false;
+        details = false;
+    }
+    resetController();
+    puts("Checked controller search, modal isolation, category/query composition, Content IDs and safe empty selection.");
+    return true;
 }
 
 static bool verifyMeasurementUi() {
@@ -257,7 +343,7 @@ static bool verifyController() {
         if (!expect((strcmp(UI_APPS[i].sourceBadge, "PKG / FONTE OFICIAL") == 0) == official,
                     "checked packages display the badge for their actual source")) return false;
     }
-    if (!verifyMeasurementUi()) return false;
+    if (!verifyMeasurementUi() || !verifySearchController()) return false;
     resetController();
     puts("Checked automatic install handoff, retry, cancellation, cleanup, music, size labels and measured download speed.");
     return true;
@@ -319,19 +405,76 @@ static bool previewMeasurementStates(const char* prefix) {
     return okay;
 }
 
+static bool previewSearchStates(const char* prefix) {
+    uint32_t* allocation = static_cast<uint32_t*>(malloc(((size_t)W * H + 2) * sizeof(uint32_t)));
+    if (!allocation) return false;
+    const uint32_t canary = 0xBAADF00D;
+    allocation[0] = allocation[(size_t)W * H + 1] = canary;
+    uint32_t* frame = allocation + 1;
+    resetController();
+    drawStore(frame, 0, 2);
+    bool okay = saveState(prefix, "search-home", frame);
+    catalogSearch.begin();
+    drawCatalogSearch(frame, 0);
+    okay = saveState(prefix, "search-keyboard", frame) && okay;
+    catalogSearch.key = CATALOG_SEARCH_KEY_COUNT - 1;
+    snprintf(catalogSearch.draft, sizeof(catalogSearch.draft), "CUSA00001");
+    drawCatalogSearch(frame, 0);
+    okay = saveState(prefix, "search-keyboard-last-key", frame) && okay;
+    catalogSearch.input(SEARCH_CANCEL);
+    snprintf(catalogSearch.query, sizeof(catalogSearch.query), "Apollo");
+    drawStore(frame, 0, 2);
+    okay = saveState(prefix, "search-results", frame) && okay;
+    snprintf(catalogSearch.query, sizeof(catalogSearch.query), "__NO_SUCH_PKG_74C6__");
+    drawStore(frame, 0, 2);
+    okay = saveState(prefix, "search-empty", frame) && okay;
+    catalogSearch.query[0] = 0;
+    activeCategory = 5;
+    drawStore(frame, 0, 2);
+    okay = saveState(prefix, "updates-empty", frame) && okay;
+    activeCategory = 6;
+    drawStore(frame, 0, 2);
+    okay = saveState(prefix, "dlc-empty", frame) && okay;
+    resetController();
+    activateApp(0);
+    samplePreviewDownload(1000000, 1200000);
+    samplePreviewDownload(2000000, 2400000);
+    catalogSearch.begin();
+    drawCatalogSearch(frame, 0);
+    okay = saveState(prefix, "search-during-download", frame) && okay;
+    okay = allocation[0] == canary && allocation[(size_t)W * H + 1] == canary && okay;
+    free(allocation);
+    resetController();
+    if (okay) puts("Rendered 8 bounded search and separate category states with framebuffer guards.");
+    return okay;
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && strcmp(argv[1], "--check-controller") == 0) return verifyController() ? 0 : 1;
+    if (argc == 2 && strcmp(argv[1], "--check-search") == 0) return verifySearchController() ? 0 : 1;
     if (argc == 3 && strcmp(argv[1], "--preview-download-meter") == 0)
         return verifyController() && previewMeasurementStates(argv[2]) ? 0 : 1;
-    if (argc != 2) { fprintf(stderr, "Usage: %s output-prefix | --check-controller | --preview-download-meter prefix\n", argv[0]); return 1; }
+    if (argc == 3 && strcmp(argv[1], "--preview-search") == 0)
+        return verifyController() && previewSearchStates(argv[2]) ? 0 : 1;
+    if (argc != 2) { fprintf(stderr, "Usage: %s output-prefix | --check-controller | --check-search | --preview-download-meter prefix | --preview-search prefix\n", argv[0]); return 1; }
     if (!verifyController()) return 1;
     uint32_t* allocation = (uint32_t*)malloc(((size_t)W * H + 2) * sizeof(uint32_t));
     if (!allocation) return 1;
     allocation[0] = allocation[(size_t)W * H + 1] = 0xBAADF00D;
     uint32_t* frame = allocation + 1;
     int states = 0;
-    for (activeCategory = 0; activeCategory < 5; ++activeCategory) {
-      for (int selected = 0; selected < categoryCount(); ++selected) {
+    // Bounded smoke rendering: at most four entries per category, even when
+    // the verified catalog contains hundreds of games.
+    for (activeCategory = 0; activeCategory < CATEGORY_COUNT; ++activeCategory) {
+      const int count = categoryCount();
+      if (!count) {
+        char state[80];
+        drawStore(frame, 0, 2);
+        snprintf(state, sizeof(state), "home-%d-empty", activeCategory);
+        if (!saveState(argv[1], state, frame)) { free(allocation); return 1; }
+        ++states;
+      }
+      for (int selected = 0; selected < count && selected < 4; ++selected) {
         char state[80];
         drawStore(frame, selected, 2);
         snprintf(state, sizeof(state), "home-%d-%d", activeCategory, selected);

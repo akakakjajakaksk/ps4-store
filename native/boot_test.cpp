@@ -11,6 +11,7 @@
 #include <string.h>
 #include "ui_assets.h"
 #include "ui_catalog.h"
+#include "catalog_search.h"
 #include "downloads.h"
 #include "download_meter.h"
 #include "install.h"
@@ -20,9 +21,11 @@ static const int W = 1920, H = 1080;
 static const uint32_t BG = 0x800B0F17, PANEL = 0x80131925;
 static const uint32_t WHITE = 0x80F4F6FA, MUTED = 0x809BA7BA;
 static const uint32_t BLUE = 0x8073B7FF, LINE = 0x80252D3C;
-static const char* CATEGORY_NAMES[5] = {"Todos", "Utilitários", "Emuladores", "Jogos", "Mídia"};
-static const uint32_t CATEGORY_COLORS[5] = {BLUE, 0x807BDECC, 0x80B9A2F9, 0x80EBC48A, 0x8085BBFB};
+static const int CATEGORY_COUNT = 7;
+static const char* CATEGORY_NAMES[CATEGORY_COUNT] = {"Todos", "Utilitários", "Emuladores", "Jogos", "Mídia", "Atualizações", "DLCs"};
+static const uint32_t CATEGORY_COLORS[CATEGORY_COUNT] = {BLUE, 0x807BDECC, 0x80B9A2F9, 0x80EBC48A, 0x8085BBFB, BLUE, BLUE};
 static int activeCategory = 0, downloadingApp = -1, installingApp = -1;
+static CatalogSearchState catalogSearch;
 static bool autoInstallPending = false, installCancelRequested = false;
 static uint64_t downloadedBytes[UI_APP_COUNT] = {};
 static bool installedApps[UI_APP_COUNT] = {};
@@ -113,20 +116,87 @@ static bool cancelOperation(int selectedIndex) {
     return false;
 }
 
+static bool matchesCatalogFilter(const UiApp& app) {
+    return (!activeCategory || app.category == activeCategory) &&
+        catalogSearchMatches(app.name, app.id, app.contentId, catalogSearch.query);
+}
+
 static int categoryCount() {
     int count = 0;
     for (int i = 0; i < UI_APP_COUNT; ++i)
-        if (!activeCategory || UI_APPS[i].category == activeCategory) ++count;
+        if (matchesCatalogFilter(UI_APPS[i])) ++count;
     return count;
 }
 
 static int appIndex(int selected) {
     for (int i = 0; i < UI_APP_COUNT; ++i) {
-        if (!activeCategory || UI_APPS[i].category == activeCategory) {
+        if (matchesCatalogFilter(UI_APPS[i])) {
             if (selected-- == 0) return i;
         }
     }
     return -1;
+}
+
+// Controller actions are shared by the console loop and host checks. The
+// caller supplies press edges, so holding X never fills the query repeatedly.
+enum CatalogControllerButton {
+    CATALOG_LEFT = 1U << 0, CATALOG_RIGHT = 1U << 1,
+    CATALOG_UP = 1U << 2, CATALOG_DOWN = 1U << 3,
+    CATALOG_CROSS = 1U << 4, CATALOG_CIRCLE = 1U << 5,
+    CATALOG_SQUARE = 1U << 6, CATALOG_TRIANGLE = 1U << 7,
+    CATALOG_L1 = 1U << 8, CATALOG_R1 = 1U << 9,
+    CATALOG_L3 = 1U << 10, CATALOG_R3 = 1U << 11,
+    CATALOG_OPTIONS = 1U << 12
+};
+
+static bool handleCatalogController(uint32_t pressed, int& selected, bool& details) {
+    int count = categoryCount();
+    if (selected < 0 || selected >= count) selected = 0;
+    if (!count) details = false;
+    if (catalogSearch.open) {
+        // Closing consumes the entire press, including simultaneous buttons.
+        if (pressed & CATALOG_CIRCLE) return catalogSearch.input(SEARCH_CANCEL);
+        if (pressed & CATALOG_OPTIONS) {
+            bool changed = catalogSearch.input(SEARCH_APPLY);
+            selected = 0;
+            details = false;
+            return changed;
+        }
+        bool changed = false;
+        if (pressed & CATALOG_LEFT) changed = catalogSearch.input(SEARCH_LEFT) || changed;
+        if (pressed & CATALOG_RIGHT) changed = catalogSearch.input(SEARCH_RIGHT) || changed;
+        if (pressed & CATALOG_UP) changed = catalogSearch.input(SEARCH_UP) || changed;
+        if (pressed & CATALOG_DOWN) changed = catalogSearch.input(SEARCH_DOWN) || changed;
+        if (pressed & CATALOG_SQUARE) changed = catalogSearch.input(SEARCH_ERASE) || changed;
+        if (pressed & CATALOG_TRIANGLE) changed = catalogSearch.input(SEARCH_SPACE) || changed;
+        if (pressed & CATALOG_CROSS) changed = catalogSearch.input(SEARCH_CHARACTER) || changed;
+        return changed;
+    }
+    if (!details && (pressed & CATALOG_R3)) { catalogSearch.begin(); return true; }
+    bool changed = false;
+    if (!details && (pressed & CATALOG_R1)) {
+        activeCategory = (activeCategory + 1) % CATEGORY_COUNT;
+        selected = 0;
+        changed = true;
+    }
+    if (!details && (pressed & CATALOG_L1)) {
+        activeCategory = (activeCategory + CATEGORY_COUNT - 1) % CATEGORY_COUNT;
+        selected = 0;
+        changed = true;
+    }
+    count = categoryCount();
+    if (!details && count && (pressed & CATALOG_RIGHT)) { selected = (selected + 1) % count; changed = true; }
+    if (!details && count && (pressed & CATALOG_LEFT)) { selected = (selected + count - 1) % count; changed = true; }
+    if (count && (pressed & CATALOG_CROSS)) {
+        if (!details) details = true;
+        else activateApp(appIndex(selected));
+        changed = true;
+    }
+    if (details && (pressed & CATALOG_CIRCLE)) { details = false; changed = true; }
+    if (pressed & CATALOG_TRIANGLE) changed = cancelOperation(appIndex(selected)) || changed;
+    if (pressed & CATALOG_SQUARE) { musicToggleMute(); changed = true; }
+    if (pressed & CATALOG_L3) { musicNextTrack(); changed = true; }
+    return changed;
 }
 
 static uint32_t mix(uint32_t a, uint32_t b, int t) {
@@ -331,11 +401,11 @@ static void header(uint32_t* p) {
     text(p, 150, 45, "PEPPY", FONT_TITLE, WHITE);
     text(p, 152, 84, "S T O R E", FONT_SMALL, MUTED);
     int tabX = 420;
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < CATEGORY_COUNT; ++i) {
         int width = textWidth(CATEGORY_NAMES[i], FONT_BODY);
         text(p, tabX, 67, CATEGORY_NAMES[i], FONT_BODY, i == activeCategory ? WHITE : MUTED);
         if (i == activeCategory) roundRect(p, tabX, 119, width, 3, 1, BLUE);
-        tabX += width + 42;
+        tabX += width + 26;
     }
     const char* label = "PS4  /  HOMEBREW";
     pill(p, W - 72 - textWidth(label, FONT_SMALL) - 32, 61, label, PANEL, MUTED);
@@ -460,8 +530,10 @@ static void footer(uint32_t* p, bool details, int selectedIndex) {
         line(p, 108, 1006, 101, 999, 2, MUTED);
         line(p, 108, 1006, 101, 1013, 2, MUTED);
         text(p, 122, 992, "Navegar", FONT_SMALL, MUTED);
-        crossButton(p, 260, 1006);
-        text(p, 288, 992, "Ver detalhes", FONT_SMALL, WHITE);
+        if (validApp(selectedIndex)) {
+            crossButton(p, 260, 1006);
+            text(p, 288, 992, "Ver detalhes", FONT_SMALL, WHITE);
+        }
         text(p, 472, 992, "L1 / R1  Categorias", FONT_SMALL, MUTED);
     }
     bool canCancel = download.state == RUNNING ||
@@ -513,6 +585,11 @@ static void footer(uint32_t* p, bool details, int selectedIndex) {
     ring(p, 747, 1044, 18, 2, MUTED);
     text(p, 733, 1030, "L3", FONT_SMALL, MUTED);
     text(p, 781, 1030, "Próxima faixa", FONT_SMALL, MUTED);
+    if (!details) {
+        ring(p, 1111, 1044, 18, 2, MUTED);
+        text(p, 1096, 1030, "R3", FONT_SMALL, MUTED);
+        text(p, 1145, 1030, "Buscar", FONT_SMALL, WHITE);
+    }
 }
 
 static const char* installErrorText(int code) {
@@ -565,11 +642,15 @@ static void drawStore(uint32_t* p, int selected, int padState) {
     text(p, 108, 332, "Do seu jeito.", FONT_HERO, WHITE);
     text(p, 112, 444, "Homebrews e ferramentas em um só lugar.", FONT_BODY, 0x80B6C4DB);
     pill(p, 1604, 482, "PEPPY ORIGINAL", 0x80111B2B, WHITE);
+    roundRect(p, 112, 486, 1040, 42, 12, 0x8010192A);
+    text(p, 130, 492, "R3  Buscar", FONT_SMALL, BLUE);
+    textElided(p, 280, 492, catalogSearch.query[0] ? catalogSearch.query : "Nome, ID do jogo ou Content ID",
+               FONT_SMALL, catalogSearch.query[0] ? WHITE : MUTED, 850);
 
     int count = categoryCount(), first = selected / 4 * 4;
     text(p, 72, 578, activeCategory ? CATEGORY_NAMES[activeCategory] : "Explore sua biblioteca", FONT_TITLE, WHITE);
     char pageLabel[80];
-    snprintf(pageLabel, sizeof(pageLabel), "%02d itens  |  Página %d/%d", count, count ? selected / 4 + 1 : 0, (count + 3) / 4);
+    snprintf(pageLabel, sizeof(pageLabel), "%d %s  |  Página %d/%d", count, count == 1 ? "item" : "itens", count ? selected / 4 + 1 : 0, (count + 3) / 4);
     text(p, W - 72 - textWidth(pageLabel, FONT_SMALL), 587, pageLabel, FONT_SMALL, MUTED);
     const int start = 72, y = 650, cw = 426, ch = 294, gap = 24;
     for (int slot = 0; slot < 4 && first + slot < count; ++slot) {
@@ -595,8 +676,41 @@ static void drawStore(uint32_t* p, int selected, int padState) {
         line(p, x + cw - 40, y + 261, x + cw - 33, y + 268, 2, focus ? BLUE : MUTED);
         line(p, x + cw - 40, y + 275, x + cw - 33, y + 268, 2, focus ? BLUE : MUTED);
     }
-    if (!count) text(p, 72, 706, "Nenhum PKG verificado nesta categoria.", FONT_BODY, MUTED);
+    if (!count) {
+        const char* message = catalogSearch.query[0] ? "Nenhum resultado para esta busca nesta categoria." :
+            (activeCategory == 5 ? "Ainda não há atualizações disponíveis." :
+             (activeCategory == 6 ? "Ainda não há DLCs disponíveis." : "Nenhum item nesta categoria."));
+        text(p, 72, 706, message, FONT_BODY, MUTED);
+        text(p, 72, 753, "R3  Alterar busca    |    L1 / R1  Trocar categoria", FONT_SMALL, MUTED);
+    }
     footer(p, false, appIndex(selected));
+}
+
+static void drawCatalogSearch(uint32_t* p, int selected) {
+    drawStore(p, selected, 2);
+    for (int i = 0; i < W * H; ++i) p[i] = mix(p[i], BG, 205);
+    roundRect(p, 330, 228, 1260, 642, 24, PANEL);
+    outline(p, 330, 228, 1260, 642, 24, 2, LINE);
+    text(p, 390, 274, "Buscar na biblioteca", FONT_HEADING, WHITE);
+    text(p, 390, 330, "Nome, ID do jogo ou Content ID  |  Todos os termos", FONT_SMALL, MUTED);
+    roundRect(p, 390, 372, 1140, 60, 12, BG);
+    outline(p, 390, 372, 1140, 60, 12, 2, BLUE);
+    textElided(p, 410, 384, catalogSearch.draft[0] ? catalogSearch.draft : "Digite sua busca...",
+               FONT_BODY, catalogSearch.draft[0] ? WHITE : MUTED, 1084);
+    for (int key = 0; key < CATALOG_SEARCH_KEY_COUNT; ++key) {
+        const int x = 400 + (key % CATALOG_SEARCH_COLUMNS) * 114;
+        const int y = 460 + (key / CATALOG_SEARCH_COLUMNS) * 78;
+        const bool focus = key == catalogSearch.key;
+        roundRect(p, x, y, 102, 62, 12, focus ? 0x80243A58 : 0x801B2535);
+        outline(p, x, y, 102, 62, 12, focus ? 2 : 1, focus ? BLUE : LINE);
+        char label[2] = {catalogSearchKeys()[key], 0};
+        text(p, x + (102 - textWidth(label, FONT_BODY)) / 2, y + 15, label, FONT_BODY, focus ? WHITE : MUTED);
+    }
+    text(p, 390, 788, "Direcional  Navegar    X  Inserir    Quadrado  Apagar    Triângulo  Espaço", FONT_SMALL, MUTED);
+    text(p, 390, 827, "OPTIONS  Aplicar busca    |    Círculo  Cancelar", FONT_SMALL, WHITE);
+    char limit[32];
+    snprintf(limit, sizeof(limit), "%u / %u", (unsigned)strlen(catalogSearch.draft), (unsigned)CATALOG_SEARCH_MAX_BYTES);
+    text(p, 1530 - textWidth(limit, FONT_SMALL), 827, limit, FONT_SMALL, MUTED);
 }
 
 static void drawDetails(uint32_t* p, int selected) {
@@ -777,21 +891,21 @@ int main(void){
    static bool readShown=false;
    if(!readShown){front=1-front;drawStore(fb[front],selected,2);sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);readShown=true;}
    uint32_t now=pd.buttons;
-   int count=categoryCount();
-   if(!details && (now&ORBIS_PAD_BUTTON_R1)&&!(prev&ORBIS_PAD_BUTTON_R1)){activeCategory=(activeCategory+1)%5;selected=0;changed=true;}
-   if(!details && (now&ORBIS_PAD_BUTTON_L1)&&!(prev&ORBIS_PAD_BUTTON_L1)){activeCategory=(activeCategory+4)%5;selected=0;changed=true;}
-   count=categoryCount();
-   if(!details && count && (now&ORBIS_PAD_BUTTON_RIGHT)&&!(prev&ORBIS_PAD_BUTTON_RIGHT)){selected=(selected+1)%count;changed=true;}
-   if(!details && count && (now&ORBIS_PAD_BUTTON_LEFT)&&!(prev&ORBIS_PAD_BUTTON_LEFT)){selected=(selected+count-1)%count;changed=true;}
-   if(count && (now&ORBIS_PAD_BUTTON_CROSS)&&!(prev&ORBIS_PAD_BUTTON_CROSS)){
-    if(!details) details=true;
-    else activateApp(appIndex(selected));
-    changed=true;
-   }
-   if(details && (now&ORBIS_PAD_BUTTON_CIRCLE)&&!(prev&ORBIS_PAD_BUTTON_CIRCLE)){details=false;changed=true;}
-   if((now&ORBIS_PAD_BUTTON_TRIANGLE)&&!(prev&ORBIS_PAD_BUTTON_TRIANGLE)) changed=cancelOperation(appIndex(selected)) || changed;
-   if((now&ORBIS_PAD_BUTTON_SQUARE)&&!(prev&ORBIS_PAD_BUTTON_SQUARE)){musicToggleMute();changed=true;}
-   if((now&ORBIS_PAD_BUTTON_L3)&&!(prev&ORBIS_PAD_BUTTON_L3)){musicNextTrack();changed=true;}
+   uint32_t edge=now & ~prev, pressed=0;
+   if(edge&ORBIS_PAD_BUTTON_LEFT) pressed|=CATALOG_LEFT;
+   if(edge&ORBIS_PAD_BUTTON_RIGHT) pressed|=CATALOG_RIGHT;
+   if(edge&ORBIS_PAD_BUTTON_UP) pressed|=CATALOG_UP;
+   if(edge&ORBIS_PAD_BUTTON_DOWN) pressed|=CATALOG_DOWN;
+   if(edge&ORBIS_PAD_BUTTON_CROSS) pressed|=CATALOG_CROSS;
+   if(edge&ORBIS_PAD_BUTTON_CIRCLE) pressed|=CATALOG_CIRCLE;
+   if(edge&ORBIS_PAD_BUTTON_SQUARE) pressed|=CATALOG_SQUARE;
+   if(edge&ORBIS_PAD_BUTTON_TRIANGLE) pressed|=CATALOG_TRIANGLE;
+   if(edge&ORBIS_PAD_BUTTON_L1) pressed|=CATALOG_L1;
+   if(edge&ORBIS_PAD_BUTTON_R1) pressed|=CATALOG_R1;
+   if(edge&ORBIS_PAD_BUTTON_L3) pressed|=CATALOG_L3;
+   if(edge&ORBIS_PAD_BUTTON_R3) pressed|=CATALOG_R3;
+   if(edge&ORBIS_PAD_BUTTON_OPTIONS) pressed|=CATALOG_OPTIONS;
+   changed=handleCatalogController(pressed,selected,details) || changed;
    prev=now;
   }
   if(++progressTicks>=12){
@@ -819,7 +933,8 @@ int main(void){
   }
   if(changed){
    front=1-front;
-   if(details) drawDetails(fb[front],selected); else drawStore(fb[front],selected,2);
+   if(catalogSearch.open) drawCatalogSearch(fb[front],selected);
+   else if(details) drawDetails(fb[front],selected); else drawStore(fb[front],selected,2);
    sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
   }
   sceKernelUsleep(16000);
