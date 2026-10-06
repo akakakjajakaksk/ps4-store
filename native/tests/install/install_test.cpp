@@ -232,6 +232,9 @@ extern "C" int32_t peppyBgftRegisterHttp(PeppyBgftParam* params, int32_t* task) 
     *task = 17;
     return 0;
 }
+extern "C" int32_t peppyBgftRegisterDebug(PeppyBgftParam* params, int32_t* task) {
+    return peppyBgftRegisterHttp(params, task);
+}
 extern "C" int32_t sceBgftServiceDownloadStartTask(int32_t task) {
     credentialsExpected(); assert(task == 17); ++startCalls;
     if (mode == START_FAIL) return RAW;
@@ -502,6 +505,7 @@ static void reset(Mode next, bool alias = true) {
     assert(mkdir(systemDirectory.c_str(), 0755) == 0);
     unsigned char header[8192] = {};
     header[0] = 0x7f; header[1] = 'C'; header[2] = 'N'; header[3] = 'T';
+    header[0x77] = 0x1A; // PKG_CONTENT_TYPE_GD, big-endian.
     const char* id = next == SELF_APP ? "UP0001-BREW00001_00-0000000000000000"
                                       : "UP0001-APOL00004_00-0000000000000000";
     assert(strlen(id) == 36); memcpy(header + 0x40, id, 36);
