@@ -48,13 +48,14 @@ static char storeAdminUser[65] = {}, storeAdminPassword[129] = {};
 static char storeNotice[512] = {};
 static HubResult storePending = {};
 static bool storeHasPending = false;
+static int storePendingHttpStatus = 0;
 
 struct StoreKeyboard {
     char draft[8192];
     int key, target, returnPanel;
     size_t limit;
-    bool masked;
-    StoreKeyboard() : draft{}, key(0), target(0), returnPanel(0), limit(0), masked(false) {}
+    bool masked, reveal, replaceOnInput;
+    StoreKeyboard() : draft{}, key(0), target(0), returnPanel(0), limit(0), masked(false), reveal(false), replaceOnInput(false) {}
 };
 static StoreKeyboard storeKeyboard;
 static const char* storeKeyboardKeys() {
@@ -65,12 +66,16 @@ static void storeWipe(char* value, size_t bytes) {
     volatile char* p = value;
     while (bytes--) *p++ = 0;
 }
+static void storeClearEditor() {
+    storeWipe(storeKeyboard.draft, sizeof(storeKeyboard.draft));
+    storeKeyboard.reveal = storeKeyboard.replaceOnInput = false;
+}
 static void storeClearPasswords() {
     storeWipe(storeLoginPassword, sizeof(storeLoginPassword));
     storeWipe(storeAdminPassword, sizeof(storeAdminPassword));
     storeWipe(storeAccountPassword, sizeof(storeAccountPassword));
     if (storePanel == STORE_PANEL_TEXT && storeKeyboard.masked)
-        storeWipe(storeKeyboard.draft, sizeof(storeKeyboard.draft));
+        storeClearEditor();
 }
 static void storeClearAdminUsers() {
     free(storeAdminUsers); storeAdminUsers = 0; storeAdminUserCount = 0; storeAdminUserSelection = 0;
@@ -86,21 +91,47 @@ static void storeRestoreLoginFields() {
     storeWipe(password, sizeof(password));
 }
 static void storeOpenPanel(int panel) {
+    if (storePanel == STORE_PANEL_TEXT && panel != STORE_PANEL_TEXT) storeClearEditor();
     storePanel = panel; storeMenuSelection = 0;
     if (panel == STORE_PANEL_PREMIUM) storeRestoreLoginFields();
 }
 static void storeBeginText(int target, int returnPanel) {
+    storeClearEditor();
     storeKeyboard = StoreKeyboard();
+    storeNotice[0] = 0;
     storeKeyboard.target = target; storeKeyboard.returnPanel = returnPanel;
     storeKeyboard.limit = target == STORE_TEXT_URLS ? sizeof(storeKeyboard.draft) - 1 :
-        (target == STORE_TEXT_LOGIN_USER || target == STORE_TEXT_ADMIN_USER ? 64 : 128);
+        (target == STORE_TEXT_LOGIN_USER || target == STORE_TEXT_ADMIN_USER ? 32 : 128);
     storeKeyboard.masked = target == STORE_TEXT_LOGIN_PASSWORD || target == STORE_TEXT_ADMIN_PASSWORD || target == STORE_TEXT_ACCOUNT_PASSWORD;
     const char* initial = target == STORE_TEXT_LOGIN_USER ? storeLoginUser :
         target == STORE_TEXT_LOGIN_PASSWORD ? storeLoginPassword :
         target == STORE_TEXT_ADMIN_USER ? storeAdminUser :
         target == STORE_TEXT_ADMIN_PASSWORD ? storeAdminPassword : target == STORE_TEXT_ACCOUNT_PASSWORD ? storeAccountPassword : "";
     snprintf(storeKeyboard.draft, sizeof(storeKeyboard.draft), "%s", initial);
+    storeKeyboard.replaceOnInput = storeKeyboard.masked && storeKeyboard.draft[0];
     storePanel = STORE_PANEL_TEXT;
+}
+static bool storeUsernameValid(const char* username) {
+    size_t n = strlen(username);
+    if (n < 3 || n > 32) return false;
+    for (size_t i = 0; i < n; ++i) {
+        char c = username[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) return false;
+    }
+    return true;
+}
+static bool storeLoginFieldsValid() {
+    if (!storeUsernameValid(storeLoginUser)) {
+        snprintf(storeNotice, sizeof(storeNotice), "Preencha o usuário com 3 a 32 letras, números, ponto, hífen ou sublinhado, sem espaços.");
+        return false;
+    }
+    size_t bytes = strlen(storeLoginPassword);
+    if (bytes < 8 || bytes > 128) {
+        snprintf(storeNotice, sizeof(storeNotice), "Preencha a senha com 8 a 128 caracteres. A senha diferencia maiúsculas e minúsculas.");
+        return false;
+    }
+    return true;
 }
 static const UserCatalogEntry* storeEntry(int index) {
     if (index >= STORE_REMOTE_FIRST && storeRemote)
@@ -237,10 +268,10 @@ static bool storeSubmitText() {
             storeWipe(storeLoginPassword, sizeof(storeLoginPassword));
         char* out = target == STORE_TEXT_LOGIN_USER ? storeLoginUser : target == STORE_TEXT_LOGIN_PASSWORD ? storeLoginPassword :
             target == STORE_TEXT_ADMIN_USER ? storeAdminUser : target == STORE_TEXT_ACCOUNT_PASSWORD ? storeAccountPassword : storeAdminPassword;
-        size_t cap = target == STORE_TEXT_LOGIN_USER || target == STORE_TEXT_ADMIN_USER ? 65 : 129;
+        size_t cap = target == STORE_TEXT_LOGIN_USER || target == STORE_TEXT_ADMIN_USER ? 33 : 129;
         snprintf(out, cap, "%.*s", int(cap - 1), storeKeyboard.draft);
     }
-    storeWipe(storeKeyboard.draft, sizeof(storeKeyboard.draft));
+    storeClearEditor();
     storePanel = returnPanel;
     return started;
 }
@@ -257,18 +288,23 @@ static bool storePanelController(uint32_t pressed, uint32_t held) {
     if (storePanel == STORE_PANEL_NONE) return false;
     if (!pressed) return false;
     if (storePanel == STORE_PANEL_TEXT) {
-        if (pressed & CATALOG_CIRCLE) { storeWipe(storeKeyboard.draft, sizeof(storeKeyboard.draft)); storePanel = storeKeyboard.returnPanel; return true; }
+        if (pressed & CATALOG_CIRCLE) { storeClearEditor(); storePanel = storeKeyboard.returnPanel; return true; }
         if (pressed & CATALOG_OPTIONS) { storeSubmitText(); return true; }
+        if (pressed & CATALOG_L2) { storeClearEditor(); storeNotice[0] = 0; return true; }
+        if ((pressed & CATALOG_R3) && storeKeyboard.masked) { storeKeyboard.reveal = !storeKeyboard.reveal; return true; }
         int count = int(strlen(storeKeyboardKeys()));
         if (pressed & CATALOG_LEFT) storeKeyboard.key = (storeKeyboard.key + count - 1) % count;
         if (pressed & CATALOG_RIGHT) storeKeyboard.key = (storeKeyboard.key + 1) % count;
         if (pressed & CATALOG_UP) storeKeyboard.key = (storeKeyboard.key + count - STORE_KEY_COLUMNS) % count;
         if (pressed & CATALOG_DOWN) storeKeyboard.key = (storeKeyboard.key + STORE_KEY_COLUMNS) % count;
         size_t n = strlen(storeKeyboard.draft);
-        if ((pressed & CATALOG_SQUARE) && n) storeKeyboard.draft[--n] = 0;
+        if ((pressed & CATALOG_SQUARE) && n) { storeKeyboard.draft[--n] = 0; storeKeyboard.replaceOnInput = false; storeNotice[0] = 0; }
         char add = pressed & CATALOG_CROSS ? storeKeyboardKeys()[storeKeyboard.key] :
             pressed & CATALOG_TRIANGLE ? ' ' : pressed & CATALOG_L1 && storeKeyboard.target == STORE_TEXT_URLS ? '\n' : 0;
-        if (add && n < storeKeyboard.limit) { storeKeyboard.draft[n] = add; storeKeyboard.draft[n + 1] = 0; }
+        if (add) {
+            if (storeKeyboard.replaceOnInput) { storeWipe(storeKeyboard.draft, sizeof(storeKeyboard.draft)); n = 0; storeKeyboard.replaceOnInput = false; }
+            if (n < storeKeyboard.limit) { storeKeyboard.draft[n] = add; storeKeyboard.draft[n + 1] = 0; storeNotice[0] = 0; }
+        }
         return true;
     }
     if (pressed & CATALOG_CIRCLE) {
@@ -344,7 +380,14 @@ static bool storePanelController(uint32_t pressed, uint32_t held) {
         if (storeMenuSelection == 0) storeBeginText(STORE_TEXT_LOGIN_USER, STORE_PANEL_PREMIUM);
         else if (storeMenuSelection == 1) storeBeginText(STORE_TEXT_LOGIN_PASSWORD, STORE_PANEL_PREMIUM);
         else if (storeMenuSelection == 2) {
-            startHubLogin(storeLoginUser, storeLoginPassword); storeWipe(storeLoginPassword, sizeof(storeLoginPassword));
+            if (hubSnapshot().state != HUB_IDLE || storeHasPending) {
+                snprintf(storeNotice, sizeof(storeNotice), "Aguarde a tarefa atual terminar antes de entrar. Sua senha foi mantida.");
+            } else if (storeLoginFieldsValid()) {
+                if (startHubLogin(storeLoginUser, storeLoginPassword)) {
+                    storeWipe(storeLoginPassword, sizeof(storeLoginPassword));
+                    snprintf(storeNotice, sizeof(storeNotice), "Validando usuário e senha...");
+                } else snprintf(storeNotice, sizeof(storeNotice), "Não foi possível iniciar o login. Seus dados foram mantidos; tente novamente.");
+            }
         } else if (storeMenuSelection == 3) storeOpenPanel(STORE_PANEL_DONATE);
         else storeLogout();
     } else if (storePanel == STORE_PANEL_ADMIN) {
@@ -401,7 +444,12 @@ static bool pollStoreExtensions() {
     if (storeRemote && !(session.authenticated && (session.premium || session.admin)) && !storeTransfersBusy()) {
         storeClearRemote(); changed = true;
     }
-    if (!storeHasPending && consumeHubResult(&storePending)) storeHasPending = true;
+    if (!storeHasPending) {
+        HubSnapshot snapshot = hubSnapshot();
+        if ((snapshot.state == HUB_DONE || snapshot.state == HUB_FAILED || snapshot.state == HUB_CANCELLED) && consumeHubResult(&storePending)) {
+            storeHasPending = true; storePendingHttpStatus = snapshot.httpStatus;
+        }
+    }
     if (!storeHasPending || storePanel == STORE_PANEL_TEXT ||
         (storePending.catalog && (storeTransfersBusy() || storeSearchEditing()))) return changed;
     int operation = storePending.operation, error = storePending.errorCode;
@@ -445,6 +493,8 @@ static bool pollStoreExtensions() {
         storeLoginSyncPending = false;
     } else if (operation == HUB_SYNC && !error && !(session.premium || session.admin))
         snprintf(storeNotice, sizeof(storeNotice), "A sessão premium foi encerrada. Entre novamente para sincronizar.");
+    else if (operation == HUB_LOGIN && error == HUB_ERROR_AUTH && storePendingHttpStatus == 401)
+        snprintf(storeNotice, sizeof(storeNotice), "Usuário ou senha recusados. A senha diferencia maiúsculas e minúsculas. Edite a senha e digite novamente. (código %d)", error);
     else if (error) snprintf(storeNotice, sizeof(storeNotice), "%s (código %d)", hubErrorMessage(error), error);
     else if (operation == HUB_LOGIN) snprintf(storeNotice, sizeof(storeNotice), hubSavedLoginStatus().storageError ?
         "Conta autenticada; não foi possível salvar o login neste PS4." : "Conta autenticada. Login salvo neste PS4.");
@@ -454,7 +504,7 @@ static bool pollStoreExtensions() {
     else if (operation == HUB_ADMIN_PUBLISH) snprintf(storeNotice, sizeof(storeNotice), "Catálogo publicado. As lojas premium podem sincronizar.");
     else if (operation == HUB_LOGOUT) snprintf(storeNotice, sizeof(storeNotice), hubSavedLoginStatus().storageError ?
         "Sessão encerrada; não foi possível apagar o login salvo." : "Sessão encerrada. Login salvo apagado.");
-    freeHubResult(&storePending); storePending = {}; storeHasPending = false; changed = true;
+    freeHubResult(&storePending); storePending = {}; storeHasPending = false; storePendingHttpStatus = 0; changed = true;
     if (!error && (operation == HUB_ADMIN_REVOKE_USER || operation == HUB_ADMIN_CHANGE_PASSWORD) && session.admin) startHubAdminListUsers();
     if (!error && operation == HUB_LOGIN) {
         session = hubSession();

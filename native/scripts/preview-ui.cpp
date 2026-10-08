@@ -82,7 +82,8 @@ static char previewSavedUser[65] = {}, previewSavedPassword[129] = {};
 static HubSnapshot previewHub = {};
 static HubResult previewHubResult = {};
 static bool previewHubReady = false;
-static int previewHubCalls = 0;
+static bool previewRejectLogin = false;
+static int previewHubCalls = 0, previewLoginAttempts = 0;
 static char previewHubOrigin[256] = {};
 static char previewImportedUrls[8192] = {};
 static char previewLoginUser[65] = {}, previewLoginPassword[129] = {};
@@ -105,7 +106,8 @@ bool hubSavedLoginCredentials(char* user, size_t uc, char* password, size_t pc) 
 }
 bool startHubSavedLogin() { previewSavedLogin.restoring = true; return previewStartHub(HUB_LOGIN); }
 bool startHubLogin(const char* user, const char* password) {
-    if (!previewStartHub(HUB_LOGIN)) return false;
+    ++previewLoginAttempts;
+    if (previewRejectLogin || !previewStartHub(HUB_LOGIN)) return false;
     snprintf(previewLoginUser, sizeof(previewLoginUser), "%s", user);
     snprintf(previewLoginPassword, sizeof(previewLoginPassword), "%s", password); return true;
 }
@@ -132,7 +134,11 @@ bool startHubAdminChangePassword(const char* id, const char* password) {
 }
 void pollHubSession() { ++previewSessionCheckCalls; }
 void cancelHubOperation() { previewHub.state = HUB_CANCELLED; }
-HubSnapshot hubSnapshot() { return previewHub; }
+HubSnapshot hubSnapshot() {
+    HubSnapshot snapshot = previewHub;
+    if (previewHubReady) snapshot.state = previewHubResult.errorCode ? HUB_FAILED : HUB_DONE;
+    return snapshot;
+}
 HubSession hubSession() { return previewHubSession; }
 bool consumeHubResult(HubResult* out) {
     if (!previewHubReady) return false;
@@ -155,14 +161,14 @@ static void resetController() {
     if (storeHasPending) freeHubResult(&storePending);
     storePending = {}; storeHasPending = false;
     if (previewHubReady) freeHubResult(&previewHubResult);
-    previewHubReady = false; previewHubResult = {}; previewHub = {}; previewHubSession = {};
-    previewHubCalls = 0; storePanel = STORE_PANEL_NONE; storeMenuSelection = 0;
+    previewHubReady = previewRejectLogin = false; previewHubResult = {}; previewHub = {}; previewHubSession = {};
+    previewHubCalls = previewLoginAttempts = 0; storePanel = STORE_PANEL_NONE; storeMenuSelection = 0;
     storeAdminLogin = storeAdminChord = storeAdultConfirmed = storeFtpRequested = false;
     storePremiumCatalogRequested = storeLoginSyncPending = false;
     previewSavedLogin = {}; previewSavedUser[0] = previewSavedPassword[0] = 0;
     storeHadSession = storeHadAdmin = storeHadEntitlement = false;
     previewSessionCheckCalls = 0; previewRevokedUser[0] = 0; previewRevokedValue = false;
-    storeKeyboard = StoreKeyboard(); storeNotice[0] = 0;
+    storeClearEditor(); storeKeyboard = StoreKeyboard(); storeNotice[0] = 0; storePendingHttpStatus = 0;
     storeLoginUser[0] = storeLoginPassword[0] = storeAdminUser[0] = storeAdminPassword[0] = 0;
     storeSessionUserId[0] = 0;
     lastDownloadKind = lastInstallKind = 0;
@@ -199,7 +205,111 @@ static UserCatalogEntry serviceFixture(int serial, int kind, bool theme = false,
     if (!okay) fprintf(stderr, "Service fixture metadata failed\n");
     return e;
 }
+static bool verifyLoginEditingController() {
+    resetController(); int selected = 0; bool details = false;
+    previewSavedLogin.configured = previewSavedLogin.hasUsername = previewSavedLogin.hasPassword = true;
+    snprintf(previewSavedUser, sizeof(previewSavedUser), "%s", "remembered_fixture");
+    snprintf(previewSavedPassword, sizeof(previewSavedPassword), "%s", "Saved_fixture_91");
+    storeOpenPanel(STORE_PANEL_PREMIUM);
+    snprintf(storeNotice, sizeof(storeNotice), "%s", "Old login error -4005");
+    storeBeginText(STORE_TEXT_LOGIN_PASSWORD, STORE_PANEL_PREMIUM);
+    if (!expect(storeKeyboard.masked && !storeKeyboard.reveal && storeKeyboard.replaceOnInput && !storeNotice[0],
+                "saved password edits begin hidden and clear a stale login error")) return false;
+    handleCatalogController(CATALOG_R3, selected, details);
+    if (!expect(storeKeyboard.masked && storeKeyboard.reveal, "R3 reveals the editor without changing its secret target type")) return false;
+    storeKeyboard.key = int(strchr(storeKeyboardKeys(), 'R') - storeKeyboardKeys());
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(!strcmp(storeKeyboard.draft, "R") && !storeKeyboard.replaceOnInput,
+                "first typed character replaces the saved password instead of appending")) return false;
+    storeKeyboard.key = int(strchr(storeKeyboardKeys(), '2') - storeKeyboardKeys());
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(!strcmp(storeKeyboard.draft, "R2"), "later password characters append only to the replacement draft")) return false;
+    handleCatalogController(CATALOG_CIRCLE, selected, details);
+    if (!expect(!strcmp(storeLoginPassword, "Saved_fixture_91") && !storeKeyboard.draft[0] && !storeKeyboard.reveal,
+                "cancel discards the replacement and retains the previous credential")) return false;
+    storeBeginText(STORE_TEXT_LOGIN_PASSWORD, STORE_PANEL_PREMIUM);
+    handleCatalogController(CATALOG_OPTIONS, selected, details);
+    if (!expect(!strcmp(storeLoginPassword, "Saved_fixture_91") && !storeKeyboard.draft[0] && !storeKeyboard.reveal,
+                "saving an unchanged masked draft retains the saved password and wipes the editor")) return false;
+    storeBeginText(STORE_TEXT_LOGIN_PASSWORD, STORE_PANEL_PREMIUM);
+    handleCatalogController(CATALOG_R3, selected, details);
+    handleCatalogController(CATALOG_L2, selected, details);
+    if (!expect(!storeKeyboard.draft[0] && !storeKeyboard.reveal && !storeKeyboard.replaceOnInput &&
+                !strcmp(storeLoginPassword, "Saved_fixture_91"), "L2 clears only the draft and resets visibility before confirmation")) return false;
+    handleCatalogController(CATALOG_OPTIONS, selected, details);
+    storeMenuSelection = 2; handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(!previewLoginAttempts && !previewHubCalls && strstr(storeNotice, "Preencha a senha"),
+                "an empty confirmed password shows an actionable error without sending a login")) return false;
+
+    storeBeginText(STORE_TEXT_LOGIN_USER, STORE_PANEL_PREMIUM);
+    handleCatalogController(CATALOG_R3, selected, details);
+    if (!expect(!storeKeyboard.reveal && storeKeyboard.limit == 32, "username editing cannot reveal a secret and is capped at 32 bytes")) return false;
+    memset(storeKeyboard.draft, 'a', 32); storeKeyboard.draft[32] = 0;
+    storeKeyboard.key = 0; handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(strlen(storeKeyboard.draft) == 32, "typing past the username limit cannot change the draft")) return false;
+    handleCatalogController(CATALOG_CIRCLE, selected, details);
+
+    resetController(); storeOpenPanel(STORE_PANEL_PREMIUM); storeMenuSelection = 2;
+    snprintf(storeLoginPassword, sizeof(storeLoginPassword), "%s", "valid_fixture_91");
+    const char* badUsers[] = {"", "ab", "username with space", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"};
+    for (size_t i = 0; i < sizeof(badUsers) / sizeof(badUsers[0]); ++i) {
+        snprintf(storeLoginUser, sizeof(storeLoginUser), "%s", badUsers[i]);
+        snprintf(storeNotice, sizeof(storeNotice), "%s", "Old login error -4005");
+        handleCatalogController(CATALOG_CROSS, selected, details);
+        if (!expect(!previewLoginAttempts && !previewHubCalls && strstr(storeNotice, "Preencha o usuário") &&
+                    !strcmp(storeLoginPassword, "valid_fixture_91"), "invalid username retries preserve the password and never launch a login")) return false;
+    }
+    snprintf(storeLoginUser, sizeof(storeLoginUser), "%s", "fixture_user");
+    snprintf(storeLoginPassword, sizeof(storeLoginPassword), "%s", "short");
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(!previewLoginAttempts && strstr(storeNotice, "Preencha a senha") && !strcmp(storeLoginPassword, "short"),
+                "short passwords produce local guidance and remain editable without a login request")) return false;
+    snprintf(storeLoginPassword, sizeof(storeLoginPassword), "%s", "valid_fixture_91");
+    previewHub.state = HUB_RUNNING;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(!previewLoginAttempts && strstr(storeNotice, "Aguarde") && !strcmp(storeLoginPassword, "valid_fixture_91"),
+                "busy login retries replace the old error with a waiting notice and preserve the password")) return false;
+    previewHub = {}; storeHasPending = true;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(!previewLoginAttempts && strstr(storeNotice, "Aguarde") && !strcmp(storeLoginPassword, "valid_fixture_91"),
+                "a pending result blocks retry until it is consumed without erasing the password")) return false;
+    storeHasPending = false; previewRejectLogin = true;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(previewLoginAttempts == 1 && !previewHubCalls && strstr(storeNotice, "dados foram mantidos") &&
+                !strcmp(storeLoginPassword, "valid_fixture_91"), "a rejected worker launch preserves credentials for a subsequent retry")) return false;
+    previewRejectLogin = false;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(previewLoginAttempts == 2 && previewHubCalls == 1 && !storeLoginPassword[0] &&
+                !strcmp(previewLoginPassword, "valid_fixture_91") && strstr(storeNotice, "Validando"),
+                "a successful launch copies the exact password once then clears the UI credential")) return false;
+    previewHub.httpStatus = 401; previewHubResult = {}; previewHubResult.operation = HUB_LOGIN;
+    previewHubResult.errorCode = HUB_ERROR_AUTH; previewHubReady = true;
+    pollStoreExtensions();
+    if (!expect(!previewHubSession.authenticated && strstr(storeNotice, "maiúsculas e minúsculas") &&
+                strstr(storeNotice, "Edite a senha") && strstr(storeNotice, "-4005"),
+                "a real login 401 explains password case and re-entry without granting access")) return false;
+    previewHub.httpStatus = 403; previewHubResult = {}; previewHubResult.operation = HUB_LOGIN;
+    previewHubResult.errorCode = HUB_ERROR_AUTH; previewHubReady = true;
+    pollStoreExtensions();
+    if (!expect(!previewHubSession.authenticated && !strstr(storeNotice, "maiúsculas e minúsculas") && strstr(storeNotice, "-4005"),
+                "a server 403 is not mislabeled as a confirmed wrong password")) return false;
+    storeBeginText(STORE_TEXT_LOGIN_PASSWORD, STORE_PANEL_PREMIUM);
+    if (!expect(!storeNotice[0], "editing after a rejection removes the previous failure notice")) return false;
+    snprintf(storeKeyboard.draft, sizeof(storeKeyboard.draft), "%s", "replacement_fixture");
+    handleCatalogController(CATALOG_R3, selected, details);
+    storeHadSession = true;
+    pollStoreExtensions();
+    if (!expect(!storeKeyboard.draft[0] && !storeKeyboard.reveal && !storeLoginPassword[0],
+                "session loss clears even a revealed password editor")) return false;
+    const char* keyboardHelp = "Direcional  Navegar   X  Inserir   Quadrado  Apagar   Triângulo  Espaço   L2  Limpar";
+    const char* revealHelp = "OPTIONS  Salvar campo    Círculo  Cancelar    R3  Mostrar senha";
+    if (!expect(textWidth(keyboardHelp, FONT_SMALL) <= 1696 && textWidth(revealHelp, FONT_SMALL) <= 1696,
+                "password and clear-field help fit inside the native keyboard panel")) return false;
+    resetController();
+    return true;
+}
 static bool verifyServicesController() {
+    if (!verifyLoginEditingController()) return false;
     resetController(); int selected = 0; bool details = false;
     for (int first = 0; first < CATEGORY_COUNT; first += 6) {
         int right = 420;
@@ -792,6 +902,12 @@ static bool renderServiceStates(const char* prefix) {
         if (panels[i] == STORE_PANEL_TEXT) { storeBeginText(STORE_TEXT_URLS, STORE_PANEL_SERVICES); storeKeyboard.key = int(strlen(storeKeyboardKeys())) - 1; }
         drawStorePanel(frame); okay = saveState(prefix, names[i], frame) && okay;
     }
+    storeOpenPanel(STORE_PANEL_PREMIUM);
+    snprintf(storeLoginPassword, sizeof(storeLoginPassword), "%s", "Synthetic_fixture_91");
+    storeBeginText(STORE_TEXT_LOGIN_PASSWORD, STORE_PANEL_PREMIUM);
+    drawStorePanel(frame); okay = saveState(prefix, "password-keyboard-masked", frame) && okay;
+    storeKeyboard.reveal = true;
+    drawStorePanel(frame); okay = saveState(prefix, "password-keyboard-synthetic-visible", frame) && okay;
     okay = okay && allocation[0] == guard && allocation[(size_t)W * H + 1] == guard;
     free(allocation); resetController();
     return okay;

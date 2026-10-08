@@ -35,7 +35,8 @@ enum CatalogControllerButton {
     CATALOG_SQUARE = 1U << 6, CATALOG_TRIANGLE = 1U << 7,
     CATALOG_L1 = 1U << 8, CATALOG_R1 = 1U << 9,
     CATALOG_L3 = 1U << 10, CATALOG_R3 = 1U << 11,
-    CATALOG_OPTIONS = 1U << 12, CATALOG_R2 = 1U << 13
+    CATALOG_OPTIONS = 1U << 12, CATALOG_R2 = 1U << 13,
+    CATALOG_L2 = 1U << 14
 };
 #include "store_extensions.h"
 
@@ -888,10 +889,11 @@ static void drawStorePanel(uint32_t* p) {
     if (storePanel == STORE_PANEL_TEXT) {
         char shown[513];
         size_t n = strlen(storeKeyboard.draft);
-        if (storeKeyboard.masked) { size_t length = n < sizeof(shown) - 1 ? n : sizeof(shown) - 1; memset(shown, '*', length); shown[length] = 0; }
+        if (storeKeyboard.masked && !storeKeyboard.reveal) { size_t length = n < sizeof(shown) - 1 ? n : sizeof(shown) - 1; memset(shown, '*', length); shown[length] = 0; }
         else snprintf(shown, sizeof(shown), "%.500s", storeKeyboard.draft + (n > 500 ? n - 500 : 0));
         roundRect(p, 112, 284, 1696, 88, 12, BG);
         textWrapped(p, 134, 298, shown[0] ? shown : "Digite com o controle...", FONT_SMALL, shown[0] ? WHITE : MUTED, 1650, 2);
+        storeWipe(shown, sizeof(shown));
         for (int k = 0; k < int(strlen(storeKeyboardKeys())); ++k) {
             int x = 116 + k % STORE_KEY_COLUMNS * 130, y = 402 + k / STORE_KEY_COLUMNS * 72;
             bool focused = k == storeKeyboard.key;
@@ -900,8 +902,11 @@ static void drawStorePanel(uint32_t* p) {
             char key[2] = {storeKeyboardKeys()[k], 0};
             text(p, x + (118 - textWidth(key, FONT_BODY)) / 2, y + 11, key, FONT_BODY, focused ? WHITE : MUTED);
         }
-        text(p, 112, 898, "Direcional  Navegar    X  Inserir    Quadrado  Apagar    Triângulo  Espaço", FONT_SMALL, MUTED);
-        text(p, 112, 932, storeKeyboard.target == STORE_TEXT_URLS ? "L1  Nova linha    OPTIONS  Importar    Círculo  Cancelar" : "OPTIONS  Salvar campo    Círculo  Cancelar", FONT_SMALL, BLUE);
+        text(p, 112, 898, "Direcional  Navegar   X  Inserir   Quadrado  Apagar   Triângulo  Espaço   L2  Limpar", FONT_SMALL, MUTED);
+        text(p, 112, 932, storeKeyboard.target == STORE_TEXT_URLS ? "L1  Nova linha    OPTIONS  Importar    Círculo  Cancelar" :
+             storeKeyboard.masked ? (storeKeyboard.reveal ? "OPTIONS  Salvar campo    Círculo  Cancelar    R3  Ocultar senha" :
+                 "OPTIONS  Salvar campo    Círculo  Cancelar    R3  Mostrar senha") :
+             "OPTIONS  Salvar campo    Círculo  Cancelar", FONT_SMALL, BLUE);
     } else if (storePanel == STORE_PANEL_DONATE) {
         artwork(p, 1330, 238, 420, 360, 24);
         text(p, 112, 298, "LivePix oficial da Peppy", FONT_TITLE, WHITE);
@@ -1383,6 +1388,7 @@ int main(void){
    if(edge&ORBIS_PAD_BUTTON_R3) pressed|=CATALOG_R3;
    if(edge&ORBIS_PAD_BUTTON_OPTIONS) pressed|=CATALOG_OPTIONS;
    if(edge&ORBIS_PAD_BUTTON_R2) pressed|=CATALOG_R2;
+   if(edge&ORBIS_PAD_BUTTON_L2) pressed|=CATALOG_L2;
    uint32_t held=0;
    if(now&ORBIS_PAD_BUTTON_R2) held|=CATALOG_R2;
    if(now&ORBIS_PAD_BUTTON_R3) held|=CATALOG_R3;
