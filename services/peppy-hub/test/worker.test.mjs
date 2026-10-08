@@ -173,10 +173,68 @@ test('calendar plans, renewals, password rotation and manual account metadata', 
   assert.equal(listing.json.users.length, 2);
 });
 
+test('created premium account is immediately listed and usable by an independent client without a release update', async () => {
+  const { env, request, owner } = fixture();
+  const admin = await owner();
+  const published = await request('/api/admin/catalog', { method: 'POST', token: admin.json.token,
+    body: { entries: [entry()], expected_version: 0 } });
+  assert.equal(published.status, 200);
+
+  const secret = `test-only-${crypto.randomUUID()}`;
+  const credentials = { username: 'new_live_member', password: secret, plan: '15d' };
+  const created = await request('/api/admin/users', { method: 'POST', token: admin.json.token, body: credentials });
+  assert.equal(created.status, 200);
+  assertNoSecrets(created.json);
+  assert.equal(JSON.stringify(created.json).includes(secret), false);
+
+  // The second device sees only committed D1 data, with no owner bootstrap secret,
+  // inherited bearer token, cookies, client list, or release published for this account.
+  const independentEnv = { DB: env.DB, ALLOWED_ORIGINS: env.ALLOWED_ORIGINS,
+    OFFICIAL_REPOSITORIES: env.OFFICIAL_REPOSITORIES };
+  const independent = async (path, options = {}) => {
+    const response = await worker.fetch(new Request(`${endpoint}${path}`, options), independentEnv);
+    return { response, status: response.status, json: await response.json() };
+  };
+  const listing = await independent('/api/admin/users', { headers: { Authorization: `Bearer ${admin.json.token}` } });
+  assert.equal(listing.status, 200);
+  // All fixtures intentionally use the same timestamp: do not assume the new
+  // account precedes the owner when selecting which row may be invalidated.
+  const listed = listing.json.users.find(user => user.id === created.json.user.id);
+  assert.deepEqual(listed, { ...created.json.user, created_at: clock / 1000 });
+  assert.equal(listing.json.users.some(user => user.role === 'admin'), true);
+  assert.equal(listing.response.headers.get('Cache-Control'), 'no-store, no-transform');
+  assertNoSecrets(listing.json);
+  assert.equal(JSON.stringify(listing.json).includes(secret), false);
+
+  const login = await independent('/api/login', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.44' },
+    body: JSON.stringify({ username: credentials.username, password: secret }) });
+  assert.equal(login.status, 200);
+  assert.equal(login.json.user.id, created.json.user.id);
+  assert.equal(login.json.user.premium_active, true);
+  const catalog = await independent('/api/catalog', { headers: { Authorization: `Bearer ${login.json.token}` } });
+  assert.equal(catalog.status, 200);
+  assert.equal(catalog.json.version, published.json.version);
+  assert.deepEqual(catalog.json.entries.map(item => item.id), ['test-game']);
+  assert.deepEqual((await independent('/api/releases')).json, { releases: [] });
+
+  const duplicate = await request('/api/admin/users', { method: 'POST', token: admin.json.token,
+    body: { ...credentials, username: credentials.username.toUpperCase(), password: `test-only-${crypto.randomUUID()}` } });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.json.error, 'USER_EXISTS');
+  const stored = env.DB.sqlite.prepare('SELECT * FROM users WHERE id = ?').get(created.json.user.id);
+  assert.notEqual(stored.password_hash, secret);
+  assert.match(stored.password_salt, /^[a-f0-9]{32}$/);
+  assert.equal(env.DB.sqlite.prepare('SELECT COUNT(*) AS n FROM users').get().n, 2);
+  assert.equal(env.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE action = 'user.create'").get().n, 1);
+  assert.equal((await independent('/api/session', { headers: { Authorization: `Bearer ${login.json.token}` } })).status, 200);
+});
+
 test('invalidating an account destroys every session; reactivation never revives tokens', async () => {
   const { env, request, owner, member } = fixture();
   const admin = await owner();
   const premium = await member(admin.json.token, 'invalidated_user');
+  const unaffected = await member(admin.json.token, 'unaffected_user');
   const second = await request('/api/login', { method: 'POST', body: { username: 'invalidated_user', password: premium.secret } });
   assert.equal(second.status, 200);
   const tokens = [premium.json.token, second.json.token];
@@ -192,10 +250,17 @@ test('invalidating an account destroys every session; reactivation never revives
     assert.equal((await request('/api/logout', { method: 'POST', token })).status, 401);
   }
   assert.equal((await request('/api/login', { method: 'POST', body: { username: 'invalidated_user', password: premium.secret } })).status, 401);
+  const invalidatedListing = await request('/api/admin/users', { token: admin.json.token });
+  assert.equal(invalidatedListing.json.users.find(user => user.id === premium.id).revoked, true);
+  assert.equal(invalidatedListing.json.users.find(user => user.id === premium.id).premium_active, false);
+  assert.equal((await request('/api/session', { token: unaffected.json.token })).status, 200);
+  assert.equal((await request('/api/catalog', { token: unaffected.json.token })).status, 200);
   const reactivated = await request(`/api/admin/users/${premium.id}/revocation`, {
     method: 'POST', token: admin.json.token, body: { revoked: false } });
   assert.equal(reactivated.status, 200);
   assert.equal(reactivated.json.user.revoked, false);
+  const reactivatedListing = await request('/api/admin/users', { token: admin.json.token });
+  assert.equal(reactivatedListing.json.users.find(user => user.id === premium.id).premium_active, true);
   for (const token of tokens) assert.equal((await request('/api/session', { token })).status, 401);
   const fresh = await request('/api/login', { method: 'POST', body: { username: 'invalidated_user', password: premium.secret } });
   assert.equal(fresh.status, 200);

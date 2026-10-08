@@ -40,6 +40,11 @@ static HubAdminUser* storeAdminUsers = 0;
 static size_t storeAdminUserCount = 0;
 static int storeAdminUserSelection = 0;
 static HubAdminUser storeSelectedAdminUser = {};
+static bool storeAdminUsersLoaded = false, storeAdminUsersRefreshRequested = false;
+static int storeAdminUsersError = 0;
+static uint64_t storeAdminUsersNextRefreshUs = 0;
+static char storeAdminFocusUsername[65] = {};
+static char storeAdminFocusUserId[65] = {}, storeAdminSelectedUserId[65] = {};
 static char storeAccountPassword[129] = {};
 static int storeAdminPlan = 15;
 static char storeLoginUser[65] = {}, storeLoginPassword[129] = {};
@@ -80,6 +85,31 @@ static void storeClearPasswords() {
 static void storeClearAdminUsers() {
     free(storeAdminUsers); storeAdminUsers = 0; storeAdminUserCount = 0; storeAdminUserSelection = 0;
 }
+static void storeResetAdminRefresh() {
+    storeAdminUsersLoaded = storeAdminUsersRefreshRequested = false;
+    storeAdminUsersError = 0; storeAdminUsersNextRefreshUs = 0;
+    storeAdminFocusUsername[0] = 0;
+    storeAdminFocusUserId[0] = storeAdminSelectedUserId[0] = 0;
+}
+static void storeRequestAdminUsersRefresh() { storeAdminUsersRefreshRequested = true; }
+static bool storeTryAdminUsersRefresh(uint64_t now) {
+    if (storePanel != STORE_PANEL_USERS || !hubSession().admin || !storeAdminUsersRefreshRequested ||
+        storeHasPending || hubSnapshot().state != HUB_IDLE) return false;
+    if (!startHubAdminListUsers()) {
+        storeAdminUsersError = HUB_ERROR_THREAD;
+        snprintf(storeNotice, sizeof(storeNotice), "Não foi possível iniciar a consulta. Quadrado tenta novamente.");
+        storeAdminUsersRefreshRequested = false; storeAdminUsersNextRefreshUs = now + 5000000ULL;
+        return false;
+    }
+    storeAdminUsersRefreshRequested = false; storeAdminUsersError = 0;
+    storeAdminUsersNextRefreshUs = now + 5000000ULL;
+    return true;
+}
+static bool storeAdminUsersLoading() {
+    HubSnapshot task = hubSnapshot();
+    return (task.state == HUB_RUNNING && task.operation == HUB_ADMIN_LIST_USERS) ||
+        (storeHasPending && storePending.operation == HUB_ADMIN_LIST_USERS);
+}
 static void storeLogout() { startHubLogout(); storeClearPasswords(); storeAdultConfirmed = false; }
 static void storeRestoreLoginFields() {
     char username[65] = {}, password[129] = {};
@@ -94,6 +124,7 @@ static void storeOpenPanel(int panel) {
     if (storePanel == STORE_PANEL_TEXT && panel != STORE_PANEL_TEXT) storeClearEditor();
     storePanel = panel; storeMenuSelection = 0;
     if (panel == STORE_PANEL_PREMIUM) storeRestoreLoginFields();
+    if (panel == STORE_PANEL_USERS) storeRequestAdminUsersRefresh();
 }
 static void storeBeginText(int target, int returnPanel) {
     storeClearEditor();
@@ -129,6 +160,22 @@ static bool storeLoginFieldsValid() {
     size_t bytes = strlen(storeLoginPassword);
     if (bytes < 8 || bytes > 128) {
         snprintf(storeNotice, sizeof(storeNotice), "Preencha a senha com 8 a 128 caracteres. A senha diferencia maiúsculas e minúsculas.");
+        return false;
+    }
+    return true;
+}
+static bool storeAdminCreateFieldsValid() {
+    if (!storeUsernameValid(storeAdminUser)) {
+        snprintf(storeNotice, sizeof(storeNotice), "Preencha o novo usuário com 3 a 32 letras, números, ponto, hífen ou sublinhado, sem espaços. Seus dados foram mantidos.");
+        return false;
+    }
+    size_t bytes = strlen(storeAdminPassword);
+    if (bytes < 8 || bytes > 128) {
+        snprintf(storeNotice, sizeof(storeNotice), "Preencha a nova senha com 8 a 128 bytes. A senha diferencia maiúsculas e minúsculas. Seus dados foram mantidos.");
+        return false;
+    }
+    if (storeAdminPlan != 15 && storeAdminPlan != 30 && storeAdminPlan != 60) {
+        snprintf(storeNotice, sizeof(storeNotice), "Selecione um plano de 15 dias, 1 mês ou 2 meses. Seus dados foram mantidos.");
         return false;
     }
     return true;
@@ -320,11 +367,17 @@ static bool storePanelController(uint32_t pressed, uint32_t held) {
     if (storePanel == STORE_PANEL_USERS || storePanel == STORE_PANEL_REVOKE || storePanel == STORE_PANEL_ACCOUNT) {
         if (!hubSession().admin) return true;
         if (storePanel == STORE_PANEL_USERS) {
-            if (pressed & CATALOG_SQUARE) startHubAdminListUsers();
+            if (pressed & CATALOG_SQUARE) {
+                storeRequestAdminUsersRefresh();
+                if (!storeTryAdminUsersRefresh(downloadNowUs()) && hubSnapshot().state != HUB_IDLE)
+                    snprintf(storeNotice, sizeof(storeNotice), "Atualização da lista agendada. Aguarde a tarefa atual terminar.");
+            }
             int users = int(storeAdminUserCount);
-            if (users && (pressed & CATALOG_UP)) storeAdminUserSelection = (storeAdminUserSelection + users - 1) % users;
+            if (users && (pressed & CATALOG_UP)) storeAdminUserSelection = storeAdminUserSelection < 0 ? users - 1 : (storeAdminUserSelection + users - 1) % users;
             if (users && (pressed & CATALOG_DOWN)) storeAdminUserSelection = (storeAdminUserSelection + 1) % users;
-            if (users && (pressed & CATALOG_CROSS)) {
+            if (users && storeAdminUserSelection >= 0 && storeAdminUserSelection < users && (pressed & (CATALOG_UP | CATALOG_DOWN)))
+                snprintf(storeAdminSelectedUserId, sizeof(storeAdminSelectedUserId), "%s", storeAdminUsers[storeAdminUserSelection].id);
+            if (users && storeAdminUserSelection >= 0 && storeAdminUserSelection < users && (pressed & CATALOG_CROSS)) {
                 if (storeAdminUsers[storeAdminUserSelection].admin)
                     snprintf(storeNotice, sizeof(storeNotice), "A conta administradora não pode ser invalidada aqui.");
                 else {
@@ -340,15 +393,24 @@ static bool storePanelController(uint32_t pressed, uint32_t held) {
                 if (storeMenuSelection == 0) storeOpenPanel(STORE_PANEL_REVOKE);
                 else if (storeMenuSelection == 1) storeBeginText(STORE_TEXT_ACCOUNT_PASSWORD, STORE_PANEL_ACCOUNT);
                 else {
-                    bool started = startHubAdminChangePassword(storeSelectedAdminUser.id, storeAccountPassword);
-                    storeWipe(storeAccountPassword, sizeof(storeAccountPassword));
-                    if (started) storeOpenPanel(STORE_PANEL_USERS);
-                    else snprintf(storeNotice, sizeof(storeNotice), "Informe uma senha de pelo menos 8 caracteres e tente novamente.");
+                    if (hubSnapshot().state != HUB_IDLE || storeHasPending)
+                        snprintf(storeNotice, sizeof(storeNotice), "Aguarde a tarefa atual terminar. A nova senha foi mantida.");
+                    else if (strlen(storeAccountPassword) < 8 || strlen(storeAccountPassword) > 128)
+                        snprintf(storeNotice, sizeof(storeNotice), "Informe uma nova senha de 8 a 128 bytes. Seus dados foram mantidos.");
+                    else if (startHubAdminChangePassword(storeSelectedAdminUser.id, storeAccountPassword)) {
+                        storeWipe(storeAccountPassword, sizeof(storeAccountPassword));
+                        storeOpenPanel(STORE_PANEL_USERS);
+                    } else snprintf(storeNotice, sizeof(storeNotice), "Não foi possível iniciar a alteração. A nova senha foi mantida; tente novamente.");
                 }
             }
         } else if (pressed & CATALOG_CROSS) {
-            if (!storeSelectedAdminUser.admin && startHubAdminRevokeUser(storeSelectedAdminUser.id, !storeSelectedAdminUser.revoked))
-                storeOpenPanel(STORE_PANEL_USERS);
+            if (hubSnapshot().state != HUB_IDLE || storeHasPending)
+                snprintf(storeNotice, sizeof(storeNotice), "Aguarde a tarefa atual terminar antes de alterar o acesso.");
+            else if (!storeSelectedAdminUser.admin) {
+                if (startHubAdminRevokeUser(storeSelectedAdminUser.id, !storeSelectedAdminUser.revoked))
+                    storeOpenPanel(STORE_PANEL_USERS);
+                else snprintf(storeNotice, sizeof(storeNotice), "Não foi possível iniciar a alteração de acesso. Tente novamente.");
+            }
         }
         return true;
     }
@@ -396,11 +458,17 @@ static bool storePanelController(uint32_t pressed, uint32_t held) {
         else if (storeMenuSelection == 1) storeBeginText(STORE_TEXT_ADMIN_PASSWORD, STORE_PANEL_ADMIN);
         else if (storeMenuSelection == 2) storeAdminPlan = storeAdminPlan == 15 ? 30 : storeAdminPlan == 30 ? 60 : 15;
         else if (storeMenuSelection == 3) {
-            startHubAdminCreateUser(storeAdminUser, storeAdminPassword, storeAdminPlan);
-            storeWipe(storeAdminPassword, sizeof(storeAdminPassword));
+            if (hubSnapshot().state != HUB_IDLE || storeHasPending) {
+                snprintf(storeNotice, sizeof(storeNotice), "Aguarde a tarefa atual terminar antes de criar. Seus dados foram mantidos.");
+            } else if (storeAdminCreateFieldsValid()) {
+                if (startHubAdminCreateUser(storeAdminUser, storeAdminPassword, storeAdminPlan)) {
+                    storeWipe(storeAdminPassword, sizeof(storeAdminPassword));
+                    snprintf(storeNotice, sizeof(storeNotice), "Criando conta no servidor. Aguarde a confirmação...");
+                } else snprintf(storeNotice, sizeof(storeNotice), "Não foi possível iniciar a criação. Seus dados foram mantidos; tente novamente.");
+            }
         } else if (storeMenuSelection == 4) storePublishLocal();
         else if (storeMenuSelection == 5) startHubSync();
-        else { storeOpenPanel(STORE_PANEL_USERS); startHubAdminListUsers(); }
+        else { storeOpenPanel(STORE_PANEL_USERS); storeTryAdminUsersRefresh(downloadNowUs()); }
     }
     return true;
 }
@@ -421,6 +489,7 @@ static bool pollStoreExtensions() {
     }
     if (storeHadAdmin && !session.admin) {
         storeWipe(storeAdminPassword, sizeof(storeAdminPassword)); storeClearAdminUsers();
+        storeResetAdminRefresh();
         storeSelectedAdminUser = {}; storeWipe(storeAccountPassword, sizeof(storeAccountPassword));
     }
     storeHadSession = session.authenticated; storeHadAdmin = session.admin;
@@ -431,6 +500,8 @@ static bool pollStoreExtensions() {
         storeHadEntitlement = entitled;
     }
     uint64_t now = downloadNowUs();
+    if (session.admin && storePanel == STORE_PANEL_USERS && !storeAdminUsersLoading() &&
+        (!storeAdminUsersNextRefreshUs || now >= storeAdminUsersNextRefreshUs)) storeRequestAdminUsersRefresh();
     if (!entitled) storeNextSyncUs = 0;
     else if (!storeNextSyncUs) storeNextSyncUs = now + 300000000ULL;
     else if (now >= storeNextSyncUs && hubConfigured() && !storeHasPending &&
@@ -450,7 +521,8 @@ static bool pollStoreExtensions() {
             storeHasPending = true; storePendingHttpStatus = snapshot.httpStatus;
         }
     }
-    if (!storeHasPending || storePanel == STORE_PANEL_TEXT ||
+    if (!storeHasPending) return storeTryAdminUsersRefresh(now) || changed;
+    if (storePanel == STORE_PANEL_TEXT ||
         (storePending.catalog && (storeTransfersBusy() || storeSearchEditing()))) return changed;
     int operation = storePending.operation, error = storePending.errorCode;
     if (operation == HUB_SYNC && error) storeLoginSyncPending = false;
@@ -476,11 +548,29 @@ static bool pollStoreExtensions() {
         }
         storeRebuildViews();
     } else if (operation == HUB_ADMIN_LIST_USERS && !error && session.admin) {
-        int selectedUser = storeAdminUserSelection;
+        char selectedId[65] = {};
+        bool selectedIndexValid = storeAdminUserSelection >= 0 && storeAdminUserSelection < int(storeAdminUserCount);
+        snprintf(selectedId, sizeof(selectedId), "%s", selectedIndexValid ? storeAdminUsers[storeAdminUserSelection].id : storeAdminSelectedUserId);
+        bool hadSelection = selectedId[0];
         storeClearAdminUsers(); storeAdminUsers = storePending.users; storePending.users = 0;
         storeAdminUserCount = storePending.userCount;
-        storeAdminUserSelection = selectedUser >= 0 && selectedUser < int(storeAdminUserCount) ? selectedUser : 0;
-        snprintf(storeNotice, sizeof(storeNotice), "%u contas. Selecione uma para invalidar ou reativar.", unsigned(storeAdminUserCount));
+        storeAdminUsersLoaded = true; storeAdminUsersError = 0; storeAdminUsersNextRefreshUs = now + 5000000ULL;
+        storeAdminUserSelection = hadSelection ? -1 : storeAdminUserCount ? 0 : -1;
+        bool focusedCreated = false;
+        for (size_t i = 0; i < storeAdminUserCount; ++i) {
+            if (storeAdminFocusUserId[0] && !strcmp(storeAdminUsers[i].id, storeAdminFocusUserId)) {
+                storeAdminUserSelection = int(i); focusedCreated = true; break;
+            }
+            if (selectedId[0] && !strcmp(storeAdminUsers[i].id, selectedId)) storeAdminUserSelection = int(i);
+        }
+        if (focusedCreated) {
+            snprintf(storeNotice, sizeof(storeNotice), "Conta %s criada no servidor. O usuário já pode entrar. X permite editar ou invalidar.", storeAdminFocusUsername);
+            storeAdminFocusUsername[0] = storeAdminFocusUserId[0] = 0;
+        } else if (hadSelection && storeAdminUserSelection < 0)
+            snprintf(storeNotice, sizeof(storeNotice), "A conta selecionada não está na lista atual. Escolha uma conta com o direcional.");
+        else snprintf(storeNotice, sizeof(storeNotice), "%u contas. Selecione uma para invalidar ou reativar. Lista atualizada automaticamente.", unsigned(storeAdminUserCount));
+        if (storeAdminUserSelection >= 0 && storeAdminUserSelection < int(storeAdminUserCount))
+            snprintf(storeAdminSelectedUserId, sizeof(storeAdminSelectedUserId), "%s", storeAdminUsers[storeAdminUserSelection].id);
     } else if (operation == HUB_SYNC && !error && storePending.catalog && session.authenticated && (session.premium || session.admin)) {
         bool adultConfirmed = storeAdultConfirmed;
         storeClearRemote(); storeRemote = storePending.catalog; storePending.catalog = 0;
@@ -495,23 +585,44 @@ static bool pollStoreExtensions() {
         snprintf(storeNotice, sizeof(storeNotice), "A sessão premium foi encerrada. Entre novamente para sincronizar.");
     else if (operation == HUB_LOGIN && error == HUB_ERROR_AUTH && storePendingHttpStatus == 401)
         snprintf(storeNotice, sizeof(storeNotice), "Usuário ou senha recusados. A senha diferencia maiúsculas e minúsculas. Edite a senha e digite novamente. (código %d)", error);
-    else if (error) snprintf(storeNotice, sizeof(storeNotice), "%s (código %d)", hubErrorMessage(error), error);
+    else if (operation == HUB_ADMIN_CREATE_USER && error && !strcmp(storePending.serverCode, "USER_EXISTS"))
+        snprintf(storeNotice, sizeof(storeNotice), "Esse usuário já existe. Escolha outro nome ou abra Gerenciar contas para conferir o acesso.");
+    else if (operation == HUB_ADMIN_CREATE_USER && error && !strcmp(storePending.serverCode, "USER_LIMIT"))
+        snprintf(storeNotice, sizeof(storeNotice), "O limite de contas do servidor foi atingido. Abra Gerenciar contas para conferir.");
+    else if (operation == HUB_ADMIN_CREATE_USER && error && storePendingHttpStatus == 409)
+        snprintf(storeNotice, sizeof(storeNotice), "O servidor recusou a criação por conflito. Abra Gerenciar contas antes de tentar novamente.");
+    else if (operation == HUB_ADMIN_CREATE_USER && error && !strcmp(storePending.serverCode, "INVALID_USERNAME"))
+        snprintf(storeNotice, sizeof(storeNotice), "O servidor recusou o usuário. Use 3 a 32 letras, números, ponto, hífen ou sublinhado, sem espaços.");
+    else if (operation == HUB_ADMIN_CREATE_USER && error && !strcmp(storePending.serverCode, "INVALID_PASSWORD"))
+        snprintf(storeNotice, sizeof(storeNotice), "O servidor recusou a senha. Digite uma nova senha de 8 a 128 bytes.");
+    else if (operation == HUB_ADMIN_CREATE_USER && error && !strcmp(storePending.serverCode, "INVALID_PLAN"))
+        snprintf(storeNotice, sizeof(storeNotice), "O servidor recusou o plano. Selecione 15 dias, 1 mês ou 2 meses.");
+    else if (operation == HUB_ADMIN_LIST_USERS && error) {
+        storeAdminUsersError = error;
+        snprintf(storeNotice, sizeof(storeNotice), "Não foi possível atualizar as contas. Quadrado tenta novamente. (código %d)", error);
+    } else if (error) snprintf(storeNotice, sizeof(storeNotice), "%s (código %d)", hubErrorMessage(error), error);
     else if (operation == HUB_LOGIN) snprintf(storeNotice, sizeof(storeNotice), hubSavedLoginStatus().storageError ?
         "Conta autenticada; não foi possível salvar o login neste PS4." : "Conta autenticada. Login salvo neste PS4.");
-    else if (operation == HUB_ADMIN_CREATE_USER) snprintf(storeNotice, sizeof(storeNotice), "Conta premium criada. Envie as credenciais ao usuário.");
+    else if (operation == HUB_ADMIN_CREATE_USER && session.admin) {
+        snprintf(storeAdminFocusUsername, sizeof(storeAdminFocusUsername), "%s", storePending.createdUser.username);
+        snprintf(storeAdminFocusUserId, sizeof(storeAdminFocusUserId), "%s", storePending.createdUser.id);
+        storeOpenPanel(STORE_PANEL_USERS);
+        snprintf(storeNotice, sizeof(storeNotice), "Conta premium criada no servidor. O usuário já pode entrar. Carregando a lista de contas...");
+    }
     else if (operation == HUB_ADMIN_CHANGE_PASSWORD) snprintf(storeNotice, sizeof(storeNotice), "Senha alterada. As sessões anteriores foram encerradas.");
     else if (operation == HUB_ADMIN_REVOKE_USER) snprintf(storeNotice, sizeof(storeNotice), "Acesso alterado no servidor; sessões anteriores foram invalidadas.");
     else if (operation == HUB_ADMIN_PUBLISH) snprintf(storeNotice, sizeof(storeNotice), "Catálogo publicado. As lojas premium podem sincronizar.");
     else if (operation == HUB_LOGOUT) snprintf(storeNotice, sizeof(storeNotice), hubSavedLoginStatus().storageError ?
         "Sessão encerrada; não foi possível apagar o login salvo." : "Sessão encerrada. Login salvo apagado.");
     freeHubResult(&storePending); storePending = {}; storeHasPending = false; storePendingHttpStatus = 0; changed = true;
-    if (!error && (operation == HUB_ADMIN_REVOKE_USER || operation == HUB_ADMIN_CHANGE_PASSWORD) && session.admin) startHubAdminListUsers();
+    if (!error && (operation == HUB_ADMIN_REVOKE_USER || operation == HUB_ADMIN_CHANGE_PASSWORD) && session.admin) storeRequestAdminUsersRefresh();
     if (!error && operation == HUB_LOGIN) {
         session = hubSession();
         if (storeAdminLogin && session.admin) storeOpenPanel(STORE_PANEL_ADMIN);
         else if (storeAdminLogin) snprintf(storeNotice, sizeof(storeNotice), "Esta conta não tem acesso administrativo.");
         if (session.premium || session.admin) storeLoginSyncPending = startHubSync();
     }
+    if (storeTryAdminUsersRefresh(now)) changed = true;
     return changed;
 }
 

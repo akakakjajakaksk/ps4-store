@@ -35,6 +35,10 @@ Os planos usam o valor exato; os meses seguem o calendário. Pague em **[livepix
 
 O atalho **R2 + R3 + Options**, na tela de login premium, revela o login de administrador. Ele não concede permissão: criação de contas e publicação de catálogo exigem uma sessão administrativa validada pelo servidor.
 
+No painel ADM, preencha o usuário e uma senha de pelo menos 8 bytes, escolha o plano e selecione **Criar usuário premium**. A loja informa dados inválidos ou uma tarefa ainda ocupada e mantém a senha quando o envio não puder iniciar. Após o servidor confirmar a criação, a lista de contas abre e seleciona a nova conta; pressione **X** para acessar **Invalidar usuário e senha**. Enquanto a lista estiver aberta e o aplicativo estiver disponível para consultar, ela se atualiza a cada cinco segundos. A seleção acompanha o ID da conta durante essas atualizações.
+
+A pessoa pode entrar com as credenciais assim que a criação for confirmada, usando qualquer instalação da Peppy conectada ao mesmo serviço. Criação e invalidação são gravadas no servidor e não exigem publicar outro PKG. A invalidação bloqueia novas autenticações no servidor imediatamente; sessões já abertas no PS4 conferem a alteração a cada cinco segundos, além do tempo da rede.
+
 ## Downloads e atualizações
 
 As transferências usam buffers limitados, preferindo 1 MiB e recuando para 256 KiB se faltar memória. PKGs grandes de fontes aprovadas podem usar duas conexões quando o servidor fornece intervalos e um ETag forte; caso contrário, a loja usa a transferência comum. Tamanho, tipo, Content ID e SHA-256, quando informado, continuam sendo conferidos. A velocidade depende do servidor e da conexão do PS4; os testes não medem o desempenho real do console. Consulte o [relatório de desempenho](native/download-performance-review.json).

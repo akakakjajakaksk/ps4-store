@@ -29,6 +29,7 @@ static std::string sentBody;
 static std::mutex sentBodyLock;
 static std::atomic<size_t> heldReplyIndex(SIZE_MAX);
 static std::atomic<bool> holdSend(false), insideSend(false), aborted(false);
+static std::atomic<bool> holdRead(false), insideRead(false);
 static std::atomic<uint64_t> clockAdvanceUs(0);
 static const char* ORIGIN = "https://peppy.example.org";
 static const char* PKG = "https://github.com/skidgfx/PS4-2048/releases/download/v1.0/game.pkg";
@@ -113,6 +114,9 @@ extern "C" int32_t sceHttpGetResponseContentLength(int32_t, int32_t* type, size_
 }
 extern "C" int32_t sceHttpReadData(int32_t, void* output, uint32_t capacity) {
     ++reads; Reply& r = reply();
+    insideRead = true;
+    while (holdRead && !aborted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (aborted) return -99;
     if (r.cursor >= r.failureAfter) return r.readError;
     if (r.cursor == r.body.size()) { assert(r.eofAllowed && "must not read beyond exact framed response"); return 0; }
     if (r.oversizedRead) return int32_t(capacity + 1);
@@ -144,6 +148,7 @@ static void reset() {
     replies.clear(); opened = reads = connections = requestDeletes = connectionDeletes = 0;
     contexts = pools = sslContexts = templates = resolverCount = threadFailure = 0;
     privateDns = badDns = secure = noRedirect = false; holdSend = insideSend = aborted = false; heldReplyIndex = SIZE_MAX;
+    holdRead = insideRead = false;
     assert(setHubOrigin(ORIGIN));
     assert(configureHubSavedLogin(""));
 }
@@ -175,6 +180,122 @@ static Reply rangeReply(const std::string& url, const std::string& body, uint64_
     r.headers = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" + std::to_string(total) +
         "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n";
     return r;
+}
+static std::string createdUserJson(const char* username = "new_user", const char* plan = "15d") {
+    return std::string("{\"user\":{\"id\":\"0123456789abcdef0123456789abcdef\",\"username\":\"") + username +
+        "\",\"role\":\"premium\",\"plan\":\"" + plan + "\",\"expires_at\":2000000000,\"revoked\":false,\"premium_active\":true}}";
+}
+static HubSnapshot terminalSnapshot() {
+    for (int i = 0; i < 10000; ++i) {
+        HubSnapshot snapshot = hubSnapshot();
+        if (snapshot.state == HUB_DONE || snapshot.state == HUB_FAILED || snapshot.state == HUB_CANCELLED) return snapshot;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(false); return HubSnapshot{};
+}
+static void adminCreationChecks() {
+    const int durations[] = {15, 30, 60}; const char* plans[] = {"15d", "1m", "2m"};
+    for (size_t i = 0; i < sizeof(durations) / sizeof(durations[0]); ++i) {
+        reset(); login("admin");
+        Reply create(std::string(ORIGIN) + "/api/admin/users", createdUserJson("new_user", plans[i]), 200, 1);
+        create.bearer = "Bearer " + TOKEN; replies.push_back(create);
+        assert(startHubAdminCreateUser("NeW_UsEr", "new_\"pass\\word", durations[i]));
+        HubResult result = finished();
+        assert(!result.errorCode && !result.serverCode[0] && !strcmp(result.createdUser.id, "0123456789abcdef0123456789abcdef") &&
+            !strcmp(result.createdUser.username, "new_user") && !strcmp(result.createdUser.plan, plans[i]) &&
+            result.createdUser.expiresAt == 2000000000 && result.createdUser.premiumActive && !result.createdUser.admin && !result.createdUser.revoked);
+        assert(sentBody == std::string("{\"username\":\"NeW_UsEr\",\"password\":\"new_\\\"pass\\\\word\",\"plan\":\"") + plans[i] + "\"}");
+        freeHubResult(&result);
+        // The newly acknowledged row can immediately be retrieved and targeted
+        // by canonical ID; no PKG rebuild or catalog publication is involved.
+        const std::string acknowledgement = createdUserJson("new_user", plans[i]);
+        Reply users(std::string(ORIGIN) + "/api/admin/users", "{\"users\":[" + acknowledgement.substr(8, acknowledgement.size() - 9) + "]}");
+        users.bearer = "Bearer " + TOKEN; replies.push_back(users);
+        assert(startHubAdminListUsers()); result = finished();
+        assert(!result.errorCode && result.userCount == 1 && !strcmp(result.users[0].id, "0123456789abcdef0123456789abcdef"));
+        freeHubResult(&result);
+    }
+    reset(); login("admin"); const size_t previousOpened = opened;
+    const char* invalidUsers[] = {"ab", "a b", "abcdefghijklmnopqrstuvwxyz1234567"};
+    for (size_t i = 0; i < sizeof(invalidUsers) / sizeof(invalidUsers[0]); ++i)
+        assert(!startHubAdminCreateUser(invalidUsers[i], "valid_password", 15));
+    const std::string tooLong(129, 'p');
+    const char* invalidPasswords[] = {"short", tooLong.c_str(), "badpass\xc0\xaf", "badpass\xed\xa0\x80", "badpass\xf4\x90\x80\x80"};
+    for (size_t i = 0; i < sizeof(invalidPasswords) / sizeof(invalidPasswords[0]); ++i) {
+        assert(!startHubAdminCreateUser("valid_user", invalidPasswords[i], 15));
+        assert(!startHubAdminChangePassword("0123456789abcdef0123456789abcdef", invalidPasswords[i]));
+    }
+    assert(!startHubAdminCreateUser("valid_user", "valid_password", 14) && opened == previousOpened && hubSnapshot().state == HUB_IDLE);
+    assert(creationPasswordValid("senha\xc3\xa7\xc3\xa3o") && creationPasswordValid(std::string(128, 'p').c_str()));
+
+    const std::string malformedSuccess[] = {"{}", "null", "{\"user\":null}", createdUserJson("different_user"), createdUserJson("new_user", "2m"),
+        createdUserJson() + "garbage", "{\"user\":{\"id\":\"created\"}}"};
+    for (size_t i = 0; i < sizeof(malformedSuccess) / sizeof(malformedSuccess[0]); ++i) {
+        reset(); login("admin"); Reply create(std::string(ORIGIN) + "/api/admin/users", malformedSuccess[i], 200, 1);
+        create.bearer = "Bearer " + TOKEN; replies.push_back(create);
+        assert(startHubAdminCreateUser("new_user", "new_password", 15)); HubResult result = finished();
+        assert(result.errorCode == HUB_ERROR_JSON && !result.createdUser.id[0] && hubSession().admin); freeHubResult(&result);
+    }
+    struct ErrorCase { int status; const char* code; };
+    const ErrorCase errors[] = {{400, "INVALID_USERNAME"}, {400, "INVALID_PASSWORD"}, {400, "INVALID_PLAN"},
+        {409, "USER_EXISTS"}, {409, "USER_LIMIT"}};
+    for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        reset(); login("admin");
+        Reply bad(std::string(ORIGIN) + "/api/admin/users", std::string("{\"error\":\"") + errors[i].code +
+            "\",\"message\":\"untrusted text and new_password are not diagnostics\"}", errors[i].status, 1);
+        bad.bearer = "Bearer " + TOKEN; replies.push_back(bad);
+        assert(startHubAdminCreateUser("new_user", "new_password", 15)); HubSnapshot snapshot = terminalSnapshot();
+        assert(snapshot.errorCode == HUB_ERROR_HTTP && snapshot.httpStatus == errors[i].status && !strcmp(snapshot.serverCode, errors[i].code));
+        HubResult result = finished();
+        assert(result.errorCode == HUB_ERROR_HTTP && !strcmp(result.serverCode, errors[i].code) && !result.createdUser.id[0] && hubSession().admin);
+        freeHubResult(&result); assert(!hubSnapshot().serverCode[0]);
+    }
+    const std::string ignoredErrors[] = {"{\"error\":\"private_password\"}", "{\"error\":\"USER_EXISTS\",\"error\":\"USER_LIMIT\"}",
+        "{\"error\":\"USER_EXISTS\"}trailing", "{\"message\":\"USER_EXISTS\"}"};
+    for (size_t i = 0; i < sizeof(ignoredErrors) / sizeof(ignoredErrors[0]); ++i) {
+        reset(); login("admin"); Reply bad(std::string(ORIGIN) + "/api/admin/users", ignoredErrors[i], 409, 1);
+        bad.bearer = "Bearer " + TOKEN; replies.push_back(bad);
+        assert(startHubAdminCreateUser("new_user", "new_password", 15)); HubResult result = finished();
+        assert(result.errorCode == HUB_ERROR_HTTP && !result.serverCode[0] && hubSession().admin); freeHubResult(&result);
+    }
+    // Optional diagnostics must never hide a known server rejection when the
+    // error body is malformed, oversized, truncated, or disconnected.
+    for (int mode = 0; mode < 4; ++mode) {
+        reset(); login("admin"); Reply bad(std::string(ORIGIN) + "/api/admin/users", "{\"error\":\"USER_EXISTS\"}", 409, 1);
+        bad.bearer = "Bearer " + TOKEN;
+        if (mode == 0) bad.headers = "HTTP/1.1 409 Conflict\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n";
+        else if (mode == 1) { bad.contentLength = 8193; bad.headers = "HTTP/1.1 409 Conflict\r\nContent-Length: 8193\r\n\r\n"; }
+        else if (mode == 2) { bad.failureAfter = 11; bad.readError = -22; }
+        else { bad.contentLength = bad.body.size() + 1; bad.eofAllowed = true; bad.headers = "HTTP/1.1 409 Conflict\r\nContent-Length: " + std::to_string(bad.contentLength) + "\r\n\r\n"; }
+        replies.push_back(bad); assert(startHubAdminCreateUser("new_user", "new_password", 15));
+        HubSnapshot snapshot = terminalSnapshot(); HubResult result = finished();
+        assert(snapshot.errorCode == HUB_ERROR_HTTP && snapshot.httpStatus == 409 && result.errorCode == HUB_ERROR_HTTP &&
+            !result.serverCode[0] && hubSession().admin); freeHubResult(&result);
+    }
+    // An unconsumed terminal result owns the slot; a list refresh cannot replace
+    // it until the UI receives the create acknowledgement.
+    reset(); login("admin"); Reply create(std::string(ORIGIN) + "/api/admin/users", createdUserJson(), 200, 1);
+    create.bearer = "Bearer " + TOKEN; replies.push_back(create);
+    assert(startHubAdminCreateUser("new_user", "new_password", 15)); terminalSnapshot();
+    while (__atomic_load_n(&g_busy, __ATOMIC_ACQUIRE)) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    __atomic_store_n(&g_busy, 1, __ATOMIC_RELEASE);
+    HubResult unavailable = {}; assert(!consumeHubResult(&unavailable) && !unavailable.operation);
+    __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE);
+    assert(!startHubAdminListUsers()); HubResult result = finished();
+    assert(!result.errorCode && result.operation == HUB_ADMIN_CREATE_USER && result.createdUser.id[0]); freeHubResult(&result);
+    reset(); login("admin"); Reply cancelledReply(std::string(ORIGIN) + "/api/admin/users", "{\"error\":\"USER_EXISTS\"}", 409, 1);
+    cancelledReply.bearer = "Bearer " + TOKEN; replies.push_back(cancelledReply); holdSend = true;
+    insideSend = false; assert(startHubAdminCreateUser("new_user", "new_password", 15));
+    while (!insideSend) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    cancelHubOperation(); holdSend = false; result = finished();
+    assert(result.errorCode == HUB_ERROR_CANCELLED && !result.createdUser.id[0] && hubSession().admin); freeHubResult(&result);
+    reset(); login("admin"); cancelledReply.cursor = 0; replies.push_back(cancelledReply);
+    holdRead = true; insideRead = false;
+    assert(startHubAdminCreateUser("new_user", "new_password", 15));
+    while (!insideRead) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    cancelHubOperation(); holdRead = false; result = finished();
+    assert(result.errorCode == HUB_ERROR_CANCELLED && !result.createdUser.id[0] && !result.serverCode[0] && hubSession().admin);
+    freeHubResult(&result);
 }
 
 static void pkgZoneChecks() {
@@ -427,7 +548,7 @@ int main() {
     }
     reset(); login(); sessionReply(); catalogReply(""); assert(startHubSync()); r = finished(); assert(!r.errorCode && r.catalog && !r.catalog->count()); freeHubResult(&r);
 
-    reset(); login("admin"); Reply create(std::string(ORIGIN) + "/api/admin/users", "{\"user\":{\"id\":\"created\"}}", 200, 1); create.bearer = "Bearer " + TOKEN; replies.push_back(create);
+    reset(); login("admin"); Reply create(std::string(ORIGIN) + "/api/admin/users", createdUserJson(), 200, 1); create.bearer = "Bearer " + TOKEN; replies.push_back(create);
     assert(startHubAdminCreateUser("new_user", "new_password", 15)); r = finished(); assert(!r.errorCode && sentBody.find("\"plan\":\"15d\"") != std::string::npos && sentBody.find("new_password") != std::string::npos); freeHubResult(&r);
     Reply publish(std::string(ORIGIN) + "/api/admin/catalog", "{\"version\":8,\"count\":1}", 200, 1); publish.bearer = "Bearer " + TOKEN; replies.push_back(publish);
     std::string publication = "{\"entries\":[" + entryJson() + "],\"replace\":false}";
@@ -642,7 +763,7 @@ int main() {
     const char* malformed[] = {"\"\\u0000\"", "\"\\ud800\"", "\"\\udc00\"", "01", "{\"a\":1,}", "[1,]", "true false", "\"\xc0\xaf\""};
     for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); ++i) { peppyHubJson::Cursor json(malformed[i], strlen(malformed[i])); assert(!json.skip() || !json.done()); }
     char utf[32]; peppyHubJson::Cursor unicode("\"\\ud83d\\ude00\"", 14); assert(unicode.string(utf, sizeof(utf)) && unicode.done() && strlen(utf) == 4);
-    pkgZoneChecks(); savedLoginChecks();
+    adminCreationChecks(); pkgZoneChecks(); savedLoginChecks();
     printf("hub client: async session/catalog/admin/import, private saved login/restart/admin/expiry/logout, user invalidation, independent 5-second verification, stale-session race guards, expiry, TLS/range framing, credential isolation, bounded MediaFire landing resolution and cancellation checks passed\n");
     return 0;
 }

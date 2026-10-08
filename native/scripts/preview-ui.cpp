@@ -82,8 +82,9 @@ static char previewSavedUser[65] = {}, previewSavedPassword[129] = {};
 static HubSnapshot previewHub = {};
 static HubResult previewHubResult = {};
 static bool previewHubReady = false;
-static bool previewRejectLogin = false;
+static bool previewRejectLogin = false, previewRejectCreate = false;
 static int previewHubCalls = 0, previewLoginAttempts = 0;
+static int previewCreateAttempts = 0;
 static char previewHubOrigin[256] = {};
 static char previewImportedUrls[8192] = {};
 static char previewLoginUser[65] = {}, previewLoginPassword[129] = {};
@@ -117,7 +118,11 @@ bool startHubImportUrls(const char* urls, size_t bytes) {
     if (!bytes || bytes >= sizeof(previewImportedUrls) || !previewStartHub(HUB_IMPORT_URLS)) return false;
     memcpy(previewImportedUrls, urls, bytes); previewImportedUrls[bytes] = 0; return true;
 }
-bool startHubAdminCreateUser(const char*, const char*, int days) { previewCreatedPlan = days; return previewHubSession.admin && previewStartHub(HUB_ADMIN_CREATE_USER); }
+bool startHubAdminCreateUser(const char*, const char*, int days) {
+    ++previewCreateAttempts;
+    if (previewRejectCreate || !previewHubSession.admin || !previewStartHub(HUB_ADMIN_CREATE_USER)) return false;
+    previewCreatedPlan = days; return true;
+}
 bool startHubAdminPublish(const char* json, size_t bytes) {
     if (!previewHubSession.admin || bytes >= sizeof(previewPublishedJson) || !previewStartHub(HUB_ADMIN_PUBLISH)) return false;
     memcpy(previewPublishedJson, json, bytes); previewPublishedJson[bytes] = 0; return true;
@@ -158,11 +163,13 @@ static void resetController() {
     activeCategory = 0;
     storeLocal.clear();
     storeClearRemote(); storeClearAdminUsers(); storeSelectedAdminUser = {}; storeAccountPassword[0] = 0;
+    storeResetAdminRefresh();
     if (storeHasPending) freeHubResult(&storePending);
     storePending = {}; storeHasPending = false;
     if (previewHubReady) freeHubResult(&previewHubResult);
-    previewHubReady = previewRejectLogin = false; previewHubResult = {}; previewHub = {}; previewHubSession = {};
+    previewHubReady = previewRejectLogin = previewRejectCreate = false; previewHubResult = {}; previewHub = {}; previewHubSession = {};
     previewHubCalls = previewLoginAttempts = 0; storePanel = STORE_PANEL_NONE; storeMenuSelection = 0;
+    previewCreateAttempts = 0;
     storeAdminLogin = storeAdminChord = storeAdultConfirmed = storeFtpRequested = false;
     storePremiumCatalogRequested = storeLoginSyncPending = false;
     previewSavedLogin = {}; previewSavedUser[0] = previewSavedPassword[0] = 0;
@@ -308,7 +315,125 @@ static bool verifyLoginEditingController() {
     resetController();
     return true;
 }
+static HubAdminUser adminFixture(const char* id, const char* username, bool admin = false) {
+    HubAdminUser user = {};
+    snprintf(user.id, sizeof(user.id), "%s", id); snprintf(user.username, sizeof(user.username), "%s", username);
+    snprintf(user.plan, sizeof(user.plan), "%s", admin ? "" : "1m");
+    user.admin = admin; user.premiumActive = !admin; user.expiresAt = admin ? 0 : 2000000000ULL;
+    return user;
+}
+static void completeAdminUsers(const HubAdminUser* users, size_t count) {
+    previewHubResult = {}; previewHubResult.operation = HUB_ADMIN_LIST_USERS; previewHubResult.userCount = count;
+    if (count) {
+        previewHubResult.users = static_cast<HubAdminUser*>(calloc(count, sizeof(HubAdminUser)));
+        memcpy(previewHubResult.users, users, count * sizeof(HubAdminUser));
+    }
+    previewHubReady = true; pollStoreExtensions();
+}
+static bool verifyAdminCreationController() {
+    resetController(); configureHubBaseUrl(PEPPY_HUB_URL);
+    previewHubSession.authenticated = previewHubSession.admin = true;
+    storeOpenPanel(STORE_PANEL_ADMIN); storeMenuSelection = 3;
+    snprintf(storeAdminUser, sizeof(storeAdminUser), "x");
+    snprintf(storeAdminPassword, sizeof(storeAdminPassword), "fixture-new-secret");
+    storePanelController(CATALOG_CROSS, 0);
+    if (!expect(!previewCreateAttempts && !strcmp(storeAdminPassword, "fixture-new-secret") && strstr(storeNotice, "3 a 32"),
+                "invalid creation username explains the allowed range and preserves the password")) return false;
+    snprintf(storeAdminUser, sizeof(storeAdminUser), "new user"); storePanelController(CATALOG_CROSS, 0);
+    if (!expect(!previewCreateAttempts && storeAdminPassword[0] && strstr(storeNotice, "sem espaços"), "spaces in creation usernames are rejected visibly")) return false;
+    snprintf(storeAdminUser, sizeof(storeAdminUser), "New-Fixture-User");
+    snprintf(storeAdminPassword, sizeof(storeAdminPassword), "short"); storePanelController(CATALOG_CROSS, 0);
+    if (!expect(!previewCreateAttempts && !strcmp(storeAdminPassword, "short") && strstr(storeNotice, "8 a 128"),
+                "short creation passwords show guidance without disappearing")) return false;
+    snprintf(storeAdminPassword, sizeof(storeAdminPassword), "fixture-new-secret");
+    previewHub.state = HUB_RUNNING; previewHub.operation = HUB_SYNC; storePanelController(CATALOG_CROSS, 0);
+    if (!expect(!previewCreateAttempts && storeAdminPassword[0] && strstr(storeNotice, "Aguarde"), "busy service keeps creation inputs with explicit feedback")) return false;
+    previewHub = {}; storeHasPending = true; storePanelController(CATALOG_CROSS, 0);
+    if (!expect(!previewCreateAttempts && storeAdminPassword[0], "unconsumed service results defer creation without erasing inputs")) return false;
+    storeHasPending = false; previewRejectCreate = true; storePanelController(CATALOG_CROSS, 0);
+    if (!expect(previewCreateAttempts == 1 && storeAdminPassword[0] && strstr(storeNotice, "Não foi possível iniciar"),
+                "a rejected worker launch keeps credentials and shows a retry message")) return false;
+    previewRejectCreate = false; storeAdminPlan = 30; storePanelController(CATALOG_CROSS, 0);
+    if (!expect(previewHub.operation == HUB_ADMIN_CREATE_USER && previewCreatedPlan == 30 && !storeAdminPassword[0] &&
+                strstr(storeNotice, "Aguarde a confirmação") && storePanel == STORE_PANEL_ADMIN,
+                "accepted creation wipes the transferred secret but waits for the server acknowledgement")) return false;
+    const HubAdminUser created = adminFixture("33333333333333333333333333333333", "new-fixture-user");
+    const HubAdminUser owner = adminFixture("00000000000000000000000000000000", "owner_fixture", true);
+    const HubAdminUser other = adminFixture("22222222222222222222222222222222", "other_fixture");
+    previewHubResult = {}; previewHubResult.operation = HUB_ADMIN_CREATE_USER; previewHubResult.createdUser = created; previewHubReady = true;
+    storeBeginText(STORE_TEXT_ADMIN_USER, STORE_PANEL_ADMIN); pollStoreExtensions();
+    if (!expect(storeHasPending && previewHub.state == HUB_IDLE && storePanel == STORE_PANEL_TEXT,
+                "a creation response consumed during editing cannot start a conflicting list request")) return false;
+    storePanelController(CATALOG_CIRCLE, 0); pollStoreExtensions();
+    if (!expect(!storeHasPending && storePanel == STORE_PANEL_USERS && previewHub.operation == HUB_ADMIN_LIST_USERS &&
+                !strcmp(storeAdminFocusUserId, created.id) && !storeAdminUserCount && storeAdminUsersLoading(),
+                "confirmed creation opens management and launches a list only after freeing its result")) return false;
+    previewHubResult = {}; previewHubResult.operation = HUB_ADMIN_LIST_USERS; previewHubResult.errorCode = HUB_ERROR_NETWORK; previewHubReady = true;
+    pollStoreExtensions();
+    if (!expect(storeAdminUsersError == HUB_ERROR_NETWORK && !storeAdminUsersLoaded && !strcmp(storeAdminFocusUserId, created.id),
+                "failed initial account loading retains the canonical created ID for a later retry")) return false;
+    previewTimeUs = 5000000ULL; previewHub.state = HUB_RUNNING; previewHub.operation = HUB_SYNC;
+    int calls = previewHubCalls; pollStoreExtensions();
+    if (!expect(storeAdminUsersRefreshRequested && previewHubCalls == calls, "a due refresh waits while another service operation is running")) return false;
+    previewHubResult = {}; previewHubResult.operation = HUB_SYNC; previewHubResult.errorCode = HUB_ERROR_NETWORK; previewHubReady = true;
+    pollStoreExtensions();
+    if (!expect(previewHub.operation == HUB_ADMIN_LIST_USERS && previewHubCalls == calls + 1, "deferred account refresh starts as soon as the other result is consumed")) return false;
+    storeAdminUsers = static_cast<HubAdminUser*>(calloc(1, sizeof(HubAdminUser))); storeAdminUsers[0] = owner;
+    storeAdminUserCount = 1; storeAdminUserSelection = 0;
+    snprintf(storeAdminSelectedUserId, sizeof(storeAdminSelectedUserId), "%s", owner.id);
+    const HubAdminUser initial[] = {owner, other, created}; completeAdminUsers(initial, 3);
+    if (!expect(storeAdminUserSelection == 2 && !strcmp(storeAdminSelectedUserId, created.id) && !storeAdminFocusUserId[0] &&
+                strstr(storeNotice, "já pode entrar"), "the server-created account is focused by canonical ID on an asynchronously ordered list")) return false;
+    previewTimeUs += 5000000ULL; pollStoreExtensions();
+    if (!expect(previewHub.operation == HUB_ADMIN_LIST_USERS && storeAdminUsersLoading(), "open management refreshes accounts every five seconds")) return false;
+    const HubAdminUser reordered[] = {created, owner, other}; completeAdminUsers(reordered, 3);
+    if (!expect(storeAdminUserSelection == 0 && !strcmp(storeAdminUsers[storeAdminUserSelection].id, created.id),
+                "periodic reordering keeps the same selected account rather than the old row number")) return false;
+    storePanelController(CATALOG_CROSS, 0); storePanelController(CATALOG_CROSS, 0);
+    if (!expect(storePanel == STORE_PANEL_REVOKE && !strcmp(storeSelectedAdminUser.id, created.id),
+                "the newly created account exposes a pinned invalidation confirmation")) return false;
+    previewHub.state = HUB_RUNNING; previewHub.operation = HUB_ADMIN_LIST_USERS; calls = previewHubCalls;
+    storePanelController(CATALOG_CROSS, 0);
+    if (!expect(storePanel == STORE_PANEL_REVOKE && previewHubCalls == calls && strstr(storeNotice, "Aguarde"),
+                "confirmation during a running list explains the wait and does not silently submit another operation")) return false;
+    completeAdminUsers(initial, 3);
+    if (!expect(storePanel == STORE_PANEL_REVOKE && !strcmp(storeSelectedAdminUser.id, created.id),
+                "an in-flight account list cannot retarget the invalidation confirmation")) return false;
+    storePanelController(CATALOG_CROSS, 0);
+    if (!expect(previewHub.operation == HUB_ADMIN_REVOKE_USER && previewRevokedValue && !strcmp(previewRevokedUser, created.id),
+                "invalidation sends the exact newly created account ID")) return false;
+    previewHubResult = {}; previewHubResult.operation = HUB_ADMIN_REVOKE_USER; previewHubReady = true; pollStoreExtensions();
+    if (!expect(previewHub.operation == HUB_ADMIN_LIST_USERS, "acknowledged invalidation refreshes server metadata immediately")) return false;
+    const HubAdminUser missing[] = {owner, other}; completeAdminUsers(missing, 2);
+    if (!expect(storeAdminUserSelection == -1 && !strcmp(storeAdminSelectedUserId, created.id),
+                "a missing selected account is cleared visually without silently selecting another user")) return false;
+    previewTimeUs += 5000000ULL; pollStoreExtensions(); completeAdminUsers(missing, 2);
+    storePanelController(CATALOG_CROSS, 0);
+    if (!expect(storeAdminUserSelection == -1 && storePanel == STORE_PANEL_USERS, "later refreshes cannot silently recover a missing selection as a different account")) return false;
+    storePanelController(CATALOG_DOWN, 0);
+    if (!expect(storeAdminUserSelection == 0 && !strcmp(storeAdminSelectedUserId, owner.id), "the administrator explicitly chooses a new selection with the directional control")) return false;
+    storeSelectedAdminUser = created; storeOpenPanel(STORE_PANEL_ACCOUNT); storeMenuSelection = 2;
+    snprintf(storeAccountPassword, sizeof(storeAccountPassword), "%s", "fixture-rotation-secret");
+    previewHub.state = HUB_RUNNING; previewHub.operation = HUB_ADMIN_LIST_USERS; calls = previewHubCalls;
+    storePanelController(CATALOG_CROSS, 0);
+    if (!expect(storePanel == STORE_PANEL_ACCOUNT && previewHubCalls == calls &&
+                !strcmp(storeAccountPassword, "fixture-rotation-secret") && strstr(storeNotice, "Aguarde"),
+                "password rotation during a running list preserves its secret and explains the wait")) return false;
+    resetController(); configureHubBaseUrl(PEPPY_HUB_URL); previewHubSession.authenticated = previewHubSession.admin = true;
+    storeOpenPanel(STORE_PANEL_ADMIN);
+    previewHubResult = {}; previewHubResult.operation = HUB_ADMIN_CREATE_USER; previewHubResult.errorCode = HUB_ERROR_HTTP;
+    snprintf(previewHubResult.serverCode, sizeof(previewHubResult.serverCode), "%s", "USER_EXISTS"); previewHub.httpStatus = 409; previewHubReady = true; pollStoreExtensions();
+    if (!expect(storePanel == STORE_PANEL_ADMIN && !storeAdminFocusUserId[0] && strstr(storeNotice, "já existe") && strstr(storeNotice, "Gerenciar contas"),
+                "duplicate-account responses show a useful error and never claim a created account")) return false;
+    previewHubResult = {}; previewHubResult.operation = HUB_ADMIN_CREATE_USER; previewHubResult.errorCode = HUB_ERROR_HTTP;
+    snprintf(previewHubResult.serverCode, sizeof(previewHubResult.serverCode), "%s", "USER_LIMIT"); previewHub.httpStatus = 409; previewHubReady = true; pollStoreExtensions();
+    if (!expect(strstr(storeNotice, "limite de contas") && !strstr(storeNotice, "já existe"), "server account-limit errors are distinguished from duplicate usernames")) return false;
+    resetController();
+    puts("Checked visible account creation validation, busy/failed launch preservation, acknowledged create-to-management, deferred five-second refresh, stable selections and canonical invalidation.");
+    return true;
+}
 static bool verifyServicesController() {
+    if (!verifyAdminCreationController()) return false;
     if (!verifyLoginEditingController()) return false;
     resetController(); int selected = 0; bool details = false;
     for (int first = 0; first < CATEGORY_COUNT; first += 6) {

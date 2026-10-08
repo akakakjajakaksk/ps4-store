@@ -111,6 +111,23 @@ bool usernameValid(const char* value) {
               (value[i] >= '0' && value[i] <= '9') || value[i] == '_' || value[i] == '-' || value[i] == '.')) return false;
     return true;
 }
+bool creationUsernameValid(const char* value) {
+    size_t n = length(value, 33);
+    return n >= 3 && n <= 32 && usernameValid(value);
+}
+bool creationPasswordValid(const char* value) {
+    size_t n = length(value, PASSWORD_CAP);
+    if (n < 8 || n >= PASSWORD_CAP) return false;
+    // Validate the same UTF-8 that the server will hash, without normalizing,
+    // trimming or changing a password. The JSON cursor rejects malformed UTF-8.
+    char quoted[6 * PASSWORD_CAP + 4] = {}; quoted[0] = '"'; size_t used = 1;
+    bool valid = peppyHubJson::escape(value, n, quoted, sizeof(quoted), used);
+    if (valid) {
+        quoted[used++] = '"';
+        peppyHubJson::Cursor json(quoted, used); valid = json.string(0, 0) && json.done();
+    }
+    wipe(quoted, sizeof(quoted)); return valid;
+}
 bool tokenValid(const char* value) {
     size_t n = length(value, TOKEN_CAP); if (n < 32 || n >= TOKEN_CAP) return false;
     for (size_t i = 0; i < n; ++i)
@@ -252,6 +269,44 @@ int readExact(Handles& h, unsigned char* output, size_t bytes) {
     // an extra EOF read after the final byte (some PS4 transports time out).
     return 0;
 }
+bool publicAdminError(const char* code) {
+    const char* allowed[] = {"USER_EXISTS", "USER_LIMIT", "INVALID_USERNAME", "INVALID_PASSWORD",
+        "INVALID_PLAN", "USER_CONFLICT", "USER_NOT_FOUND", "INVALID_UPDATE", "ADMIN_REQUIRED"};
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); ++i)
+        if (!strcmp(code, allowed[i])) return true;
+    return false;
+}
+void captureServerError(Handles& h) {
+    // Diagnostics are optional, capped and never copy server message text.
+    // Heartbeats must not mutate a foreground operation's result or snapshot.
+    if (h.quiet) return;
+    char* headers = 0; size_t headerBytes = 0;
+    peppyHttpRange::Metadata meta = {};
+    if (sceHttpGetAllResponseHeaders(h.req, &headers, &headerBytes) < 0 ||
+        !peppyHttpRange::parseHeaders(headers, headerBytes, &meta)) return;
+    int32_t type = -1; size_t count = 0;
+    if (sceHttpGetResponseContentLength(h.req, &type, &count) < 0 ||
+        type != ORBIS_HTTP_CONTENTLEN_EXIST || !meta.hasContentLength || meta.contentLength != count ||
+        !count || count > 8192) return;
+    char* response = static_cast<char*>(malloc(count + 1)); if (!response) return;
+    bool valid = !readExact(h, reinterpret_cast<unsigned char*>(response), count);
+    response[count] = 0;
+    char code[32] = {}, key[65]; bool found = false;
+    peppyHubJson::Cursor json(response, count);
+    valid = valid && json.take('{') && !json.take('}');
+    while (valid) {
+        valid = json.string(key, sizeof(key)) && json.take(':'); if (!valid) break;
+        if (!strcmp(key, "error")) {
+            valid = !found && json.string(code, sizeof(code)); found = true;
+        } else valid = json.skip();
+        if (!valid || json.take('}')) break;
+        valid = json.take(',');
+    }
+    if (valid && found && json.done() && publicAdminError(code)) {
+        lock(); strcpy(g_snapshot.serverCode, code); unlock();
+    }
+    wipe(response, count); free(response);
+}
 int apiRequest(Handles& h, const Task& task, const char* path, bool post,
                const char* body, size_t bytes, char*& response, size_t& responseBytes) {
     response = 0; responseBytes = 0;
@@ -260,6 +315,7 @@ int apiRequest(Handles& h, const Task& task, const char* path, bool post,
     int status = 0; int rc = open(h, url, post ? 1 : ORBIS_METHOD_GET, body, bytes,
         task.operation == HUB_LOGIN && !task.restoreSessionRequest ? 0 : task.token, 0, status);
     if (rc) return rc;
+    if (status >= 400 && status <= 499) captureServerError(h);
     if (status == 401 || status == 403) { lock();
         if (task.generation == g_sessionGeneration) {
             clearSessionLocked();
@@ -494,6 +550,27 @@ int parseUsers(const char* body, size_t bytes, HubResult& output) {
     if (!valid || !found || !json.done()) { free(users); return fail(HUB_ERROR_JSON); }
     output.users = users; output.userCount = count; return 0;
 }
+int parseCreatedUser(const char* body, size_t bytes, const Task& task, HubResult& output) {
+    peppyHubJson::Cursor json(body, bytes); char key[65]; bool found = false;
+    HubAdminUser user = {};
+    bool valid = json.take('{') && !json.take('}');
+    while (valid) {
+        valid = json.string(key, sizeof(key)) && json.take(':'); if (!valid) break;
+        if (!strcmp(key, "user")) { valid = !found && parseAdminUser(json, user); found = true; }
+        else valid = json.skip();
+        if (!valid || json.take('}')) break;
+        valid = json.take(',');
+    }
+    const char* wantedPlan = task.days == 15 ? "15d" : task.days == 30 ? "1m" : "2m";
+    if (!valid || !found || !json.done() || !adminIdValid(user.id) || user.admin ||
+        user.revoked || !user.premiumActive || !user.expiresAt || strcmp(user.plan, wantedPlan))
+        return fail(HUB_ERROR_JSON);
+    size_t n = strlen(task.username);
+    if (strlen(user.username) != n) return fail(HUB_ERROR_JSON);
+    for (size_t i = 0; i < n; ++i)
+        if (user.username[i] != peppyHttpRange::detail::lower(task.username[i])) return fail(HUB_ERROR_JSON);
+    output.createdUser = user; return 0;
+}
 char* credentialBody(Task& task, size_t& bytes) {
     size_t capacity = 6 * (strlen(task.username) + strlen(task.password)) + 128;
     char* body = static_cast<char*>(malloc(capacity)); if (!body) return 0;
@@ -544,7 +621,8 @@ int execute(Task& task, HubResult& result) {
         // Only the startup operation may try an already-expired token's saved
         // password once. Revoked accounts still fail the ordinary server login.
         lock(); task.generation = g_sessionGeneration;
-        g_snapshot.errorCode = g_snapshot.nativeCode = g_snapshot.httpStatus = 0; unlock();
+        g_snapshot.errorCode = g_snapshot.nativeCode = g_snapshot.httpStatus = 0;
+        g_snapshot.serverCode[0] = 0; unlock();
     }
     char* body = 0; size_t bodyBytes = 0;
     if (task.operation == HUB_LOGIN || task.operation == HUB_ADMIN_CREATE_USER || task.operation == HUB_ADMIN_CHANGE_PASSWORD) {
@@ -579,6 +657,7 @@ int execute(Task& task, HubResult& result) {
         task.generation, false, task.rememberedPassword);
     else if (!error && task.operation == HUB_SYNC) error = parseCatalog(response, bytes, result);
     else if (!error && task.operation == HUB_ADMIN_LIST_USERS) error = parseUsers(response, bytes, result);
+    else if (!error && task.operation == HUB_ADMIN_CREATE_USER) error = parseCreatedUser(response, bytes, task, result);
     else if (!error) { peppyHubJson::Cursor json(response, bytes); if (!json.skip() || !json.done()) error = fail(HUB_ERROR_JSON); }
     if (response) { wipe(response, bytes); free(response); }
     if (error == HUB_ERROR_AUTH && task.restore) { lock(); forgetSavedAuthorizationLocked(); unlock(); }
@@ -595,6 +674,7 @@ void* worker(void* value) {
     result.errorCode = error;
     lock();
     if (error && task->operation == HUB_LOGIN) clearSessionLocked();
+    if (error) memcpy(result.serverCode, g_snapshot.serverCode, sizeof(result.serverCode));
     g_result = result; g_snapshot.errorCode = error;
     g_snapshot.state = error == HUB_ERROR_CANCELLED ? HUB_CANCELLED : error ? HUB_FAILED : HUB_DONE;
     g_restoreActive = false;
@@ -651,7 +731,9 @@ bool launch(Task* task, bool requiresSession, bool admin) {
 }
 bool credentials(int operation, const char* username, const char* password, int days) {
     size_t n = length(password, PASSWORD_CAP);
-    if (!usernameValid(username) || !n || n >= PASSWORD_CAP || (operation == HUB_ADMIN_CREATE_USER && days != 15 && days != 30 && days != 60)) return false;
+    if (!usernameValid(username) || !n || n >= PASSWORD_CAP ||
+        (operation == HUB_ADMIN_CREATE_USER && (!creationUsernameValid(username) || !creationPasswordValid(password) ||
+         (days != 15 && days != 30 && days != 60)))) return false;
     Task* task = new (std::nothrow) Task(); if (!task) return false;
     task->operation = operation; task->days = days; strcpy(task->username, username); memcpy(task->password, password, n + 1);
     if (operation == HUB_LOGIN) memcpy(task->rememberedPassword, password, n + 1);
@@ -953,7 +1035,7 @@ bool startHubAdminRevokeUser(const char* userId, bool revoked) {
 }
 bool startHubAdminChangePassword(const char* userId, const char* password) {
     size_t bytes = length(password, PASSWORD_CAP);
-    if (!adminIdValid(userId) || bytes < 8 || bytes >= PASSWORD_CAP) return false;
+    if (!adminIdValid(userId) || !creationPasswordValid(password)) return false;
     Task* task = new (std::nothrow) Task(); if (!task) return false;
     task->operation = HUB_ADMIN_CHANGE_PASSWORD;
     strcpy(task->username, userId); memcpy(task->password, password, bytes + 1);

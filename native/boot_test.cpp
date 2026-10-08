@@ -925,8 +925,13 @@ static void drawStorePanel(uint32_t* p) {
         textWrapped(p, 112, 554, "A atualização da loja é um PKG. Baixe o arquivo publicado e instale pelo instalador do PS4. Não é um payload para o navegador.", FONT_BODY, MUTED, 1580, 3);
         textWrapped(p, 112, 722, "Catálogo premium: use Serviços > Atualizar catálogo premium. Seus links pessoais continuam salvos neste PS4.", FONT_BODY, WHITE, 1580, 2);
     } else if (storePanel == STORE_PANEL_USERS) {
-        if (!storeAdminUserCount) text(p, 112, 320, "Nenhuma conta carregada. Quadrado atualiza a lista.", FONT_BODY, MUTED);
-        int first = (storeAdminUserSelection / 7) * 7;
+        if (!storeAdminUserCount) {
+            const char* empty = storeAdminUsersLoading() ? "Carregando contas do servidor..." :
+                storeAdminUsersError ? "Falha ao carregar contas. Quadrado tenta novamente." :
+                !storeAdminUsersLoaded ? "Aguardando consulta ao servidor..." : "Nenhuma conta encontrada. Círculo volta para criar uma conta.";
+            textWrapped(p, 112, 320, empty, FONT_BODY, MUTED, 1580, 2);
+        }
+        int first = storeAdminUserSelection < 0 ? 0 : (storeAdminUserSelection / 7) * 7;
         for (int i = first; i < int(storeAdminUserCount) && i < first + 7; ++i) {
             const HubAdminUser& user = storeAdminUsers[i]; int y = 280 + (i - first) * 76;
             bool selected = i == storeAdminUserSelection;
@@ -936,8 +941,10 @@ static void drawStorePanel(uint32_t* p) {
             text(p, 1050, y + 16, state, FONT_BODY, user.revoked ? 0x80EBA5B4 : BLUE);
             text(p, 1510, y + 16, user.plan[0] ? user.plan : "Sem prazo", FONT_BODY, MUTED);
         }
-        text(p, 112, 838, "X  Editar conta    Quadrado  Atualizar lista", FONT_BODY, BLUE);
-        text(p, 112, 885, "O servidor encerra as sessões. PS4s conectados conferem o acesso a cada 5 segundos.", FONT_SMALL, MUTED);
+        bool selected = storeAdminUserSelection >= 0 && storeAdminUserSelection < int(storeAdminUserCount);
+        text(p, 112, 838, selected && storeAdminUsers[storeAdminUserSelection].revoked ?
+            "X  Editar / reativar conta    Quadrado  Atualizar lista" : "X  Editar / invalidar conta    Quadrado  Atualizar lista", FONT_BODY, BLUE);
+        textWrapped(p, 112, 881, "Contas ficam no servidor. A lista e o acesso dos PS4s conectados são conferidos a cada 5 segundos.", FONT_SMALL, MUTED, 1650, 1);
     } else if (storePanel == STORE_PANEL_ACCOUNT) {
         textElided(p, 112, 292, storeSelectedAdminUser.username, FONT_TITLE, WHITE, 1580);
         char password[100]; snprintf(password, sizeof(password), "Nova senha: %s", storeAccountPassword[0] ? "********" : "preencher");

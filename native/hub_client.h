@@ -27,6 +27,7 @@ struct HubSnapshot {
     int state, operation, errorCode, httpStatus;
     int32_t nativeCode;
     size_t completed, requested;
+    char serverCode[32]; // Reviewed public API code only; never arbitrary message text.
 };
 struct HubSavedLoginStatus {
     bool configured, hasUsername, hasPassword, hasToken, restoring, storageError;
@@ -39,6 +40,8 @@ struct HubAdminUser {
 };
 struct HubResult {
     int operation, errorCode;
+    char serverCode[32];
+    HubAdminUser createdUser; // Canonical server acknowledgement after successful creation.
     uint64_t catalogVersion;
     UserCatalog* catalog; // Owned by result after consume; release with freeHubResult.
     UserCatalogImportReport imports;
