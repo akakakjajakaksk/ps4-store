@@ -40,8 +40,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://github.com/lorsanta/SDLPoP-PS4/releases/tag/v1.23-beta",
-    "sha256": ""
+    "source_url": "https://github.com/lorsanta/SDLPoP-PS4/releases/tag/v1.23-beta"
   },
   {
     "id": "MARI00006",
@@ -172,8 +171,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://github.com/MDashK/Sonic-Time-Twisted-PS4/releases/tag/v1.1.2.1-ps4",
-    "sha256": ""
+    "source_url": "https://github.com/MDashK/Sonic-Time-Twisted-PS4/releases/tag/v1.1.2.1-ps4"
   },
   {
     "id": "SOHP00001",
@@ -238,8 +236,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://github.com/MDashK/sonic-1-sms-remake-ps4/releases/tag/v1.9.2-ps4",
-    "sha256": ""
+    "source_url": "https://github.com/MDashK/sonic-1-sms-remake-ps4/releases/tag/v1.9.2-ps4"
   },
   {
     "id": "SMSR00002",
@@ -260,8 +257,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://github.com/MDashK/Sonic-2-SMS-Remake-PS4/releases/tag/v2.9.2-ps4",
-    "sha256": ""
+    "source_url": "https://github.com/MDashK/Sonic-2-SMS-Remake-PS4/releases/tag/v2.9.2-ps4"
   },
   {
     "id": "CUSA08171-PATCH-0100",
@@ -282,8 +278,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-s",
-    "sha256": ""
+    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-s"
   },
   {
     "id": "CUSA16579-PATCH-0131",
@@ -304,8 +299,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-c",
-    "sha256": ""
+    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-c"
   },
   {
     "id": "CUSA08519-BASE-0113",
@@ -326,8 +320,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": true,
-    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-r",
-    "sha256": ""
+    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-r"
   },
   {
     "id": "CUSA24769-BASE-0134",
@@ -348,8 +341,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-g",
-    "sha256": ""
+    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-g"
   },
   {
     "id": "CUSA00411-BASE-0127",
@@ -370,8 +362,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": true,
-    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-g",
-    "sha256": ""
+    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-g"
   },
   {
     "id": "CUSA18354-UPDATE-0100",
@@ -392,8 +383,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://mtps4store380.blogspot.com/",
-    "sha256": ""
+    "source_url": "https://mtps4store380.blogspot.com/"
   },
   {
     "id": "CUSA36381-UPDATE-UNKNOWN",
@@ -414,8 +404,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://www.superpsx.com/unicorn-overlord-ps4-pkg/",
-    "sha256": ""
+    "source_url": "https://www.superpsx.com/unicorn-overlord-ps4-pkg/"
   },
   {
     "id": "CUSA18354-BASE-UNKNOWN",
@@ -436,8 +425,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://mtps4store380.blogspot.com/",
-    "sha256": ""
+    "source_url": "https://mtps4store380.blogspot.com/"
   },
   {
     "id": "CUSA10216-UPDATE-0107",
@@ -458,8 +446,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": true,
-    "source_url": "https://mtps4store380.blogspot.com/",
-    "sha256": ""
+    "source_url": "https://mtps4store380.blogspot.com/"
   },
   {
     "id": "CUSA45094-UPDATE-0104",
@@ -480,8 +467,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://juegospkg.com/five-nights-at-freddys-into-the-pit-update-1-04-ps4-pkg-mediafire/",
-    "sha256": ""
+    "source_url": "https://juegospkg.com/five-nights-at-freddys-into-the-pit-update-1-04-ps4-pkg-mediafire/"
   },
   {
     "id": "CUSA00466-DLC-UNKNOWN",
@@ -502,8 +488,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-t",
-    "sha256": ""
+    "source_url": "https://archive.org/details/ps4-fpkg-collection-english-t"
   },
   {
     "id": "RHZR00001-HOMEBREW-v100",
@@ -524,8 +509,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://github.com/MDashK/Relic-Hunters-Zero-PS4/releases/tag/v1.0.0",
-    "sha256": ""
+    "source_url": "https://github.com/MDashK/Relic-Hunters-Zero-PS4/releases/tag/v1.0.0"
   },
   {
     "id": "CUSA63336-THEME-ps4",
@@ -546,8 +530,7 @@
     "iro_tag": 2,
     "is_theme": true,
     "adult": false,
-    "source_url": "https://github.com/F1R3xS1NN3R/sound-of-nature/releases/tag/ps4",
-    "sha256": ""
+    "source_url": "https://github.com/F1R3xS1NN3R/sound-of-nature/releases/tag/ps4"
   },
   {
     "id": "GMCA00000-MEDIA-v130",
@@ -680,8 +663,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://pkg-zone.com/",
-    "sha256": ""
+    "source_url": "https://pkg-zone.com/"
   },
   {
     "id": "CUSA00127-MEDIA-153",
@@ -702,8 +684,7 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://pkg-zone.com/",
-    "sha256": ""
+    "source_url": "https://pkg-zone.com/"
   },
   {
     "id": "CUSA02644-MEDIA-134",
@@ -724,7 +705,6 @@
     "iro_tag": 0,
     "is_theme": false,
     "adult": false,
-    "source_url": "https://pkg-zone.com/",
-    "sha256": ""
+    "source_url": "https://pkg-zone.com/"
   }
 ]
