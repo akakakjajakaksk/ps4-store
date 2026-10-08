@@ -304,3 +304,11 @@ Temas são identificados pelo tipo e IRO tag reais. A aba 18+ exige confirmaçã
 O Peppy Assets Updater consulta as releases públicas da Peppy no GitHub para oferecer a nova build depois da publicação. Um PKG não é um payload; o navegador não instala sozinho esse arquivo. Feche a Peppy e utilize o instalador do console para a atualização.
 
 Os testes de núcleo do usuário, worker HTTP, menus, permissões e persistência rodam em CI. Testes de host e inspeção de cabeçalho não substituem testes no PS4/firmware 13.52.
+
+## Gerenciamento de contas no PKG
+
+No login premium, segure R2 + R3 + OPTIONS e autentique-se como administrador. Em Gerenciar contas, selecione o usuário para invalidar ou reativar o acesso, ou informe uma nova senha pelo editor mascarado. A confirmação mantém o ID escolhido mesmo se a lista mudar. Invalidar ou trocar a senha encerra todas as sessões da conta no servidor; reativar exige novo login.
+
+Uma consulta pequena de sessão roda a cada 5 segundos, separada de downloads, importação e sincronização de catálogo. A revogação é refletida na próxima resposta do servidor; a latência da rede se soma ao intervalo. Após 30 segundos sem confirmação, o premium é encerrado até novo login. Um download premium ativo é cancelado; uma instalação já iniciada termina de forma segura. A interface oculta o catálogo premium e preserva os arquivos gratuitos e pessoais. Versões antigas do cliente não passam a consultar a cada cinco segundos sem instalar esta atualização.
+
+O Assets Updater é somente uma página de download do PKG. O navegador do PS4 pode recusar o arquivo; baixe pelo celular ou computador e transfira ao console para instalar com a Peppy fechada.

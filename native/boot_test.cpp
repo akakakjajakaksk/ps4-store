@@ -79,6 +79,12 @@ static bool validApp(int index) { return storeAppExists(index); }
 static bool storeTransfersBusy() {
     return downloadSnapshot().state == RUNNING || installSnapshot().state == INSTALL_RUNNING || autoInstallPending;
 }
+static void storeStopPremiumDownload() {
+    if (downloadingApp >= STORE_REMOTE_FIRST) {
+        autoInstallPending = false;
+        if (downloadSnapshot().state == RUNNING) cancelDownload();
+    }
+}
 static bool storeUiEditing() { return storePanel != STORE_PANEL_NONE || catalogSearch.open; }
 static bool storeSearchEditing() { return catalogSearch.open; }
 static void resetRemoteOperations() {
@@ -90,7 +96,7 @@ static void resetRemoteOperations() {
 
 static bool beginInstall(int index) {
     InstallSnapshot status = installSnapshot();
-    if (!validApp(index) || !downloadedBytes[index] || status.state == INSTALL_RUNNING || status.cleanupCode)
+    if (!validApp(index) || !storeAppAllowed(index) || !downloadedBytes[index] || status.state == INSTALL_RUNNING || status.cleanupCode)
         return false;
     const UiApp& app = storeApp(index);
     InstallSpec spec = {app.filename, app.name, downloadedBytes[index]};
@@ -861,7 +867,10 @@ static void drawStorePanel(uint32_t* p) {
         storePanel == STORE_PANEL_TEXT ? (storeKeyboard.target == STORE_TEXT_URLS ? "Importar links PKG" : "Editar campo") :
         storePanel == STORE_PANEL_DONATE ? "Apoie a Peppy Store" :
         storePanel == STORE_PANEL_UPDATER ? "Peppy Assets Updater" :
-        storePanel == STORE_PANEL_ADMIN ? "Painel administrativo" : "Conteúdo para maiores de 18 anos";
+        storePanel == STORE_PANEL_ADMIN ? "Painel administrativo" :
+        storePanel == STORE_PANEL_USERS ? "Gerenciar contas premium" :
+        storePanel == STORE_PANEL_REVOKE ? "Confirmar alteração de acesso" :
+        storePanel == STORE_PANEL_ACCOUNT ? "Editar conta premium" : "Conteúdo para maiores de 18 anos";
     text(p, 112, 198, title, FONT_HEADING, WHITE);
     if (storePanel == STORE_PANEL_TEXT) {
         char shown[513];
@@ -897,6 +906,39 @@ static void drawStorePanel(uint32_t* p) {
         textWrapped(p, 112, 418, storeUpdaterUrl(), FONT_BODY, BLUE, 1580, 2);
         textWrapped(p, 112, 554, "A atualização da loja é um PKG. Baixe o arquivo publicado e instale pelo instalador do PS4. Não é um payload para o navegador.", FONT_BODY, MUTED, 1580, 3);
         textWrapped(p, 112, 722, "Catálogo premium: use Serviços > Atualizar catálogo premium. Seus links pessoais continuam salvos neste PS4.", FONT_BODY, WHITE, 1580, 2);
+    } else if (storePanel == STORE_PANEL_USERS) {
+        if (!storeAdminUserCount) text(p, 112, 320, "Nenhuma conta carregada. Quadrado atualiza a lista.", FONT_BODY, MUTED);
+        int first = (storeAdminUserSelection / 7) * 7;
+        for (int i = first; i < int(storeAdminUserCount) && i < first + 7; ++i) {
+            const HubAdminUser& user = storeAdminUsers[i]; int y = 280 + (i - first) * 76;
+            bool selected = i == storeAdminUserSelection;
+            roundRect(p, 112, y, 1696, 64, 10, selected ? 0x80243A58 : BG);
+            textElided(p, 132, y + 16, user.username, FONT_BODY, selected ? WHITE : MUTED, 800);
+            const char* state = user.admin ? "Administrador" : user.revoked ? "INVALIDADO" : user.premiumActive ? "Premium ativo" : "Expirado";
+            text(p, 1050, y + 16, state, FONT_BODY, user.revoked ? 0x80EBA5B4 : BLUE);
+            text(p, 1510, y + 16, user.plan[0] ? user.plan : "Sem prazo", FONT_BODY, MUTED);
+        }
+        text(p, 112, 838, "X  Editar conta    Quadrado  Atualizar lista", FONT_BODY, BLUE);
+        text(p, 112, 885, "O servidor encerra as sessões. PS4s conectados conferem o acesso a cada 5 segundos.", FONT_SMALL, MUTED);
+    } else if (storePanel == STORE_PANEL_ACCOUNT) {
+        textElided(p, 112, 292, storeSelectedAdminUser.username, FONT_TITLE, WHITE, 1580);
+        char password[100]; snprintf(password, sizeof(password), "Nova senha: %s", storeAccountPassword[0] ? "********" : "preencher");
+        const char* rows[] = {storeSelectedAdminUser.revoked ? "Reativar acesso premium" : "Invalidar usuário e senha", password, "Salvar nova senha"};
+        for (int i = 0; i < 3; ++i) {
+            int y = 414 + i * 94; bool focus = i == storeMenuSelection;
+            roundRect(p, 112, y, 1580, 72, 10, focus ? 0x80243A58 : BG);
+            text(p, 134, y + 20, rows[i], FONT_BODY, focus ? WHITE : MUTED);
+        }
+        textWrapped(p, 112, 774, "Invalidar bloqueia novos logins e encerra as sessões. Trocar a senha também encerra as sessões existentes.", FONT_BODY, MUTED, 1580, 2);
+    } else if (storePanel == STORE_PANEL_REVOKE) {
+        const HubAdminUser* user = &storeSelectedAdminUser;
+        if (user) {
+            char question[256]; snprintf(question, sizeof(question), "%s a conta %s?", user->revoked ? "Reativar" : "Invalidar", user->username);
+            textWrapped(p, 112, 320, question, FONT_TITLE, WHITE, 1560, 2);
+            textWrapped(p, 112, 482, user->revoked ? "A conta poderá entrar novamente com a senha atual se o plano estiver válido. As sessões anteriores continuam encerradas." :
+                "O usuário e a senha deixam de permitir acesso premium. Todas as sessões existentes são encerradas no servidor.", FONT_BODY, MUTED, 1560, 3);
+            text(p, 112, 698, "X  Confirmar    Círculo  Cancelar", FONT_TITLE, BLUE);
+        }
     } else if (storePanel == STORE_PANEL_ADULT) {
         textWrapped(p, 112, 322, "Esta categoria reúne apenas os itens cadastrados com indicação de idade 18+. Confirme que você tem 18 anos ou mais para visualizar.", FONT_BODY, WHITE, 1500, 3);
         text(p, 112, 584, "X  Tenho 18 anos ou mais", FONT_TITLE, BLUE);
@@ -910,9 +952,9 @@ static void drawStorePanel(uint32_t* p) {
         snprintf(password, sizeof(password), "Senha: %s", (adminPanel ? storeAdminPassword[0] : storeLoginPassword[0]) ? "********" : "preencher");
         snprintf(plan, sizeof(plan), "Plano: %s  |  Esquerda / Direita", storeAdminPlan == 15 ? "R$ 10 / 15 dias" : storeAdminPlan == 30 ? "R$ 20 / 1 mês" : "R$ 30 / 2 meses");
         const char* premium[] = {user, password, "Entrar", "Ver planos / LivePix", "Sair da conta"};
-        const char* admin[] = {user, password, plan, "Criar usuário premium", "Publicar meus PKGs no catálogo premium", "Sincronizar catálogo premium"};
+        const char* admin[] = {user, password, plan, "Criar usuário premium", "Publicar meus PKGs no catálogo premium", "Sincronizar catálogo premium", "Gerenciar / invalidar contas premium"};
         const char** labels = storePanel == STORE_PANEL_SERVICES ? services : adminPanel ? admin : premium;
-        int count = storePanel == STORE_PANEL_SERVICES ? 8 : adminPanel ? 6 : 5;
+        int count = storePanel == STORE_PANEL_SERVICES ? 8 : adminPanel ? 7 : 5;
         for (int i = 0; i < count; ++i) {
             int y = 278 + i * 69;
             bool focus = i == storeMenuSelection;

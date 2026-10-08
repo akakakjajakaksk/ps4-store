@@ -45,6 +45,16 @@ const MAX_CATALOG_BYTES = 1024 * 1024;
 const MAX_PKG_BYTES = 256 * 1024 * 1024 * 1024;
 const COOKIE = '__Host-peppy_session';
 const encoder = new TextEncoder();
+// Individually reviewed public author repositories; runtime additions remain supported.
+const DEFAULT_OFFICIAL_REPOSITORIES = [
+  'mdashk/relic-hunters-zero-ps4',
+  'f1r3xs1nn3r/sound-of-nature',
+  'ihaideez/shattered-pixel-dungeon-ps4',
+  'xyhlo/sspi',
+  'thcolin/gamepad-media-center-aggregator',
+  'scratcheverywhere/scratcheverywhere',
+  'xfangfang/wiliwili',
+];
 const PLANS = [
   { id: '15d', price_brl: 10, duration_days: 15, label: '15 dias' },
   { id: '1m', price_brl: 20, duration_months: 1, label: '1 mês' },
@@ -128,7 +138,8 @@ export function planExpiration(selected: Plan, now: number): number {
 function publicUser(user: User, now: number) {
   return { id: user.id, username: user.username, role: user.role, plan: user.plan,
     expires_at: user.expires_at === null ? null : Math.floor(user.expires_at / 1000),
-    premium_active: user.role === 'admin' || (!user.revoked && user.expires_at !== null && user.expires_at > now) };
+    revoked: Boolean(user.revoked),
+    premium_active: !user.revoked && (user.role === 'admin' || (user.expires_at !== null && user.expires_at > now)) };
 }
 function allowedOrigins(env: Env, request: Request): Set<string> {
   const origins = new Set((env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean));
@@ -196,17 +207,31 @@ export function publicHttpsUrl(value: unknown): string {
   return url.href;
 }
 function requireDirectPkg(url: string): void {
+  const parsed = new URL(url);
   let path: string;
-  try { path = decodeURIComponent(new URL(url).pathname); }
+  try { path = decodeURIComponent(parsed.pathname); }
   catch { fail(400, 'INVALID_URL', 'URL inválida.'); }
-  if (!/\.pkg$/i.test(path)) fail(400, 'INDIRECT_URL', 'Informe o link direto de um arquivo PKG.');
+  const publicMediafire = parsed.hostname === 'mediafire.com' || parsed.hostname === 'www.mediafire.com';
+  if (!publicMediafire && /\.pkg$/i.test(path)) return;
+  // The native downloader already resolves this one bounded, public landing
+  // format. This service validates its shape only; it never fetches the HTML.
+  if (publicMediafire && !url.includes('?')) {
+    const landing = parsed.pathname.match(/^\/file\/[a-zA-Z0-9]+\/((?:[a-zA-Z0-9._~\[\]-]|%[a-fA-F0-9]{2})+)\/file$/);
+    if (landing) {
+      const filename = decodeURIComponent(landing[1]);
+      if (filename.length > 4 && /^[\x20-\x7e]+$/.test(filename) &&
+          !/[\/\\]/.test(filename) && /\.pkg$/i.test(filename)) return;
+    }
+  }
+  fail(400, 'INDIRECT_URL', 'Informe um PKG direto ou um link público MediaFire de arquivo .pkg.');
 }
 function sourceKind(url: string, env: Env): CatalogEntry['source_kind'] {
   const parsed = new URL(url);
   if (parsed.hostname === 'github.com') {
     const parts = parsed.pathname.split('/').filter(Boolean);
     const repository = parts.slice(0, 2).join('/').toLowerCase();
-    const official = new Set((env.OFFICIAL_REPOSITORIES || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean));
+    const official = new Set([...DEFAULT_OFFICIAL_REPOSITORIES,
+      ...(env.OFFICIAL_REPOSITORIES || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean)]);
     return official.has(repository) ? 'official' : 'community';
   }
   const communityHosts = ['archive.org', 'mediafire.com', 'pkg-zone.com', 'superpsx.com', 'dlpsgame.com'];
@@ -333,8 +358,14 @@ async function login(request: Request, env: Env, now: number) {
     fail(401, 'INVALID_LOGIN', 'Usuário ou senha inválidos.');
   const token = randomHex(32);
   const expires = now + SESSION_MS;
-  await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
-    .bind(await sha256(token), user.id, expires, now).run();
+  // Hashing yields to other requests. Re-check the exact credentials atomically when
+  // issuing the session so a concurrent invalidation/rotation cannot revive access.
+  const inserted = await env.DB.prepare(`INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
+    SELECT ?, id, ?, ? FROM users WHERE id = ? AND revoked = 0
+    AND password_salt = ? AND password_hash = ? AND password_iterations = ?`)
+    .bind(await sha256(token), expires, now, user.id, user.password_salt, user.password_hash,
+      user.password_iterations).run();
+  if (inserted.meta?.changes !== 1) fail(401, 'INVALID_LOGIN', 'Usuário ou senha inválidos.');
   return { body: { token, expires_at: Math.floor(expires / 1000), server_time: Math.floor(now / 1000), user: publicUser(user, now) }, headers: {
     'Set-Cookie': `${COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_MS / 1000}`,
   } };
@@ -426,13 +457,15 @@ async function createUser(request: Request, env: Env, auth: Principal, now: numb
     env.DB.prepare(`INSERT INTO audit_events (actor_id, action, entity_id, created_at)
       SELECT ?, 'user.create', ?, ? WHERE changes() = 1`).bind(auth.user.id, id, now)]);
   if (results[0]?.meta?.changes !== 1) fail(409, 'USER_EXISTS', 'Usuário já existe ou limite atingido.');
-  return { user: { id, username: name, role: 'premium', plan: selected, expires_at: Math.floor(expires / 1000), premium_active: true } };
+  return { user: { id, username: name, role: 'premium', plan: selected, expires_at: Math.floor(expires / 1000), revoked: false, premium_active: true } };
 }
-async function editUser(request: Request, env: Env, auth: Principal, id: string, now: number) {
+async function editUser(request: Request, env: Env, auth: Principal, id: string, now: number, onlyKey?: 'revoked' | 'password') {
   const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<User>();
   if (!user || user.role !== 'premium') fail(404, 'USER_NOT_FOUND', 'Usuário premium não encontrado.');
   const body = await jsonBody(request);
   const keys = Object.keys(body);
+  if (onlyKey && (keys.length !== 1 || keys[0] !== onlyKey))
+    fail(400, 'INVALID_UPDATE', `Informe apenas ${onlyKey} para esta operação.`);
   if (!keys.length || keys.some(key => !['password', 'plan', 'revoked'].includes(key)))
     fail(400, 'INVALID_UPDATE', 'Informe senha, plano ou revogação.');
   if (body.revoked !== undefined && typeof body.revoked !== 'boolean') fail(400, 'INVALID_UPDATE', 'revoked deve ser booleano.');
@@ -442,16 +475,23 @@ async function editUser(request: Request, env: Env, auth: Principal, id: string,
   const selected = body.plan === undefined ? user.plan : plan(body.plan);
   const expires = body.plan === undefined ? user.expires_at : planExpiration(selected!, Math.max(now, user.expires_at || 0));
   const revoked = body.revoked === undefined ? user.revoked : Number(body.revoked);
-  await env.DB.batch([
+  const results = await env.DB.batch([
     env.DB.prepare(`UPDATE users SET password_salt = ?, password_hash = ?, password_iterations = ?,
-      plan = ?, expires_at = ?, revoked = ?, updated_at = ?, approved_by = ? WHERE id = ? AND role = 'premium'`)
-      .bind(salt, hash, ITERATIONS, selected, expires, revoked, now, auth.user.id, id),
-    // Rotation/revocation invalidates every existing session immediately.
-    env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND ? = 1')
+      plan = ?, expires_at = ?, revoked = ?, updated_at = ?, approved_by = ?
+      WHERE id = ? AND role = 'premium' AND password_salt = ? AND password_hash = ?
+      AND password_iterations = ? AND plan IS ? AND expires_at IS ? AND revoked = ? AND updated_at = ?`)
+      .bind(salt, hash, ITERATIONS, selected, expires, revoked, now, auth.user.id, id,
+        user.password_salt, user.password_hash, user.password_iterations, user.plan,
+        user.expires_at, user.revoked, user.updated_at),
+    env.DB.prepare(`INSERT INTO audit_events (actor_id, action, entity_id, created_at)
+      SELECT ?, ?, ?, ? WHERE changes() = 1`)
+      .bind(auth.user.id, body.revoked === true ? 'user.invalidate' : body.revoked === false ? 'user.reactivate' : 'user.update', id, now),
+    // UPDATE + audit + invalidation are one D1 transaction. Even reactivation
+    // removes old sessions: a previously invalidated token never becomes valid.
+    env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND ? = 1 AND changes() = 1')
       .bind(id, Number(body.password !== undefined || body.revoked !== undefined)),
-    env.DB.prepare('INSERT INTO audit_events (actor_id, action, entity_id, created_at) VALUES (?, ?, ?, ?)')
-      .bind(auth.user.id, 'user.update', id, now),
   ]);
+  if (results[0]?.meta?.changes !== 1) fail(409, 'USER_CONFLICT', 'O usuário mudou; atualize a lista antes de tentar novamente.');
   return { user: publicUser({ ...user, password_salt: salt, password_hash: hash, plan: selected, expires_at: expires, revoked }, now) };
 }
 async function saveRelease(request: Request, env: Env, auth: Principal, now: number) {
@@ -510,6 +550,11 @@ async function route(request: Request, env: Env, now: number) {
     if (method === 'POST' && path === '/api/admin/users') return createUser(request, env, auth, now);
     const match = path.match(/^\/api\/admin\/users\/([a-f0-9]{32})$/);
     if (method === 'PATCH' && match) return editUser(request, env, auth, match[1], now);
+    const revocation = path.match(/^\/api\/admin\/users\/([a-f0-9]{32})\/revocation$/);
+    // POST keeps this operation compatible with the PS4 SDK's documented methods.
+    if (method === 'POST' && revocation) return editUser(request, env, auth, revocation[1], now, 'revoked');
+    const rotation = path.match(/^\/api\/admin\/users\/([a-f0-9]{32})\/password$/);
+    if (method === 'POST' && rotation) return editUser(request, env, auth, rotation[1], now, 'password');
     if (method === 'POST' && path === '/api/admin/catalog') return saveCatalog(request, env, auth, now);
     if (method === 'POST' && path === '/api/admin/releases') return saveRelease(request, env, auth, now);
   }

@@ -366,7 +366,10 @@ int userCatalogSourceForUrl(const char* url) {
         "kalaposfos13/ps4-homebrew-base", "GoldHEN/GoldHEN_Cheat_Manager", "Ninedark9/PS4PackageLink",
         "skidgfx/PS4-2048", "lorsanta/SDLPoP-PS4", "iHaiDeeZ/mari0-ps4", "EmiiBytee/Touhou-PS4",
         "jaca772/fallout2-ce-ps4", "MDashK/Sonic-Time-Twisted-PS4", "alechurri/shipofharkinian-ps4",
-        "alechurri/2ship2harkinian-ps4", "MDashK/sonic-1-sms-remake-ps4", "MDashK/Sonic-2-SMS-Remake-PS4"
+        "alechurri/2ship2harkinian-ps4", "MDashK/sonic-1-sms-remake-ps4", "MDashK/Sonic-2-SMS-Remake-PS4",
+        "MDashK/Relic-Hunters-Zero-PS4", "F1R3xS1NN3R/sound-of-nature",
+        "iHaiDeeZ/shattered-pixel-dungeon-ps4", "Xyhlo/SSPI", "thcolin/gamepad-media-center-aggregator",
+        "ScratchEverywhere/ScratchEverywhere", "xfangfang/wiliwili"
     };
     for (size_t i = 0; i < sizeof(repos) / sizeof(repos[0]); ++i) {
         size_t n = strlen(repos[i]);

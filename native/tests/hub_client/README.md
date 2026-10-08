@@ -31,7 +31,7 @@ after the complete worker operation finishes.
 
 Native PKG metadata requests require exactly framed HTTP 206 byte ranges. A
 server that ignores Range is rejected before its full file is read. Imports reuse
-one HTTP context and transfer less than 100 KB per package. Source URLs must
+one HTTP context and transfer less than 100 KB of PKG metadata per package. Source URLs must
 match the same reviewed providers and Archive collection/path policy as the full
 downloader. Package redirects stay within their provider. Metadata cannot prove
 licensing, a publisher signature, or compatibility with firmware 13.52; full
@@ -41,6 +41,48 @@ OpenOrbis libSceHttp exposes no supported API to pin a DNS answer while retainin
 the original HTTPS hostname. A public IPv4 DNS preflight therefore supplements
 normal certificate/hostname validation, and arbitrary user-controlled package
 hosts remain unsupported. This is not a claim of general-purpose SSRF-safe
-fetching: pages, shorteners, arbitrary domains and unsupported sources return a
+fetching: unsupported pages, shorteners, arbitrary domains and sources return a
 clear direct-PKG/source error. Hub credentials go only to the configured origin;
 hub requests never follow redirects.
+
+Account management lists at most 5,000 bounded metadata records, including the
+bootstrap administrator's special `owner` ID. Only premium targets with a
+canonical 32-character ID can be invalidated/reactivated or have their password
+changed. Native requests use authenticated POST `/api/admin/users/:id/revocation`
+and `/api/admin/users/:id/password` aliases; the server retains its PATCH API.
+The UI copies the selected account identity before editing/confirmation, so a
+refreshed or reordered account list cannot switch the target. Password editors
+are masked and their RAM copies are cleared after transfer to the worker.
+
+A separate session worker polls GET `/api/session` every five seconds, including
+during imports, downloads, credential editing and system installation. It reads
+no catalog and caps the response at 8 KiB. Each worker owns its HTTP context;
+heartbeat failures do not overwrite the primary worker's progress, abort handle
+or pending result. Generation checks reject delayed success/401 replies for a
+logged-out or replaced session. Authorization clears on server denial, or after
+30 seconds without successful server verification; transport failures do not
+extend this grace. This is bounded polling and requires a connection, not a
+claim of zero-latency propagation.
+
+Regression checks run a held import request and a revocation heartbeat in actual
+concurrent host threads, then cancel the original import using its retained
+request handle. They also exercise stale checks across replacement login,
+network grace expiry, administrator-only invalidation/password rotation and
+malformed/duplicate user records. Exact-renderer controller checks cover account
+selection/reordering, premium download cancellation, blocked automatic install
+handoff after revocation, and retaining metadata through an existing PS4 system
+installation while free downloads continue. They do not simulate a physical PS4.
+
+Stable MediaFire `/file/<key>/<filename.pkg>/file` URLs are the narrow supported
+landing-page exception. An anonymous HTTPS GET reads at most 1 MiB of identity
+HTML and the shared pure parser accepts one actual `downloadButton` anchor on
+a supported MediaFire CDN. No JavaScript, authentication, captcha handling or
+additional providers are used. Known Content-Length ends without a trailing EOF
+read; unknown/dechunked bodies require EOF and an extra byte rejects overflow
+even at the exact cap. Provider redirects share the existing five-hop budget;
+a CDN cannot return to a landing page or redirect to another provider. Exact
+206 range/size checks still apply to the final PKG. The import context reuses
+that CDN across its subsequent metadata reads, while entries retain the stable
+page URL so normal downloads resolve a fresh public URL when needed. Fixtures
+cover fragmented/known/unknown/exact-cap HTML, overflow/truncation, malformed
+anchors, challenge pages, unsafe redirects and withholding hub credentials.

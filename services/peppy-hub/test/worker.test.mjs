@@ -173,6 +173,158 @@ test('calendar plans, renewals, password rotation and manual account metadata', 
   assert.equal(listing.json.users.length, 2);
 });
 
+test('invalidating an account destroys every session; reactivation never revives tokens', async () => {
+  const { env, request, owner, member } = fixture();
+  const admin = await owner();
+  const premium = await member(admin.json.token, 'invalidated_user');
+  const second = await request('/api/login', { method: 'POST', body: { username: 'invalidated_user', password: premium.secret } });
+  assert.equal(second.status, 200);
+  const tokens = [premium.json.token, second.json.token];
+  const response = await request(`/api/admin/users/${premium.id}/revocation`, {
+    method: 'POST', token: admin.json.token, body: { revoked: true } });
+  assert.equal(response.status, 200);
+  assert.equal(response.json.user.revoked, true);
+  assert.equal(response.json.user.premium_active, false);
+  assert.equal(env.DB.sqlite.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?').get(premium.id).n, 0);
+  for (const token of tokens) {
+    assert.equal((await request('/api/session', { token })).status, 401);
+    assert.equal((await request('/api/catalog', { token })).status, 401);
+    assert.equal((await request('/api/logout', { method: 'POST', token })).status, 401);
+  }
+  assert.equal((await request('/api/login', { method: 'POST', body: { username: 'invalidated_user', password: premium.secret } })).status, 401);
+  const reactivated = await request(`/api/admin/users/${premium.id}/revocation`, {
+    method: 'POST', token: admin.json.token, body: { revoked: false } });
+  assert.equal(reactivated.status, 200);
+  assert.equal(reactivated.json.user.revoked, false);
+  for (const token of tokens) assert.equal((await request('/api/session', { token })).status, 401);
+  const fresh = await request('/api/login', { method: 'POST', body: { username: 'invalidated_user', password: premium.secret } });
+  assert.equal(fresh.status, 200);
+  assert.equal((await request('/api/catalog', { token: fresh.json.token })).status, 200);
+  assert.equal(env.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE action = 'user.invalidate'").get().n, 1);
+  assert.equal(env.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE action = 'user.reactivate'").get().n, 1);
+});
+
+test('revocation alias is admin-only, validates exact input, and cannot edit the owner', async () => {
+  const { request, owner, member } = fixture();
+  const admin = await owner();
+  const premium = await member(admin.json.token);
+  const path = `/api/admin/users/${premium.id}/revocation`;
+  assert.equal((await request(path, { method: 'POST', body: { revoked: true } })).status, 401);
+  assert.equal((await request(path, { method: 'POST', token: premium.json.token, body: { revoked: true } })).status, 403);
+  for (const body of [{}, { revoked: 'true' }, { revoked: true, password: 'test-password' }, { plan: '15d' }])
+    assert.equal((await request(path, { method: 'POST', token: admin.json.token, body })).status, 400);
+  assert.equal((await request('/api/admin/users/owner/revocation', { method: 'POST', token: admin.json.token, body: { revoked: true } })).status, 404);
+  assert.equal((await request('/api/admin/users/owner', { method: 'PATCH', token: admin.json.token, body: { password: 'test-password', revoked: true } })).status, 404);
+  assert.equal((await request('/api/session', { token: admin.json.token })).status, 200);
+});
+
+test('native password alias rotates credentials, destroys all sessions and restricts input/role', async () => {
+  const { env, request, owner, member } = fixture();
+  const admin = await owner();
+  const premium = await member(admin.json.token, 'rotated_user');
+  const path = `/api/admin/users/${premium.id}/password`;
+  assert.equal((await request(path, { method: 'POST', body: { password: 'test-only-password' } })).status, 401);
+  assert.equal((await request(path, { method: 'POST', token: premium.json.token, body: { password: 'test-only-password' } })).status, 403);
+  for (const body of [{}, { password: 123456789 }, { password: 'short' }, { password: 'test-only-password', revoked: false }, { plan: '1m' }])
+    assert.equal((await request(path, { method: 'POST', token: admin.json.token, body })).status, 400);
+  const second = await request('/api/login', { method: 'POST', body: { username: 'rotated_user', password: premium.secret } });
+  assert.equal(second.status, 200);
+  const newSecret = `test-only-${crypto.randomUUID()}`;
+  const rotated = await request(path, { method: 'POST', token: admin.json.token, body: { password: newSecret } });
+  assert.equal(rotated.status, 200);
+  assert.equal(rotated.json.user.revoked, false);
+  assertNoSecrets(rotated.json);
+  for (const token of [premium.json.token, second.json.token])
+    assert.equal((await request('/api/session', { token })).status, 401);
+  assert.equal(env.DB.sqlite.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?').get(premium.id).n, 0);
+  assert.equal((await request('/api/login', { method: 'POST', body: { username: 'rotated_user', password: premium.secret } })).status, 401);
+  assert.equal((await request('/api/login', { method: 'POST', body: { username: 'rotated_user', password: newSecret } })).status, 200);
+  assert.equal((await request('/api/admin/users/owner/password', { method: 'POST', token: admin.json.token, body: { password: newSecret } })).status, 404);
+  // Also protect an administrator whose ID happens to use the normal hex format.
+  const otherAdmin = 'c'.repeat(32);
+  env.DB.sqlite.prepare(`INSERT INTO users
+    (id, username, role, password_salt, password_hash, password_iterations, plan, expires_at, revoked, created_at, updated_at)
+    SELECT ?, 'other_admin', role, password_salt, password_hash, password_iterations, plan, expires_at, revoked, created_at, updated_at
+    FROM users WHERE id = 'owner'`).run(otherAdmin);
+  assert.equal((await request(`/api/admin/users/${otherAdmin}/password`, { method: 'POST', token: admin.json.token, body: { password: newSecret } })).status, 404);
+  assert.equal((await request(`/api/admin/users/${otherAdmin}/revocation`, { method: 'POST', token: admin.json.token, body: { revoked: true } })).status, 404);
+  assert.equal((await request('/api/session', { token: admin.json.token })).status, 200);
+});
+
+test('login credential check cannot race account revocation or password rotation', async () => {
+  for (const action of ['revocation', 'password']) {
+    const { env, request, owner, member } = fixture();
+    const admin = await owner();
+    const premium = await member(admin.json.token, 'racing_user');
+    const newSecret = `test-only-${crypto.randomUUID()}`;
+    const prepare = env.DB.prepare.bind(env.DB);
+    let armed = true;
+    env.DB.prepare = sql => {
+      const statement = prepare(sql);
+      if (sql.startsWith('INSERT INTO sessions')) {
+        const bind = statement.bind.bind(statement);
+        statement.bind = (...values) => {
+          const bound = bind(...values), run = bound.run.bind(bound);
+          bound.run = async () => {
+            if (armed) {
+              armed = false;
+              const update = await request(`/api/admin/users/${premium.id}`, { method: 'PATCH', token: admin.json.token,
+                body: action === 'revocation' ? { revoked: true } : { password: newSecret } });
+              assert.equal(update.status, 200);
+            }
+            return run();
+          };
+          return bound;
+        };
+      }
+      return statement;
+    };
+    const oldLogin = await request('/api/login', { method: 'POST', body: { username: 'racing_user', password: premium.secret } });
+    assert.equal(oldLogin.status, 401);
+    assert.equal(oldLogin.json.error, 'INVALID_LOGIN');
+    assert.equal(env.DB.sqlite.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?').get(premium.id).n, 0);
+    assert.equal((await request('/api/session', { token: premium.json.token })).status, 401);
+    if (action === 'password')
+      assert.equal((await request('/api/login', { method: 'POST', body: { username: 'racing_user', password: newSecret } })).status, 200);
+  }
+});
+
+test('concurrent stale account update cannot restore revoked access', async () => {
+  const { env, request, owner, member } = fixture();
+  const admin = await owner();
+  const premium = await member(admin.json.token);
+  const batch = env.DB.batch.bind(env.DB);
+  let armed = true;
+  env.DB.batch = async statements => {
+    if (armed && statements[0].sql.startsWith('UPDATE users SET password_salt')) {
+      armed = false;
+      const invalidated = await request(`/api/admin/users/${premium.id}/revocation`, {
+        method: 'POST', token: admin.json.token, body: { revoked: true } });
+      assert.equal(invalidated.status, 200);
+    }
+    return batch(statements);
+  };
+  const stale = await request(`/api/admin/users/${premium.id}`, { method: 'PATCH', token: admin.json.token, body: { password: `test-only-${crypto.randomUUID()}` } });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.json.error, 'USER_CONFLICT');
+  assert.equal(env.DB.sqlite.prepare('SELECT revoked FROM users WHERE id = ?').get(premium.id).revoked, 1);
+  assert.equal((await request('/api/session', { token: premium.json.token })).status, 401);
+});
+
+test('failed invalidation audit rolls back the account update and all session removal', async () => {
+  const { env, request, owner, member } = fixture();
+  const admin = await owner();
+  const premium = await member(admin.json.token);
+  env.DB.sqlite.exec("CREATE TRIGGER reject_account_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'test-only internal failure'); END;");
+  const response = await request(`/api/admin/users/${premium.id}/revocation`, {
+    method: 'POST', token: admin.json.token, body: { revoked: true } });
+  assert.equal(response.status, 500);
+  assert.equal(env.DB.sqlite.prepare('SELECT revoked FROM users WHERE id = ?').get(premium.id).revoked, 0);
+  assert.equal((await request('/api/session', { token: premium.json.token })).status, 200);
+  assert.equal((await request('/api/catalog', { token: premium.json.token })).status, 200);
+  assert.equal(JSON.stringify(response.json).includes('test-only internal failure'), false);
+});
+
 test('catalog publishing persists versions, kinds, exact sizes, provenance and optimistic concurrency', async () => {
   const { env, request, owner, member } = fixture();
   const admin = await owner();
@@ -201,6 +353,83 @@ test('catalog publishing persists versions, kinds, exact sizes, provenance and o
   // Fresh worker invocation uses the same D1 data, not in-memory auth/catalog state.
   const direct = await worker.fetch(new Request(`${endpoint}/api/catalog`, { headers: { Authorization: `Bearer ${premium.json.token}` } }), env);
   assert.equal((await direct.json()).version, 2);
+});
+
+test('only the reviewed public MediaFire PKG landing format is accepted; no remote fetch occurs', async () => {
+  const { request, owner } = fixture();
+  const admin = await owner();
+  const fetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches++; throw Error('Unexpected remote fetch'); };
+  try {
+    const accepted = [
+      'https://www.mediafire.com/file/ABC123/sample.pkg/file',
+      'https://mediafire.com/file/abc123/Game%20%5BPS4%5D%20%281.00%29.PKG/file',
+      'https://www.mediafire.com/file/A1/Game[PS4]~release-1.pkg/file',
+      'https://example.com/sample.pkg',
+    ];
+    for (let index = 0; index < accepted.length; index++) {
+      const result = await request('/api/admin/catalog', { method: 'POST', token: admin.json.token,
+        body: { entries: [entry({ id: `accepted-${index}`, filename: `accepted-${index}.pkg`, url: accepted[index] })], replace: true } });
+      assert.equal(result.status, 200, accepted[index]);
+      const current = await request('/api/catalog', { token: admin.json.token });
+      assert.equal(current.json.entries[0].url, accepted[index]);
+      if (index < 3) assert.equal(current.json.entries[0].source_kind, 'community');
+    }
+    const rejected = [
+      'https://www.mediafire.com.evil.example/file/ABC123/sample.pkg/file',
+      'https://files.mediafire.com/file/ABC123/sample.pkg/file',
+      'https://example.com/file/ABC123/sample.pkg/file',
+      'https://www.mediafire.com/download/ABC123/sample.pkg/file',
+      'https://www.mediafire.com/download/ABC123/sample.pkg',
+      'https://www.mediafire.com/file/ABC123/sample.pkg',
+      'https://www.mediafire.com/file/ABC-123/sample.pkg/file',
+      'https://www.mediafire.com/file//sample.pkg/file',
+      'https://www.mediafire.com/file/ABC123/sample.rar/file',
+      'https://www.mediafire.com/file/ABC123/sample.pkg.html/file',
+      'https://www.mediafire.com/file/ABC123/.pkg/file',
+      'https://www.mediafire.com/file/ABC123/sample.pkg/FILE',
+      'https://www.mediafire.com/file/ABC123/sample.pkg/file/extra',
+      'https://www.mediafire.com/file/ABC123/sample.pkg/file?key=abc',
+      'https://www.mediafire.com/file/ABC123/sample.pkg/file?',
+      'https://www.mediafire.com/file/ABC123/dir%2Fsample.pkg/file',
+      'https://www.mediafire.com/file/ABC123/dir%5Csample.pkg/file',
+      'https://www.mediafire.com/file/ABC123/sample%00.pkg/file',
+      'https://www.mediafire.com/file/ABC123/sample%7F.pkg/file',
+      'https://www.mediafire.com/file/ABC123/sample%C3%A1.pkg/file',
+      'https://www.mediafire.com/file/ABC123/sample%zz.pkg/file',
+      'https://dlpsgame.com/test-game-download.html',
+      'https://www.superpsx.com/test-game/',
+    ];
+    for (const url of rejected) {
+      const result = await request('/api/admin/catalog', { method: 'POST', token: admin.json.token,
+        body: { entries: [entry({ url })] } });
+      assert.equal(result.status, 400, url);
+    }
+    assert.equal(fetches, 0);
+  } finally { globalThis.fetch = fetch; }
+});
+
+test('reviewed author defaults supplement rather than replace the deployment allowlist', async () => {
+  const { request, owner } = fixture();
+  const admin = await owner();
+  const repositories = [
+    ['MDashK/Relic-Hunters-Zero-PS4', 'official'],
+    ['F1R3xS1NN3R/sound-of-nature', 'official'],
+    ['iHaiDeeZ/shattered-pixel-dungeon-ps4', 'official'],
+    ['Xyhlo/SSPI', 'official'],
+    ['thcolin/gamepad-media-center-aggregator', 'official'],
+    ['ScratchEverywhere/ScratchEverywhere', 'official'],
+    ['xfangfang/wiliwili', 'official'],
+    ['test-author/test-game', 'official'],
+    ['unreviewed/example', 'community'],
+  ];
+  const result = await request('/api/admin/catalog', { method: 'POST', token: admin.json.token,
+    body: { entries: repositories.map(([repository], index) => entry({ id: `author-${index}`, filename: `author-${index}.pkg`,
+      url: `https://github.com/${repository}/releases/download/v1/author.pkg` })), replace: true } });
+  assert.equal(result.status, 200);
+  const current = await request('/api/catalog', { token: admin.json.token });
+  assert.deepEqual(current.json.entries.map(item => item.source_kind), repositories.map(([, kind]) => kind));
 });
 
 test('untrusted catalog input is rejected before storage; server never fetches remote URLs', async () => {
@@ -301,7 +530,13 @@ test('schema-only deployment initializes singleton; concurrent publications keep
 test('actual initial premium seed publishes with release labels and canonical native metadata', async () => {
   const seed = JSON.parse(readFileSync(new URL('../seed-catalog.json', import.meta.url), 'utf8'));
   assert.ok(Array.isArray(seed) && seed.length > 0);
-  const { request, owner } = fixture();
+  const { env, request, owner } = fixture();
+  env.OFFICIAL_REPOSITORIES = [
+    'EmiiBytee/Touhou-PS4', 'MDashK/Sonic-2-SMS-Remake-PS4', 'MDashK/Sonic-Time-Twisted-PS4',
+    'MDashK/sonic-1-sms-remake-ps4', 'alechurri/2ship2harkinian-ps4',
+    'alechurri/shipofharkinian-ps4', 'iHaiDeeZ/mari0-ps4', 'jaca772/fallout2-ce-ps4',
+    'lorsanta/SDLPoP-PS4', 'skidgfx/PS4-2048',
+  ].join(',');
   const admin = await owner();
   const result = await request('/api/admin/catalog', { method: 'POST', token: admin.json.token,
     body: { entries: seed, expected_version: 0, replace: true } });
@@ -314,7 +549,7 @@ test('actual initial premium seed publishes with release labels and canonical na
     assert.equal(published[index].content_id, seed[index].content_id);
     assert.equal(published[index].content_type, seed[index].content_type);
     assert.equal(published[index].content_flags, seed[index].content_flags);
-    assert.equal(published[index].source_kind, 'community');
+    assert.equal(published[index].source_kind, seed[index].source_kind);
   }
 });
 

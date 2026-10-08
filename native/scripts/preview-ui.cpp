@@ -13,7 +13,8 @@
 static DownloadSnapshot previewDownload = {};
 static InstallSnapshot previewInstall = {};
 static MusicSnapshot previewMusic = {MUSIC_PLAYING, 0, 30, false, 0};
-static int downloadCalls = 0, installCalls = 0, cancelInstallCalls = 0;
+static int downloadCalls = 0, installCalls = 0, cancelInstallCalls = 0, cancelDownloadCalls = 0;
+static bool holdDownloadCancel = false;
 static bool rejectDownload = false, rejectInstall = false, rejectInstallBusy = false;
 static InstallSpec lastInstall = {};
 static const char* lastDownloadContentId = 0;
@@ -29,7 +30,7 @@ bool startDownload(const DownloadSpec& spec, const char* expectedContentId, int 
     if (rejectDownload) previewDownload.errorCode = DOWNLOAD_ERROR_THREAD;
     return !rejectDownload;
 }
-void cancelDownload() { previewDownload.state = CANCELLED; }
+void cancelDownload() { ++cancelDownloadCalls; if (!holdDownloadCancel) previewDownload.state = CANCELLED; }
 const char* downloadStageName(int stage) {
     if (stage == DOWNLOAD_STAGE_SOURCE_READ) return "Página da fonte";
     if (stage == DOWNLOAD_STAGE_SOURCE_PARSE) return "Resolver link do PKG";
@@ -83,7 +84,9 @@ static int previewHubCalls = 0;
 static char previewHubOrigin[256] = {};
 static char previewImportedUrls[8192] = {};
 static char previewLoginUser[65] = {}, previewLoginPassword[129] = {};
-static int previewCreatedPlan = 0;
+static int previewCreatedPlan = 0, previewSessionCheckCalls = 0;
+static char previewRevokedUser[65] = {};
+static bool previewRevokedValue = false;
 static char previewPublishedJson[16384] = {};
 static bool previewStartHub(int operation) {
     if (previewHub.state == HUB_RUNNING || previewHubReady) return false;
@@ -108,6 +111,17 @@ bool startHubAdminPublish(const char* json, size_t bytes) {
     if (!previewHubSession.admin || bytes >= sizeof(previewPublishedJson) || !previewStartHub(HUB_ADMIN_PUBLISH)) return false;
     memcpy(previewPublishedJson, json, bytes); previewPublishedJson[bytes] = 0; return true;
 }
+bool startHubAdminListUsers() { return previewHubSession.admin && previewStartHub(HUB_ADMIN_LIST_USERS); }
+bool startHubAdminRevokeUser(const char* id, bool revoked) {
+    if (!previewHubSession.admin || !previewStartHub(HUB_ADMIN_REVOKE_USER)) return false;
+    snprintf(previewRevokedUser, sizeof(previewRevokedUser), "%s", id); previewRevokedValue = revoked; return true;
+}
+bool startHubAdminChangePassword(const char* id, const char* password) {
+    if (!previewHubSession.admin || strlen(password) < 8 || !previewStartHub(HUB_ADMIN_CHANGE_PASSWORD)) return false;
+    snprintf(previewRevokedUser, sizeof(previewRevokedUser), "%s", id);
+    snprintf(previewLoginPassword, sizeof(previewLoginPassword), "%s", password); return true;
+}
+void pollHubSession() { ++previewSessionCheckCalls; }
 void cancelHubOperation() { previewHub.state = HUB_CANCELLED; }
 HubSnapshot hubSnapshot() { return previewHub; }
 HubSession hubSession() { return previewHubSession; }
@@ -115,7 +129,7 @@ bool consumeHubResult(HubResult* out) {
     if (!previewHubReady) return false;
     *out = previewHubResult; previewHubResult = {}; previewHubReady = false; previewHub = {}; return true;
 }
-void freeHubResult(HubResult* result) { delete result->catalog; *result = {}; }
+void freeHubResult(HubResult* result) { delete result->catalog; free(result->users); *result = {}; }
 const char* hubErrorMessage(int) { return "Falha ao consultar o serviço"; }
 bool hubNativePackageUrl(const char* url) { return userCatalogPublicHttpsUrl(url); }
 bool hubUserCatalogRangeReader(void*, const char*, uint64_t, size_t, unsigned char*, UserCatalogRangeInfo*) { return false; }
@@ -128,14 +142,15 @@ bool hubUserCatalogRangeReader(void*, const char*, uint64_t, size_t, unsigned ch
 static void resetController() {
     activeCategory = 0;
     storeLocal.clear();
-    storeClearRemote();
+    storeClearRemote(); storeClearAdminUsers(); storeSelectedAdminUser = {}; storeAccountPassword[0] = 0;
     if (storeHasPending) freeHubResult(&storePending);
     storePending = {}; storeHasPending = false;
     if (previewHubReady) freeHubResult(&previewHubResult);
     previewHubReady = false; previewHubResult = {}; previewHub = {}; previewHubSession = {};
     previewHubCalls = 0; storePanel = STORE_PANEL_NONE; storeMenuSelection = 0;
     storeAdminLogin = storeAdminChord = storeAdultConfirmed = storeFtpRequested = false;
-    storeHadSession = storeHadAdmin = false;
+    storeHadSession = storeHadAdmin = storeHadEntitlement = false;
+    previewSessionCheckCalls = 0; previewRevokedUser[0] = 0; previewRevokedValue = false;
     storeKeyboard = StoreKeyboard(); storeNotice[0] = 0;
     storeLoginUser[0] = storeLoginPassword[0] = storeAdminUser[0] = storeAdminPassword[0] = 0;
     lastDownloadKind = lastInstallKind = 0;
@@ -147,7 +162,7 @@ static void resetController() {
     previewDownload = {};
     previewInstall = {};
     previewMusic = {MUSIC_PLAYING, 0, 30, false, 0};
-    downloadCalls = installCalls = cancelInstallCalls = 0;
+    downloadCalls = installCalls = cancelInstallCalls = cancelDownloadCalls = 0; holdDownloadCancel = false;
     rejectDownload = rejectInstall = rejectInstallBusy = false;
     lastDownloadContentId = 0;
     previewTimeUs = 0;
@@ -243,6 +258,48 @@ static bool verifyServicesController() {
                 strstr(previewPublishedJson, "\"kind\":\"dlc\"") && strstr(previewPublishedJson, "\"content_id\":") &&
                 strstr(previewPublishedJson, "\"display_category\":") && !strstr(previewPublishedJson, "new-fixture-secret"),
                 "publication contains pinned package metadata and no premium credentials")) return false;
+    previewHub = {}; storeMenuSelection = 6; handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storePanel == STORE_PANEL_USERS && previewHub.operation == HUB_ADMIN_LIST_USERS,
+                "administrator loads user metadata without credentials to manage access")) return false;
+    previewHubResult = {}; previewHubResult.operation = HUB_ADMIN_LIST_USERS;
+    previewHubResult.users = static_cast<HubAdminUser*>(calloc(2, sizeof(HubAdminUser))); previewHubResult.userCount = 2;
+    snprintf(previewHubResult.users[0].id, 65, "%s", "00000000000000000000000000000000");
+    snprintf(previewHubResult.users[0].username, 65, "%s", "owner"); previewHubResult.users[0].admin = true;
+    snprintf(previewHubResult.users[1].id, 65, "%s", "11111111111111111111111111111111");
+    snprintf(previewHubResult.users[1].username, 65, "%s", "premium_fixture"); previewHubResult.users[1].premiumActive = true;
+    previewHubReady = true; pollStoreExtensions();
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storePanel == STORE_PANEL_USERS, "administrator accounts cannot be invalidated by premium management")) return false;
+    handleCatalogController(CATALOG_DOWN, selected, details); handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storePanel == STORE_PANEL_ACCOUNT && !strcmp(storeSelectedAdminUser.id, "11111111111111111111111111111111"), "editing an account pins its identity")) return false;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storePanel == STORE_PANEL_REVOKE && previewHub.state == HUB_IDLE,
+                "invalidation requires confirmation of the selected premium user")) return false;
+    previewHubResult = {}; previewHubResult.operation = HUB_ADMIN_LIST_USERS;
+    previewHubResult.users = static_cast<HubAdminUser*>(calloc(2, sizeof(HubAdminUser))); previewHubResult.userCount = 2;
+    snprintf(previewHubResult.users[0].id, 65, "%s", "22222222222222222222222222222222");
+    snprintf(previewHubResult.users[0].username, 65, "%s", "different_account");
+    snprintf(previewHubResult.users[1].id, 65, "%s", "owner");
+    snprintf(previewHubResult.users[1].username, 65, "%s", "owner"); previewHubResult.users[1].admin = true;
+    previewHubReady = true; pollStoreExtensions();
+    if (!expect(storePanel == STORE_PANEL_REVOKE && !strcmp(storeSelectedAdminUser.id, "11111111111111111111111111111111"),
+                "a refreshed and reordered list cannot change the confirmation target")) return false;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(previewHub.operation == HUB_ADMIN_REVOKE_USER && previewRevokedValue &&
+                !strcmp(previewRevokedUser, "11111111111111111111111111111111"), "confirmation sends the exact account ID for server invalidation")) return false;
+    previewHub = {}; storeSelectedAdminUser.revoked = true; storeOpenPanel(STORE_PANEL_REVOKE);
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(previewHub.operation == HUB_ADMIN_REVOKE_USER && !previewRevokedValue,
+                "the same pinned account can be reactivated")) return false;
+    previewHub = {}; storeOpenPanel(STORE_PANEL_ACCOUNT); storeMenuSelection = 1;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storePanel == STORE_PANEL_TEXT && storeKeyboard.masked, "administrator password rotation uses the masked editor")) return false;
+    snprintf(storeKeyboard.draft, sizeof(storeKeyboard.draft), "new_rotated_password");
+    handleCatalogController(CATALOG_OPTIONS, selected, details); storeMenuSelection = 2;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(previewHub.operation == HUB_ADMIN_CHANGE_PASSWORD && !storeAccountPassword[0] && !storeKeyboard.draft[0] &&
+                !strcmp(previewRevokedUser, "11111111111111111111111111111111") && !strcmp(previewLoginPassword, "new_rotated_password"),
+                "password rotation keeps the selected identity, transfers its secret to the worker and wipes UI copies")) return false;
     previewHub = {}; previewHubSession = {}; storeOpenPanel(STORE_PANEL_NONE);
     storeRemote = new UserCatalog;
     storeRemote->add(serviceFixture(99991, 0, false, false, 4));
@@ -295,8 +352,33 @@ static bool verifyServicesController() {
     catalogSearch.input(SEARCH_CANCEL); pollStoreExtensions();
     if (!expect(previewHub.operation == HUB_SYNC && previewHub.state == HUB_RUNNING && storeNextSyncUs == 600000000ULL,
                 "idle premium clients schedule asynchronous catalog refresh every five minutes")) return false;
+    resetController(); configureHubBaseUrl(PEPPY_HUB_URL);
+    previewHubSession.authenticated = previewHubSession.premium = true;
+    storeRemote = new UserCatalog; storeRemote->add(serviceFixture(99995, 0)); storeRebuildViews(); pollStoreExtensions();
+    activateApp(STORE_REMOTE_FIRST); holdDownloadCancel = true;
+    const char* activeName = storeApp(STORE_REMOTE_FIRST).name;
+    uint32_t oldView = storeViewRevision; int pollsBefore = previewSessionCheckCalls;
+    previewHubSession = {}; pollStoreExtensions();
+    if (!expect(previewSessionCheckCalls > pollsBefore && cancelDownloadCalls == 1 && !autoInstallPending &&
+                !storeAppAllowed(STORE_REMOTE_FIRST) && storeViewRevision != oldView && storeRemote &&
+                storeApp(STORE_REMOTE_FIRST).name == activeName,
+                "revocation checks run during downloads, cancel only premium work, hide entries and retain worker pointers")) return false;
+    previewDownload.state = DONE; previewDownload.received = previewDownload.total; pollAutoInstall();
+    if (!expect(!installCalls, "revoked download completion cannot start an automatic premium install")) return false;
+    pollStoreExtensions(); if (!expect(!storeRemote, "retired premium metadata is freed after its worker becomes idle")) return false;
+    resetController(); configureHubBaseUrl(PEPPY_HUB_URL); previewHubSession.authenticated = previewHubSession.premium = true;
+    storeRemote = new UserCatalog; storeRemote->add(serviceFixture(99996, 0)); storeRebuildViews(); pollStoreExtensions();
+    activateApp(STORE_REMOTE_FIRST); previewDownload.state = DONE; previewDownload.received = previewDownload.total; pollAutoInstall();
+    previewHubSession = {}; pollStoreExtensions();
+    if (!expect(previewInstall.state == INSTALL_RUNNING && !cancelInstallCalls && storeRemote && !storeAppAllowed(STORE_REMOTE_FIRST),
+                "revocation lets an existing system installation finish safely while hiding premium metadata")) return false;
+    previewInstall.state = INSTALL_DONE; pollAutoInstall(); pollStoreExtensions();
+    if (!expect(!storeRemote, "completed revoked installation releases its retained catalog")) return false;
+    resetController(); previewHubSession.authenticated = previewHubSession.premium = true; pollStoreExtensions();
+    activateApp(0); previewHubSession = {}; pollStoreExtensions();
+    if (!expect(previewDownload.state == RUNNING && !cancelDownloadCalls, "revocation leaves a free download running")) return false;
     resetController();
-    puts("Checked services, ASCII URL/password editor, held admin chord, server-auth gating, personal package kinds, themes, age confirmation and stable async catalog replacement.");
+    puts("Checked services, masked passwords, admin user invalidation/reactivation/rotation, pinned confirmation targets, live revocation transfer safety, held admin chord, personal package kinds and stable async catalog replacement.");
     return true;
 }
 
@@ -661,9 +743,14 @@ static bool renderServiceStates(const char* prefix) {
     allocation[0] = allocation[(size_t)W * H + 1] = guard;
     uint32_t* frame = allocation + 1;
     resetController(); bool okay = true;
-    const int panels[] = {STORE_PANEL_SERVICES, STORE_PANEL_PREMIUM, STORE_PANEL_DONATE, STORE_PANEL_UPDATER, STORE_PANEL_TEXT, STORE_PANEL_ADMIN};
-    const char* names[] = {"services", "premium-login", "livepix-plans", "assets-updater", "url-keyboard", "admin"};
-    for (int i = 0; i < 6; ++i) {
+    const int panels[] = {STORE_PANEL_SERVICES, STORE_PANEL_PREMIUM, STORE_PANEL_DONATE, STORE_PANEL_UPDATER, STORE_PANEL_TEXT, STORE_PANEL_ADMIN, STORE_PANEL_USERS, STORE_PANEL_ACCOUNT, STORE_PANEL_REVOKE};
+    const char* names[] = {"services", "premium-login", "livepix-plans", "assets-updater", "url-keyboard", "admin", "admin-users", "admin-account", "admin-confirm"};
+    storeAdminUsers = static_cast<HubAdminUser*>(calloc(3, sizeof(HubAdminUser))); storeAdminUserCount = 3;
+    snprintf(storeAdminUsers[0].username, 65, "%s", "owner_account"); storeAdminUsers[0].admin = true;
+    snprintf(storeAdminUsers[1].username, 65, "%s", "premium_fixture"); storeAdminUsers[1].premiumActive = true; snprintf(storeAdminUsers[1].plan, 4, "%s", "1m");
+    snprintf(storeAdminUsers[2].username, 65, "%s", "invalidated_fixture"); storeAdminUsers[2].revoked = true;
+    storeAdminUserSelection = 1; storeSelectedAdminUser = storeAdminUsers[1];
+    for (int i = 0; i < 9; ++i) {
         storeOpenPanel(panels[i]);
         if (panels[i] == STORE_PANEL_TEXT) { storeBeginText(STORE_TEXT_URLS, STORE_PANEL_SERVICES); storeKeyboard.key = int(strlen(storeKeyboardKeys())) - 1; }
         drawStorePanel(frame); okay = saveState(prefix, names[i], frame) && okay;

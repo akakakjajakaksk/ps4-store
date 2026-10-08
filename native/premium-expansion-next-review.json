@@ -1,0 +1,881 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-10-08",
+  "accepted_new_entries": [
+    {
+      "entry": {
+        "id": "CUSA08519-BASE-0113",
+        "name": "Red Dead Redemption 2 — edição EU 1.13",
+        "version": "01.13",
+        "size": 92390686720,
+        "url": "https://ia601602.us.archive.org/12/items/ps4-fpkg-collection-english-r/Red%20Dead%20Redemption%202%20-%20%5BEU%5D%20%5BEN%5D%20%5B1.13%5D%20%5BSP%5D.pkg",
+        "filename": "CUSA08519_base_0113.pkg",
+        "kind": "base",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Edição regional diferente da versão gratuita. Pacote modificado; não comprova compatibilidade ou integridade interna. O idioma não foi confirmado.",
+        "description": "Pacote base de PS4 de uma fonte da comunidade. Variante regional; o jogo também possui outra edição no catálogo gratuito. Idioma e funcionamento no firmware 13.52 não confirmados.",
+        "content_id": "EP1004-CUSA08519_00-REDEMPTION000002",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://archive.org/details/ps4-fpkg-collection-english-r"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "EP1004-CUSA08519_00-REDEMPTION000002",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 92390686720
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/92390686720",
+        "received": 1080,
+        "final_host": "ia601602.us.archive.org"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false
+    },
+    {
+      "entry": {
+        "id": "CUSA24769-BASE-0134",
+        "name": "Gran Turismo 7 — edição US 1.34",
+        "version": "01.34",
+        "size": 122750959616,
+        "url": "https://ia601004.us.archive.org/2/items/ps4-fpkg-collection-english-g/Gran%20Turismo%207%20-%20%5BUS%5D%20%5BEN%5D%20%5B1.34%5D.pkg",
+        "filename": "CUSA24769_base_0134.pkg",
+        "kind": "base",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Edição regional diferente da versão gratuita. Pacote modificado; não comprova compatibilidade ou integridade interna. O idioma não foi confirmado. Recursos dependentes de serviços online podem não funcionar nesta edição.",
+        "description": "Pacote base de PS4 de uma fonte da comunidade. Variante regional; o jogo também possui outra edição no catálogo gratuito. Idioma e funcionamento no firmware 13.52 não confirmados.",
+        "content_id": "UP9000-CUSA24769_00-GRANTURISMO70000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://archive.org/details/ps4-fpkg-collection-english-g"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "UP9000-CUSA24769_00-GRANTURISMO70000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 122750959616
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/122750959616",
+        "received": 1080,
+        "final_host": "ia601004.us.archive.org"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false
+    },
+    {
+      "entry": {
+        "id": "CUSA00411-BASE-0127",
+        "name": "Grand Theft Auto V — edição EU 1.27",
+        "version": "01.27",
+        "size": 49896161280,
+        "url": "https://ia601004.us.archive.org/2/items/ps4-fpkg-collection-english-g/Grand%20Theft%20Auto%20V%20-%20%5BEU%5D%20%5BEN%5D%20%5B1.27%5D%20%5BSP%5D.pkg",
+        "filename": "CUSA00411_base_0127.pkg",
+        "kind": "base",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Edição regional diferente da versão gratuita. Pacote modificado; não comprova compatibilidade ou integridade interna. O idioma não foi confirmado.",
+        "description": "Pacote base de PS4 de uma fonte da comunidade. Variante regional; o jogo também possui outra edição no catálogo gratuito. Idioma e funcionamento no firmware 13.52 não confirmados.",
+        "content_id": "EP1004-CUSA00411_00-GTAVDIGITALDOWNL",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://archive.org/details/ps4-fpkg-collection-english-g"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "EP1004-CUSA00411_00-GTAVDIGITALDOWNL",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 49896161280
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/49896161280",
+        "received": 1080,
+        "final_host": "ia601004.us.archive.org"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false
+    },
+    {
+      "entry": {
+        "id": "CUSA18354-UPDATE-0100",
+        "name": "Yet Another Zombie Defense HD — patch 01.00",
+        "version": "01.00",
+        "size": 83492864,
+        "url": "https://www.mediafire.com/file/4zmwtwv3azholu8/Yet.Another.Zombie.Defense.HD.v1.00bp-CUSA18354.pkg/file",
+        "filename": "CUSA18354_update_0100.pkg",
+        "kind": "update",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Requer o jogo base CUSA18354 instalado. Não é um jogo completo.",
+        "description": "PKG de PS4 de uma fonte da comunidade. Cabeçalho, identidade e tamanho conferidos; idioma e funcionamento no firmware 13.52 não testados.",
+        "content_id": "UP2387-CUSA18354_00-YAZDHD0000000000",
+        "content_type": 26,
+        "content_flags": 1647312896,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://mtps4store380.blogspot.com/"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "UP2387-CUSA18354_00-YAZDHD0000000000",
+        "content_type": 26,
+        "content_flags": 1647312896,
+        "iro_tag": 0,
+        "package_size": 83492864
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/83492864",
+        "received": 1080,
+        "final_host": "download1476.mediafire.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "update"
+    },
+    {
+      "entry": {
+        "id": "CUSA36381-UPDATE-UNKNOWN",
+        "name": "Unicorn Overlord — patch de idioma",
+        "version": "",
+        "size": 69992448,
+        "url": "https://www.mediafire.com/file/imvcqivvfxkscvq/UNICORNOVERLOR_English_patched_by_B%25C3%25A1nh_M%25C3%25AC.pkg/file",
+        "filename": "CUSA36381_update_UNKNOWN.pkg",
+        "kind": "update",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Requer o jogo base CUSA36381 instalado; essa base não está disponível na Peppy. A fonte apresenta o arquivo como patch inglês; o idioma não foi testado.",
+        "description": "PKG de PS4 de uma fonte da comunidade. Cabeçalho, identidade e tamanho conferidos; idioma e funcionamento no firmware 13.52 não testados.",
+        "content_id": "HP0177-CUSA36381_00-UNICORNOVERLORD0",
+        "content_type": 26,
+        "content_flags": 1647312896,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://www.superpsx.com/unicorn-overlord-ps4-pkg/"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "HP0177-CUSA36381_00-UNICORNOVERLORD0",
+        "content_type": 26,
+        "content_flags": 1647312896,
+        "iro_tag": 0,
+        "package_size": 69992448
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/69992448",
+        "received": 1080,
+        "final_host": "download1075.mediafire.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "update"
+    },
+    {
+      "entry": {
+        "id": "CUSA18354-BASE-UNKNOWN",
+        "name": "Yet Another Zombie Defense HD",
+        "version": "",
+        "size": 346357760,
+        "url": "https://www.mediafire.com/file/6v13w2xcy9zbfh8/Yet.Another.Zombie.Defense.HD.PS4-UNLiMiTED.pkg/file",
+        "filename": "CUSA18354_base_UNKNOWN.pkg",
+        "kind": "base",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "A fonte lista um patch obrigatório separado. Instale o patch de mesmo Title ID após este jogo base.",
+        "description": "PKG de PS4 de uma fonte da comunidade. Cabeçalho, identidade e tamanho conferidos; idioma e funcionamento no firmware 13.52 não testados.",
+        "content_id": "UP2387-CUSA18354_00-YAZDHD0000000000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://mtps4store380.blogspot.com/"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "UP2387-CUSA18354_00-YAZDHD0000000000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 346357760
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/346357760",
+        "received": 1080,
+        "final_host": "download1586.mediafire.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": true,
+      "classification": "native_game_base"
+    },
+    {
+      "entry": {
+        "id": "CUSA10216-UPDATE-0107",
+        "name": "Agony — atualização 01.07",
+        "version": "01.07",
+        "size": 9801039872,
+        "url": "https://www.mediafire.com/file/0r24d6b9oqw4mwr/[DLPSGAME.COM]-UP2047-CUSA10216_00-AGONY666AMERICAS-A0107-V0100-CyB1K.pkg/file",
+        "filename": "CUSA10216_update_0107.pkg",
+        "kind": "update",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Requer o jogo base CUSA10216 instalado, disponível no catálogo gratuito.",
+        "description": "PKG de PS4 de uma fonte da comunidade. Cabeçalho, identidade e tamanho conferidos; idioma e funcionamento no firmware 13.52 não testados.",
+        "content_id": "UP2047-CUSA10216_00-AGONY666AMERICAS",
+        "content_type": 26,
+        "content_flags": 1647312896,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://mtps4store380.blogspot.com/"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "UP2047-CUSA10216_00-AGONY666AMERICAS",
+        "content_type": 26,
+        "content_flags": 1647312896,
+        "iro_tag": 0,
+        "package_size": 9801039872
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/9801039872",
+        "received": 1080,
+        "final_host": "download944.mediafire.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "update"
+    },
+    {
+      "entry": {
+        "id": "CUSA45094-UPDATE-0104",
+        "name": "Five Nights at Freddy’s: Into the Pit — atualização 01.04",
+        "version": "01.04",
+        "size": 1118699520,
+        "url": "https://www.mediafire.com/file/p8to0qbzrp32at5/UP7596-CUSA45094_00-A0104-V0100-TRIFECTA-%5BDLPSGAME.COM%5D.pkg/file",
+        "filename": "CUSA45094_update_0104.pkg",
+        "kind": "update",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Requer o jogo base CUSA45094 instalado. A edição gratuita da Peppy já é identificada como v1.04; esta atualização separada pode ser desnecessária.",
+        "description": "PKG de PS4 de uma fonte da comunidade. Cabeçalho, identidade e tamanho conferidos; idioma e funcionamento no firmware 13.52 não testados.",
+        "content_id": "UP7596-CUSA45094_00-0542186709663309",
+        "content_type": 26,
+        "content_flags": 1647312896,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://juegospkg.com/five-nights-at-freddys-into-the-pit-update-1-04-ps4-pkg-mediafire/"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "UP7596-CUSA45094_00-0542186709663309",
+        "content_type": 26,
+        "content_flags": 1647312896,
+        "iro_tag": 0,
+        "package_size": 1118699520
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/1118699520",
+        "received": 1080,
+        "final_host": "download2272.mediafire.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "update"
+    },
+    {
+      "entry": {
+        "id": "CUSA00466-DLC-UNKNOWN",
+        "name": "TowerFall — Dark World Expansion",
+        "version": "",
+        "size": 1048576,
+        "url": "https://archive.org/download/ps4-fpkg-collection-english-t/TowerFall%20Dark%20World%20Expansion.pkg",
+        "filename": "CUSA00466_dlc_UNKNOWN.pkg",
+        "kind": "dlc",
+        "source_kind": "community",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Requer TowerFall Ascension CUSA00466 instalado, disponível no catálogo gratuito.",
+        "description": "PKG de PS4 de uma fonte da comunidade. Cabeçalho, identidade e tamanho conferidos; idioma e funcionamento no firmware 13.52 não testados.",
+        "content_id": "UP2120-CUSA00466_00-TFDARKWORLDEXPSN",
+        "content_type": 27,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://archive.org/details/ps4-fpkg-collection-english-t"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "UP2120-CUSA00466_00-TFDARKWORLDEXPSN",
+        "content_type": 27,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 1048576
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/1048576",
+        "received": 1080,
+        "final_host": "dn721502.ca.archive.org"
+      },
+      "evidence_file": "/tmp/peppy-premium-root-combined-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "dlc"
+    },
+    {
+      "entry": {
+        "id": "RHZR00001-HOMEBREW-v100",
+        "name": "Relic Hunters Zero",
+        "version": "v1.0.0",
+        "size": 71696384,
+        "url": "https://github.com/MDashK/Relic-Hunters-Zero-PS4/releases/download/v1.0.0/IV0000-RHZR00001_00-RELICHUNTERSZER0-A0100-V0100.pkg",
+        "filename": "RHZR00001_homebrew_v100.pkg",
+        "kind": "homebrew",
+        "source_kind": "official",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "",
+        "description": "Port homebrew de Relic Hunters Zero para PS4, publicado pelo autor do port. A release documenta instalar o PKG e jogar.",
+        "content_id": "IV0000-RHZR00001_00-RELICHUNTERSZER0",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://github.com/MDashK/Relic-Hunters-Zero-PS4/releases/tag/v1.0.0"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "IV0000-RHZR00001_00-RELICHUNTERSZER0",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 71696384
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/71696384",
+        "received": 1080,
+        "final_host": "release-assets.githubusercontent.com"
+      },
+      "evidence_file": "/workspace/peppy-native/research/vnext-sources/root-author-probes-next.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": true,
+      "classification": "homebrew_game"
+    },
+    {
+      "entry": {
+        "id": "CUSA63336-THEME-ps4",
+        "name": "Sound of Nature",
+        "version": "ps4",
+        "size": 20512768,
+        "url": "https://github.com/F1R3xS1NN3R/sound-of-nature/releases/download/ps4/UP0001-CUSA63336_00-PSTCTHEME0100000-A0000-V0200.pkg",
+        "filename": "CUSA63336_theme_ps4.pkg",
+        "kind": "theme",
+        "source_kind": "official",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "",
+        "description": "Tema Sound of Nature para o menu do PS4, publicado pelo autor; tipo de conteúdo AC e IRO tag 2 conferidos.",
+        "content_id": "UP0001-CUSA63336_00-PSTCTHEME0100000",
+        "content_type": 27,
+        "content_flags": 167772160,
+        "iro_tag": 2,
+        "is_theme": true,
+        "adult": false,
+        "source_url": "https://github.com/F1R3xS1NN3R/sound-of-nature/releases/tag/ps4"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "UP0001-CUSA63336_00-PSTCTHEME0100000",
+        "content_type": 27,
+        "content_flags": 167772160,
+        "iro_tag": 2,
+        "package_size": 20512768
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/20512768",
+        "received": 1080,
+        "final_host": "release-assets.githubusercontent.com"
+      },
+      "evidence_file": "/workspace/peppy-native/research/vnext-sources/root-author-probes-next.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "theme"
+    },
+    {
+      "entry": {
+        "id": "GMCA00000-MEDIA-v130",
+        "name": "GMCA",
+        "version": "v1.3.0",
+        "size": 62455808,
+        "url": "https://github.com/thcolin/gamepad-media-center-aggregator/releases/download/v1.3.0/IV0001-GMCA00000_00-GMCA000000002800.pkg",
+        "filename": "GMCA00000_media_v130.pkg",
+        "kind": "media",
+        "source_kind": "official",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Requer conectar sua conta ou servidor de mídia Plex, Jellyfin, Emby, Stremio ou compartilhamento de arquivos; serviço/conteúdo não incluso.",
+        "description": "Agregador homebrew para acessar suas bibliotecas e servidores de mídia Plex, Jellyfin, Emby e Stremio usando o controle. Serviços e conteúdo não incluídos.",
+        "content_id": "IV0001-GMCA00000_00-GMCA000000002800",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://github.com/thcolin/gamepad-media-center-aggregator/releases/tag/v1.3.0",
+        "sha256": "d7c599cee505fd6e37fffb0ca5c903e3d98bd6010a1de211d9dc9302bf7b74f6"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "IV0001-GMCA00000_00-GMCA000000002800",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 62455808
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/62455808",
+        "received": 1080,
+        "final_host": "release-assets.githubusercontent.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-author-new-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "media_aggregator"
+    },
+    {
+      "entry": {
+        "id": "SRCH00001-HOMEBREW-v5117",
+        "name": "SSPI",
+        "version": "v5.11.7",
+        "size": 157351936,
+        "url": "https://github.com/Xyhlo/SSPI/releases/download/v5.11.7/sspi5.11.7.pkg",
+        "filename": "SRCH00001_homebrew_v5117.pkg",
+        "kind": "homebrew",
+        "source_kind": "official",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Autor requer firmware 6.72 ou posterior. Após instalar, reiniciar completamente e ativar GoldHEN para recarregar o worker de background.",
+        "description": "Utilitário homebrew de busca, download e instalação de PKGs para PS4, publicado pelo autor do projeto.",
+        "content_id": "IV0000-SRCH00001_00-GAMESEARCH000000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://github.com/Xyhlo/SSPI/releases/tag/v5.11.7",
+        "sha256": "8813e4f8fd3a32e8208efa37f05337b196c787e28a3166fd079a250b9cde0b75"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "IV0000-SRCH00001_00-GAMESEARCH000000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 157351936
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/157351936",
+        "received": 1080,
+        "final_host": "release-assets.githubusercontent.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-author-new-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "utility"
+    },
+    {
+      "entry": {
+        "id": "SHPD00001-HOMEBREW-v0103",
+        "name": "Shattered Pixel Dungeon",
+        "version": "v01.03",
+        "size": 111804416,
+        "url": "https://github.com/iHaiDeeZ/shattered-pixel-dungeon-ps4/releases/download/v01.03/ShatteredPixelDungeon-v01.03.pkg",
+        "filename": "SHPD00001_homebrew_v0103.pkg",
+        "kind": "homebrew",
+        "source_kind": "official",
+        "platform": "ps4",
+        "language": [
+          "pt"
+        ],
+        "requires_data": "Requer libScePigletv2VSH.sprx e libSceShaccVSH.sprx em /data/spd-ps4/modules/ ou /data/love/modules/ (Mari0). Módulos Sony não inclusos; dados/saves em /data/spd-ps4/. Recursos online indisponíveis no PS4.",
+        "description": "Port homebrew de Shattered Pixel Dungeon para PS4. O código e o empacotamento upstream documentam interface em português; áudio dublado não foi confirmado.",
+        "content_id": "IV0000-SHPD00001_00-SHATTEREDPIXEL00",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://github.com/iHaiDeeZ/shattered-pixel-dungeon-ps4/releases/tag/v01.03",
+        "sha256": "13f28576ff7b251ecb0329f066d92a704a66cdf136b3f3c7b4d803e1ebbcf9bb"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "IV0000-SHPD00001_00-SHATTEREDPIXEL00",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 111804416
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/111804416",
+        "received": 1080,
+        "final_host": "release-assets.githubusercontent.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-author-new-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": true,
+      "classification": "homebrew_game"
+    },
+    {
+      "entry": {
+        "id": "NTXS10053-HOMEBREW-121",
+        "name": "Scratch Everywhere!",
+        "version": "1.2.1",
+        "size": 23592960,
+        "url": "https://github.com/ScratchEverywhere/ScratchEverywhere/releases/download/1.2.1/scratch-ps4.pkg",
+        "filename": "NTXS10053_homebrew_121.pkg",
+        "kind": "homebrew",
+        "source_kind": "official",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Não inclui projetos Scratch. Coloque seus projetos autorizados em /data/scratch-ps4 (crie a pasta se necessário). Nem todos os projetos funcionam; runtime em desenvolvimento.",
+        "description": "Motor homebrew de projetos Scratch para PS4. Não inclui jogos; carregue seus próprios projetos autorizados.",
+        "content_id": "IV0001-NTXS10053_00-NTXS100531020000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://github.com/ScratchEverywhere/ScratchEverywhere/releases/tag/1.2.1",
+        "sha256": "dd8ea8a60a7daf62eb116459b5ee6ce104c226af4ee3495767fe8418a54959a0"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "IV0001-NTXS10053_00-NTXS100531020000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 23592960
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/23592960",
+        "received": 1080,
+        "final_host": "release-assets.githubusercontent.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-author-new-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "game_engine"
+    },
+    {
+      "entry": {
+        "id": "WILI00000-MEDIA-v160",
+        "name": "wiliwili",
+        "version": "v1.6.0",
+        "size": 74711040,
+        "url": "https://github.com/xfangfang/wiliwili/releases/download/v1.6.0/wiliwili-PS4.pkg",
+        "filename": "WILI00000_media_v160.pkg",
+        "kind": "media",
+        "source_kind": "official",
+        "platform": "ps4",
+        "language": [],
+        "requires_data": "Cliente terceiro Bilibili; acesso depende do serviço e da rede. PS4 suporta apenas decodificação por software; 4K60 exige modo low-quality decoding segundo README.",
+        "description": "Cliente homebrew de terceiros para assistir ao Bilibili no PS4. Funcionamento depende do serviço externo e da rede; não é YouTube, Netflix ou Crunchyroll.",
+        "content_id": "IV0001-WILI00000_00-WILI000000106000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "is_theme": false,
+        "adult": false,
+        "source_url": "https://github.com/xfangfang/wiliwili/releases/tag/v1.6.0",
+        "sha256": "d9f089bed9d8352ea6f78d6e93fcb5eea22caad29768ff553d87adb0e79bffba"
+      },
+      "verification_date": "2026-10-08",
+      "verification_status": "fresh_public_pkg_header_checked",
+      "header": {
+        "magic": "7f434e54",
+        "content_id": "IV0001-WILI00000_00-WILI000000106000",
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0,
+        "package_size": 74711040
+      },
+      "http": {
+        "status": 206,
+        "content_range": "bytes 0-1079/74711040",
+        "received": 1080,
+        "final_host": "release-assets.githubusercontent.com"
+      },
+      "evidence_file": "/tmp/peppy-premium-author-new-probes.json",
+      "full_package_integrity_verified": false,
+      "console_execution_verified": false,
+      "new_distinct_game_title": false,
+      "classification": "streaming_client"
+    }
+  ],
+  "accepted_count": 16,
+  "free_catalog_entries_unchanged": 860,
+  "premium_seed_entries": 30,
+  "new_distinct_game_titles": 3,
+  "new_regional_base_variants": 3,
+  "network_blocker": "Initial agent exec-network batch was interrupted. Root then completed bounded ordinary public requests and freshly verified all accepted entries. No CAPTCHA or authentication bypass was used.",
+  "language_priority": "Portuguese remains preferred with evidence. Shattered Pixel Dungeon has source/packaging evidence for Portuguese interface translations, but runtime language availability and dubbed audio were not tested. No new package is advertised as dubbed.",
+  "source_policy": "Accepted stable GitHub author-release links and existing Archive CDN/collection links retain reviewed provider policies. MediaFire entries retain the stable original PKG page URL including /file and depend on the reviewed native hub/backend MediaFire-page support added in this build; expiring CDN links are never stored.",
+  "remaining_probes": [],
+  "checks": {
+    "unique_seed_ids": true,
+    "new_archive_content_ids_absent_from_free_catalog": true,
+    "native_archive_collection_and_cdn_allowlist": true,
+    "native_256_gib_package_limit": true,
+    "native_utf8_text_bounds": true,
+    "backend_test_count": 23,
+    "backend_tests": "passed with final30entryseed, realSQLitepublication/nativeMediaFireURLpolicy/sourceprovenance validation",
+    "unique_seed_content_id_kind_version_tuples": true,
+    "multiple_package_kinds_may_share_one_content_id": "Yet Another Zombie Defense HD base and patch intentionally share CID; they remain separate entries bykind/version."
+  },
+  "pending_candidates": [],
+  "source_notes": [
+    {
+      "source": "DLPS / SuperPSX community public link snapshots",
+      "candidate_scope": "Public MediaFire PKG-named URLs for Agony/Into the Pit updates and Unicorn Overlord language patch; no RAR or CAPTCHA bypass.",
+      "native_blocker": "Resolved in this build: backend and nativehub support the narrowly reviewed stable publicMediaFire PKGpage format ending.pkg/file. SignedCDNlinks are onlytemporary transport targets and are not persisted."
+    },
+    {
+      "source": "Internet Archive letter M",
+      "status": "57 missing games are in private/access-restricted files; collection absent from current allowlist. No circumvention attempted."
+    },
+    {
+      "source": "Portuguese PS1 conversion Resident Evil 3: Nemesis",
+      "status": "Previously verified package remains excluded because CUSA00924 conflicts with the native free Resident Evil Revelations2; identical TitleID must not be introduced."
+    }
+  ],
+  "rejected_candidates": [
+    {
+      "name": "Rock Band™ Expansion Pack 4",
+      "reason": "http_error",
+      "attempts": [
+        {
+          "status": 500,
+          "error": null
+        },
+        {
+          "status": 500,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "Rock Band™ Expansion Pack 2",
+      "reason": "http_error",
+      "attempts": [
+        {
+          "status": 500,
+          "error": null
+        },
+        {
+          "status": 500,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "Rock Band™ Expansion Pack 1",
+      "reason": "http_error",
+      "attempts": [
+        {
+          "status": 500,
+          "error": null
+        },
+        {
+          "status": 500,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "Rock Band™ Expansion Pack 3",
+      "reason": "http_error",
+      "attempts": [
+        {
+          "status": 500,
+          "error": null
+        },
+        {
+          "status": 500,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "Futurama PS2 – PS4 Ported",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "UP9000-SLES51507_00-SLES515070000001"
+    },
+    {
+      "name": "Need for Speed Most Wanted Black Edition",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "UP9000-SLUS21351_00-SLUS213510000001"
+    },
+    {
+      "name": "Red Dead Redemption II",
+      "content_id": "ED1234-CHEA38002_00-0000000000000000",
+      "reason": "optional_mod_menu_is_not_the_named_full_game"
+    },
+    {
+      "name": "Need for Speed Carbon Collectors Edition",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "UP9000-SLUS21494_00-SLUS214940000001"
+    },
+    {
+      "name": "Grand Theft Auto V",
+      "content_id": "ED1234-CHEA38004_00-0000000000000000",
+      "reason": "optional_mod_menu_is_not_the_named_full_game"
+    },
+    {
+      "name": "Woody Woodpecker Escape From Buzz Buzzard Park",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "UP9000-SLES50612_00-SLES506130000001"
+    },
+    {
+      "name": "Black PS2 para PS4",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "HP9000-SLUS21376_00-SCPS560030000001"
+    },
+    {
+      "name": "Agony",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "UP2047-CUSA10216_00-AGONY666AMERICAS"
+    },
+    {
+      "name": "Area 51 PS2 - PS4",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "UP9000-SLES52570_00-SLES525700000001"
+    },
+    {
+      "name": "Armored Core 2 Another Age",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "UP9000-SLUS20249_00-SLUS202490000001"
+    },
+    {
+      "name": "Five Nights at Freddy’s: Into the Pit — edição DLPS",
+      "reason": "same_base_content_id_already_free",
+      "content_id": "UP7596-CUSA45094_00-0542186709663309"
+    }
+  ],
+  "language_evidence": {
+    "Shattered Pixel Dungeon": {
+      "evidence": "Pinned PS4 stage-assets.sh includes all upstream assets; upstream v4.0.1 Languages.java marks Portuguese translation complete. No audio-dubbing claim; no runtime test.",
+      "urls": [
+        "https://github.com/iHaiDeeZ/shattered-pixel-dungeon-ps4/blob/v01.03/README.md",
+        "https://github.com/iHaiDeeZ/shattered-pixel-dungeon-ps4/blob/v01.03/scripts/stage-assets.sh",
+        "https://github.com/00-Evan/shattered-pixel-dungeon/blob/v4.0.1/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/messages/Languages.java"
+      ]
+    }
+  },
+  "sha256_note": "SHA-256 pins are the digest published by the author/GitHub for the current asset; this review did not download and hash full packages. Shattered Pixel Dungeon release text has an older conflicting hash; the current asset digest13f28576... is pinned and runtime verification must match it.",
+  "new_entries_by_kind": {
+    "base": 4,
+    "update": 4,
+    "dlc": 1,
+    "homebrew": 4,
+    "media": 2,
+    "theme": 1
+  },
+  "counts_explanation": "New distinct playable game titles: Yet Another Zombie Defense HD, Relic Hunters Zero, Shattered Pixel Dungeon (requires external Sony modules). Three regional variants of existing free games are counted separately as packages, not as new titles. ScratchEverywhere requires user projects; GMCA/wiliwili/SSPI are apps, not games.",
+  "version_evidence": "Versions use pinned author release tags or explicit source filenames where available; no PARAM.SFOversion was extracted in this header-only review. The Yet Another Zombie Defense HD base and Unicorn Overlord language patch retain emptyversion because their packageversion was not established."
+}

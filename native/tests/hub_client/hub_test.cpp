@@ -5,31 +5,39 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <mutex>
 
 struct Reply {
     std::string url, body, headers, bearer, range;
-    int status, method, sendError, readError;
-    size_t cursor, failureAfter, contentLength;
+    int status, method, sendError, readError, lengthType;
+    bool eofAllowed, oversizedRead;
+    size_t cursor, failureAfter, contentLength, fragment;
     Reply(const std::string& u, const std::string& b, int s = 200, int m = 0)
-        : url(u), body(b), status(s), method(m), sendError(0), readError(0), cursor(0),
-          failureAfter(SIZE_MAX), contentLength(b.size()) {
+        : url(u), body(b), status(s), method(m), sendError(0), readError(0), lengthType(ORBIS_HTTP_CONTENTLEN_EXIST),
+          eofAllowed(false), oversizedRead(false), cursor(0), failureAfter(SIZE_MAX), contentLength(b.size()), fragment(11) {
         headers = "HTTP/1.1 " + std::to_string(s) + " Response\r\nContent-Length: " + std::to_string(b.size()) + "\r\nContent-Type: application/json\r\n\r\n";
     }
 };
 static std::vector<Reply> replies;
-static size_t opened, reads, connections, requestDeletes, connectionDeletes;
-static int contexts, pools, sslContexts, templates, resolverCount, threadFailure;
-static bool privateDns, badDns, secure, noRedirect;
-static std::string connectionUrl, sentBody, addedBearer, addedRange;
+static std::atomic<size_t> opened(0), reads(0), connections(0), requestDeletes(0), connectionDeletes(0);
+static std::atomic<int> contexts(0), pools(0), sslContexts(0), templates(0), resolverCount(0);
+static int threadFailure;
+static std::atomic<bool> privateDns(false), badDns(false), secure(false), noRedirect(false);
+static thread_local std::string connectionUrl, addedBearer, addedRange;
+static thread_local size_t activeReplyIndex = SIZE_MAX;
+static std::string sentBody;
+static std::mutex sentBodyLock;
+static std::atomic<size_t> heldReplyIndex(SIZE_MAX);
 static std::atomic<bool> holdSend(false), insideSend(false), aborted(false);
+static std::atomic<uint64_t> clockAdvanceUs(0);
 static const char* ORIGIN = "https://peppy.example.org";
 static const char* PKG = "https://github.com/skidgfx/PS4-2048/releases/download/v1.0/game.pkg";
 static const std::string TOKEN(64, 'a');
-static Reply& reply() { assert(opened && opened <= replies.size()); return replies[opened - 1]; }
+static Reply& reply() { assert(activeReplyIndex < replies.size()); return replies[activeReplyIndex]; }
 
 extern "C" int32_t sceKernelUsleep(uint32_t micros) { std::this_thread::sleep_for(std::chrono::microseconds(micros)); return 0; }
 extern "C" uint64_t mockUptime() __asm__("sceKernelGetProcessTime");
-extern "C" uint64_t mockUptime() { return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); }
+extern "C" uint64_t mockUptime() { return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()) + clockAdvanceUs.load(); }
 extern "C" int32_t scePthreadAttrInit(OrbisPthreadAttr* attr) { *attr = 0; return threadFailure == 1 ? -11 : 0; }
 extern "C" int32_t scePthreadAttrSetdetachstate(OrbisPthreadAttr* attr, int state) { assert(state == 1); *attr = 1; return threadFailure == 2 ? -12 : 0; }
 extern "C" int32_t scePthreadAttrDestroy(OrbisPthreadAttr*) { return 0; }
@@ -75,13 +83,13 @@ extern "C" int32_t mockLookup(int32_t, const char* hostname, PeppyHubAddress* ad
     return badDns ? -21 : 0;
 }
 extern "C" int32_t sceHttpCreateConnectionWithURL(int32_t, const char* url, bool keepAlive) {
-    assert(secure && noRedirect && !keepAlive); assert(opened < replies.size());
-    assert(replies[opened].url == url); connectionUrl = url; ++connections; return 5;
+    assert(secure && noRedirect && !keepAlive); activeReplyIndex = connections.fetch_add(1);
+    assert(activeReplyIndex < replies.size() && replies[activeReplyIndex].url == url); connectionUrl = url; return 5 + int(activeReplyIndex);
 }
 extern "C" int32_t sceHttpCreateRequestWithURL(int32_t, int32_t method, const char* url, uint64_t bytes) {
-    assert(connectionUrl == url && replies[opened].method == method);
+    assert(connectionUrl == url && reply().method == method);
     if (method == 0) assert(!bytes);
-    addedBearer.clear(); addedRange.clear(); ++opened; return 10 + int(opened);
+    addedBearer.clear(); addedRange.clear(); ++opened; return 11 + int(activeReplyIndex);
 }
 extern "C" int32_t sceHttpAddRequestHeader(int32_t, const char* key, const char* value, int32_t) {
     if (!strcmp(key, "Authorization")) addedBearer = value;
@@ -91,9 +99,9 @@ extern "C" int32_t sceHttpAddRequestHeader(int32_t, const char* key, const char*
 }
 extern "C" int32_t sceHttpSendRequest(int32_t, const void* body, size_t bytes) {
     assert(addedBearer == reply().bearer && addedRange == reply().range);
-    sentBody = body ? std::string(static_cast<const char*>(body), bytes) : "";
+    { std::lock_guard<std::mutex> guard(sentBodyLock); sentBody = body ? std::string(static_cast<const char*>(body), bytes) : ""; }
     insideSend = true;
-    while (holdSend && !aborted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    while (holdSend && (heldReplyIndex == SIZE_MAX || heldReplyIndex == activeReplyIndex) && !aborted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     return aborted ? -99 : reply().sendError;
 }
 extern "C" int32_t sceHttpGetStatusCode(int32_t, int32_t* status) { *status = reply().status; return 0; }
@@ -101,13 +109,14 @@ extern "C" int32_t sceHttpGetAllResponseHeaders(int32_t, char** output, size_t* 
     *output = &reply().headers[0]; *bytes = reply().headers.size(); return 0;
 }
 extern "C" int32_t sceHttpGetResponseContentLength(int32_t, int32_t* type, size_t* bytes) {
-    *type = ORBIS_HTTP_CONTENTLEN_EXIST; *bytes = reply().contentLength; return 0;
+    *type = reply().lengthType; *bytes = reply().contentLength; return 0;
 }
 extern "C" int32_t sceHttpReadData(int32_t, void* output, uint32_t capacity) {
     ++reads; Reply& r = reply();
     if (r.cursor >= r.failureAfter) return r.readError;
-    if (r.cursor == r.body.size()) { assert(false && "must not read beyond exact framed response"); return 0; }
-    size_t bytes = r.body.size() - r.cursor; if (bytes > capacity) bytes = capacity; if (bytes > 11) bytes = 11;
+    if (r.cursor == r.body.size()) { assert(r.eofAllowed && "must not read beyond exact framed response"); return 0; }
+    if (r.oversizedRead) return int32_t(capacity + 1);
+    size_t bytes = r.body.size() - r.cursor; if (bytes > capacity) bytes = capacity; if (bytes > r.fragment) bytes = r.fragment;
     memcpy(output, r.body.data() + r.cursor, bytes); r.cursor += bytes; return int32_t(bytes);
 }
 extern "C" int32_t sceHttpAbortRequest(int32_t) { aborted = true; return 0; }
@@ -123,13 +132,18 @@ static HubResult finished() {
     }
     assert(false); return HubResult{};
 }
+static void sessionChecked() {
+    for (int i = 0; i < 10000 && __atomic_load_n(&g_sessionCheckBusy, __ATOMIC_ACQUIRE); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(!__atomic_load_n(&g_sessionCheckBusy, __ATOMIC_ACQUIRE)); cleanHandles();
+}
 static void reset() {
-    assert(!__atomic_load_n(&g_busy, __ATOMIC_ACQUIRE)); cleanHandles();
+    assert(!__atomic_load_n(&g_busy, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_sessionCheckBusy, __ATOMIC_ACQUIRE)); cleanHandles();
     lock(); delete g_result.catalog; g_result = {}; g_snapshot = {}; clearSessionLocked(); unlock();
-    g_cancel = 0; g_request = -1;
+    g_cancel = 0; g_request = -1; clockAdvanceUs = 0;
     replies.clear(); opened = reads = connections = requestDeletes = connectionDeletes = 0;
     contexts = pools = sslContexts = templates = resolverCount = threadFailure = 0;
-    privateDns = badDns = secure = noRedirect = false; holdSend = insideSend = aborted = false;
+    privateDns = badDns = secure = noRedirect = false; holdSend = insideSend = aborted = false; heldReplyIndex = SIZE_MAX;
     assert(setHubOrigin(ORIGIN));
 }
 static std::string sessionJson(const char* role = "premium", int seconds = 3600, bool token = false) {
@@ -218,6 +232,96 @@ int main() {
     assert(startHubAdminPublish(publication.c_str(), publication.size())); r = finished(); assert(!r.errorCode && sentBody == publication); freeHubResult(&r);
     reset(); login(); assert(!startHubAdminCreateUser("new_user", "password", 30)); r = finished(); assert(r.errorCode == HUB_ERROR_AUTH); freeHubResult(&r);
 
+    // The real bootstrap owner's non-hex ID is visible in the admin list.
+    reset(); login("admin");
+    const std::string ownerRow = "{\"id\":\"owner\",\"username\":\"owner_account\",\"role\":\"admin\",\"plan\":null,\"expires_at\":null,\"premium_active\":true,\"revoked\":false}";
+    const std::string memberId = "0123456789abcdef0123456789abcdef";
+    const std::string memberRow = "{\"id\":\"" + memberId + "\",\"username\":\"member_account\",\"role\":\"premium\",\"plan\":\"15d\",\"expires_at\":2000000000,\"premium_active\":true,\"revoked\":false}";
+    Reply users(std::string(ORIGIN) + "/api/admin/users", "{\"users\":[" + ownerRow + "," + memberRow + "]}");
+    users.bearer = "Bearer " + TOKEN; replies.push_back(users);
+    assert(startHubAdminListUsers()); r = finished();
+    assert(!r.errorCode && r.userCount == 2 && r.users[0].admin && !strcmp(r.users[0].id, "owner") &&
+        !r.users[1].revoked && !strcmp(r.users[1].id, memberId.c_str())); freeHubResult(&r);
+    assert(!startHubAdminRevokeUser("owner") && !startHubAdminRevokeUser("../user") && !startHubAdminRevokeUser("short"));
+    Reply revoke(std::string(ORIGIN) + "/api/admin/users/" + memberId + "/revocation", "{\"user\":{\"revoked\":true}}", 200, 1);
+    revoke.bearer = "Bearer " + TOKEN; replies.push_back(revoke);
+    assert(startHubAdminRevokeUser(memberId.c_str())); r = finished();
+    assert(!r.errorCode && sentBody == "{\"revoked\":true}"); freeHubResult(&r);
+    Reply reactivate(std::string(ORIGIN) + "/api/admin/users/" + memberId + "/revocation", "{\"user\":{\"revoked\":false}}", 200, 1);
+    reactivate.bearer = "Bearer " + TOKEN; replies.push_back(reactivate);
+    assert(startHubAdminRevokeUser(memberId.c_str(), false)); r = finished();
+    assert(!r.errorCode && sentBody == "{\"revoked\":false}"); freeHubResult(&r);
+    assert(!startHubAdminChangePassword("owner", "new_password") && !startHubAdminChangePassword(memberId.c_str(), "short"));
+    Reply passwordChange(std::string(ORIGIN) + "/api/admin/users/" + memberId + "/password", "{\"user\":{\"revoked\":false}}", 200, 1);
+    passwordChange.bearer = "Bearer " + TOKEN; replies.push_back(passwordChange);
+    assert(startHubAdminChangePassword(memberId.c_str(), "new_\"password")); r = finished();
+    assert(!r.errorCode && sentBody == "{\"password\":\"new_\\\"password\"}"); freeHubResult(&r);
+    const std::string badUsers[] = {ownerRow + "," + ownerRow, "{\"id\":\"owner\",\"username\":\"attacker\",\"role\":\"premium\",\"expires_at\":2000000000,\"premium_active\":true,\"revoked\":false}",
+        "{\"id\":\"../target\",\"username\":\"member\",\"role\":\"premium\",\"expires_at\":2000000000,\"premium_active\":true,\"revoked\":false}", "{\"username\":\"missing_id\"}"};
+    for (size_t i = 0; i < sizeof(badUsers) / sizeof(badUsers[0]); ++i) {
+        Reply badUsersReply(std::string(ORIGIN) + "/api/admin/users", "{\"users\":[" + badUsers[i] + "]}");
+        badUsersReply.bearer = "Bearer " + TOKEN; replies.push_back(badUsersReply);
+        assert(startHubAdminListUsers()); r = finished(); assert(r.errorCode == HUB_ERROR_JSON && !r.users && !r.userCount); freeHubResult(&r);
+    }
+    reset(); login(); assert(!startHubAdminListUsers()); r = finished(); assert(r.errorCode == HUB_ERROR_AUTH); freeHubResult(&r);
+    assert(!startHubAdminRevokeUser(memberId.c_str())); r = finished(); assert(r.errorCode == HUB_ERROR_AUTH); freeHubResult(&r);
+    assert(!startHubAdminChangePassword(memberId.c_str(), "new_password")); r = finished(); assert(r.errorCode == HUB_ERROR_AUTH); freeHubResult(&r);
+
+    // Heartbeats fetch only the small session endpoint. They are independent of
+    // imports/downloads and cannot alter a pending primary result or its abort handle.
+    reset(); login(); sessionReply(); size_t beforeCheck = opened;
+    lock(); g_nextSessionCheck = peppyHubUptime() + SESSION_CHECK_US; unlock();
+    clockAdvanceUs = 4000000; pollHubSession(); assert(!g_sessionCheckBusy && opened == beforeCheck);
+    clockAdvanceUs = 6000000; pollHubSession(); sessionChecked();
+    assert(opened == beforeCheck + 1 && hubSession().premium && hubSnapshot().state == HUB_IDLE);
+    pollHubSession(); assert(!g_sessionCheckBusy && opened == beforeCheck + 1);
+    Reply invalidSession(std::string(ORIGIN) + "/api/session", "{\"error\":\"revoked\"}", 401); invalidSession.bearer = "Bearer " + TOKEN; replies.push_back(invalidSession);
+    lock(); g_snapshot.state = HUB_RUNNING; g_snapshot.operation = HUB_IMPORT_URLS; g_snapshot.httpStatus = 206;
+    g_request = 77; g_busy = 1; g_cancel = 1; unlock();
+    clockAdvanceUs = 12000000; pollHubSession(); sessionChecked();
+    assert(!hubSession().authenticated && !g_token[0] && g_request == 77 && g_busy == 1 &&
+        hubSnapshot().state == HUB_RUNNING && hubSnapshot().operation == HUB_IMPORT_URLS &&
+        hubSnapshot().httpStatus == 206 && !hubSnapshot().errorCode);
+    lock(); g_busy = 0; g_request = -1; g_snapshot = {}; unlock();
+
+    // Exercise two actual worker requests concurrently: an import owns a held
+    // PKG request while a small heartbeat receives revocation. Its completion
+    // cannot replace the import's abort handle, state or later cancellation.
+    reset(); login();
+    replies.push_back(rangeReply(PKG, std::string(1080, '<'), 0, 35454976));
+    Reply revokedWhileImport(std::string(ORIGIN) + "/api/session", "{\"error\":\"revoked\"}", 401);
+    revokedWhileImport.bearer = "Bearer " + TOKEN; replies.push_back(revokedWhileImport);
+    heldReplyIndex = opened.load(); holdSend = true; insideSend = false;
+    assert(startHubImportUrls(PKG, strlen(PKG)));
+    while (!insideSend) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    int importRequest = g_request; assert(importRequest >= 0 && hubSnapshot().state == HUB_RUNNING);
+    clockAdvanceUs = 6000000; pollHubSession();
+    for (int i = 0; i < 10000 && g_sessionCheckBusy; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(!g_sessionCheckBusy && !hubSession().authenticated && g_request == importRequest &&
+        hubSnapshot().state == HUB_RUNNING && hubSnapshot().operation == HUB_IMPORT_URLS && !hubSnapshot().errorCode);
+    cancelHubOperation(); r = finished(); assert(r.errorCode == HUB_ERROR_CANCELLED); freeHubResult(&r);
+
+    // A network failure never extends the last verified entitlement. Once the
+    // 30-second grace expires, offline copies of a revoked session fail closed.
+    reset(); login(); Reply lostSession(std::string(ORIGIN) + "/api/session", "{}");
+    lostSession.bearer = "Bearer " + TOKEN; lostSession.sendError = -22; replies.push_back(lostSession);
+    clockAdvanceUs = 6000000; pollHubSession(); sessionChecked(); assert(hubSession().premium && hubSnapshot().state == HUB_IDLE);
+    clockAdvanceUs = 31000000; assert(!hubSession().authenticated && !g_token[0]);
+
+    // Both a successful old heartbeat and an old 401 are unable to overwrite or
+    // clear a newer login, even when the user logs out while HTTP is in flight.
+    for (int staleStatus = 200; staleStatus <= 401; staleStatus += 201) {
+        reset(); login(); Reply stale(std::string(ORIGIN) + "/api/session", sessionJson(), staleStatus);
+        stale.bearer = "Bearer " + TOKEN; replies.push_back(stale); holdSend = true;
+        clockAdvanceUs = 6000000; pollHubSession();
+        while (!insideSend) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        lock(); clearSessionLocked(); unlock();
+        std::string newLogin = sessionJson("admin", 3600, true);
+        size_t tokenAt = newLogin.find(TOKEN); assert(tokenAt != std::string::npos); newLogin.replace(tokenAt, TOKEN.size(), std::string(64, 'b'));
+        assert(!parseSession(newLogin.c_str(), newLogin.size(), true)); holdSend = false; sessionChecked();
+        assert(hubSession().authenticated && hubSession().admin && !strcmp(g_token, std::string(64, 'b').c_str()));
+    }
+
     reset(); unsigned char output[1080]; UserCatalogRangeInfo info = {};
     replies.push_back(rangeReply(PKG, std::string(sizeof(output), 'x'), 0, 35454976));
     assert(hubUserCatalogRangeReader(0, PKG, 0, sizeof(output), output, &info)); assert(info.received == sizeof(output) && info.totalBytes == 35454976); cleanHandles();
@@ -243,11 +347,81 @@ int main() {
     Reply crossProvider(PKG, "", 302); crossProvider.range = "bytes=0-1079"; crossProvider.headers = std::string("HTTP/1.1 302 Found\r\nLocation: ") + ARCHIVE + "\r\n\r\n"; replies.push_back(crossProvider);
     assert(!hubUserCatalogRangeReader(0, PKG, 0, sizeof(output), output, &info) && opened == 1); cleanHandles();
 
+    const char* MEDIAFIRE_PAGE = "https://www.mediafire.com/file/ABC123/sample.pkg/file";
+    const char* MEDIAFIRE_CDN = "https://download2392.mediafire.com/token/sample.pkg?key=a&part=b";
+    const std::string mediafireHtml = "<!doctype html><html><body><a id='downloadButton' href='https://download2392.mediafire.com/token/sample.pkg?key=a&amp;part=b'>Download</a></body></html>";
+    reset(); assert(hubNativePackageUrl(MEDIAFIRE_PAGE));
+    const char* unsupportedPages[] = {"http://www.mediafire.com/file/ABC123/sample.pkg/file", "https://www.mediafire.com/file/ABC123/sample.rar/file",
+        "https://www.mediafire.com/file/ABC123/sample.pkg", "https://www.mediafire.com/file/ABC123/sample.pkg/file?auth=1",
+        "https://www.mediafire.com/file/ABC123/sample.pkg/file/extra", "https://www.mediafire.com:443/file/ABC123/sample.pkg/file",
+        "https://www.mediafire.com.evil.example/file/ABC123/sample.pkg/file", "https://www.mediafire.com/file/ABC123/%2fsample.pkg/file"};
+    for (size_t i = 0; i < sizeof(unsupportedPages) / sizeof(unsupportedPages[0]); ++i) assert(!hubNativePackageUrl(unsupportedPages[i]));
+    // Even when logged in, both the HTML GET and PKG Range are anonymous.
+    reset(); login(); Reply landing(MEDIAFIRE_PAGE, mediafireHtml); landing.fragment = 3;
+    landing.failureAfter = mediafireHtml.size(); landing.readError = -22; replies.push_back(landing);
+    replies.push_back(rangeReply(MEDIAFIRE_CDN, std::string(sizeof(output), 'x'), 0, 35454976));
+    assert(hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info));
+    assert(info.received == sizeof(output) && !strcmp(info.effectiveUrl, MEDIAFIRE_CDN) && hubSession().premium); cleanHandles();
+    // A single import reuses its resolved CDN for subsequent metadata ranges,
+    // while the persisted entry keeps the original stable page URL.
+    reset(); replies.push_back(Reply(MEDIAFIRE_PAGE, mediafireHtml));
+    replies.push_back(rangeReply(MEDIAFIRE_CDN, std::string(sizeof(output), 'x'), 0, 35454976));
+    replies.push_back(rangeReply(MEDIAFIRE_CDN, std::string(32, 'y'), 1080, 35454976));
+    { RangeContext shared;
+        assert(hubUserCatalogRangeReader(&shared, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info));
+        assert(hubUserCatalogRangeReader(&shared, MEDIAFIRE_PAGE, 1080, 32, output, &info));
+        assert(opened == 3 && info.totalBytes == 35454976 && output[0] == 'y');
+    } cleanHandles();
+    // Unknown/chunked length requires EOF, including exactly at the HTML cap.
+    for (int exactCap = 0; exactCap < 2; ++exactCap) {
+        reset(); std::string html = mediafireHtml; if (exactCap) html.resize(peppyMediafire::HTML_CAP, ' ');
+        Reply unknown(MEDIAFIRE_PAGE, html); unknown.lengthType = 1; unknown.contentLength = 0; unknown.eofAllowed = true; unknown.fragment = 16384;
+        unknown.headers = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/html\r\n\r\n"; replies.push_back(unknown);
+        replies.push_back(rangeReply(MEDIAFIRE_CDN, std::string(sizeof(output), 'x'), 0, 35454976));
+        assert(hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info)); cleanHandles();
+    }
+    reset(); Reply hugeLanding(MEDIAFIRE_PAGE, mediafireHtml); hugeLanding.contentLength = peppyMediafire::HTML_CAP + 1;
+    hugeLanding.headers = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(hugeLanding.contentLength) + "\r\n\r\n";
+    replies.push_back(hugeLanding); assert(!hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info) && !reads); cleanHandles();
+    reset(); std::string overflowHtml = mediafireHtml; overflowHtml.resize(peppyMediafire::HTML_CAP + 1, ' ');
+    Reply overflowLanding(MEDIAFIRE_PAGE, overflowHtml); overflowLanding.lengthType = 1; overflowLanding.contentLength = 0; overflowLanding.fragment = 16384;
+    overflowLanding.headers = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"; replies.push_back(overflowLanding);
+    assert(!hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info)); assert(replies[0].cursor == peppyMediafire::HTML_CAP + 1); cleanHandles();
+    reset(); Reply earlyEof(MEDIAFIRE_PAGE, mediafireHtml); earlyEof.contentLength = mediafireHtml.size() + 1; earlyEof.eofAllowed = true;
+    earlyEof.headers = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(earlyEof.contentLength) + "\r\n\r\n"; replies.push_back(earlyEof);
+    assert(!hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info)); cleanHandles();
+    reset(); Reply tooMuch(MEDIAFIRE_PAGE, mediafireHtml); tooMuch.oversizedRead = true; replies.push_back(tooMuch);
+    assert(!hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info)); cleanHandles();
+    const std::string blockedHtml[] = {"<html>Sign in or complete a captcha</html>",
+        "<script>var fake=\"<a id='downloadButton' href='https://download2392.mediafire.com/token/sample.pkg'>Download</a>\";</script>",
+        "<a id='downloadButton' href='https://download2392.mediafire.com.evil.example/token/sample.pkg'>Download</a>",
+        mediafireHtml + mediafireHtml, mediafireHtml + std::string(1, '\0'), "<a id='downloadButton' href='http://download2392.mediafire.com/token/sample.pkg'>Download</a>"};
+    for (size_t i = 0; i < sizeof(blockedHtml) / sizeof(blockedHtml[0]); ++i) {
+        reset(); replies.push_back(Reply(MEDIAFIRE_PAGE, blockedHtml[i]));
+        assert(!hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info) && opened == 1); cleanHandles();
+    }
+    reset(); Reply compressedHtml(MEDIAFIRE_PAGE, mediafireHtml);
+    compressedHtml.headers.insert(compressedHtml.headers.size() - 2, "Content-Encoding: gzip\r\n"); replies.push_back(compressedHtml);
+    assert(!hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info) && !reads); cleanHandles();
+    reset(); Reply sourceRedirect(MEDIAFIRE_PAGE, "", 302);
+    sourceRedirect.headers = std::string("HTTP/1.1 302 Found\r\nLocation: ") + MEDIAFIRE_CDN + "\r\nContent-Length: 0\r\n\r\n";
+    replies.push_back(sourceRedirect); replies.push_back(rangeReply(MEDIAFIRE_CDN, std::string(sizeof(output), 'x'), 0, 35454976));
+    assert(hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info)); cleanHandles();
+    reset(); Reply returnToPage(MEDIAFIRE_CDN, "", 302); returnToPage.range = "bytes=0-1079";
+    returnToPage.headers = std::string("HTTP/1.1 302 Found\r\nLocation: ") + MEDIAFIRE_PAGE + "\r\nContent-Length: 0\r\n\r\n"; replies.push_back(returnToPage);
+    assert(!hubUserCatalogRangeReader(0, MEDIAFIRE_CDN, 0, sizeof(output), output, &info) && opened == 1); cleanHandles();
+    reset(); Reply escapePage(MEDIAFIRE_PAGE, "", 302); escapePage.headers = std::string("HTTP/1.1 302 Found\r\nLocation: ") + PKG + "\r\nContent-Length: 0\r\n\r\n"; replies.push_back(escapePage);
+    assert(!hubUserCatalogRangeReader(0, MEDIAFIRE_PAGE, 0, sizeof(output), output, &info) && opened == 1); cleanHandles();
+
     reset(); // Actual import rejects HTML/non-PKG bodies, not just bad URLs.
     replies.push_back(rangeReply(PKG, std::string(1080, '<'), 0, 35454976)); assert(startHubImportUrls(PKG, strlen(PKG))); r = finished(); assert(r.errorCode && r.imports.rejected == 1 && !r.catalog->count()); freeHubResult(&r);
     reset(); std::string pkgHeader(1080, '\0'); memcpy(&pkgHeader[0], "\x7f" "CNT", 4); memcpy(&pkgHeader[0x40], "IV0000-SKID02048_00-GAME204800000000", 36); pkgHeader[0x77] = 26; pkgHeader[0x78] = 10;
     uint64_t total = 35454976; for (int i = 0; i < 8; ++i) pkgHeader[0x430 + i] = char(total >> (56 - i * 8));
     replies.push_back(rangeReply(PKG, pkgHeader, 0, total)); assert(startHubImportUrls(PKG, strlen(PKG))); r = finished(); assert(!r.errorCode && r.imports.added == 1 && r.catalog->count() == 1 && !r.catalog->at(0)->titleKnown); freeHubResult(&r);
+
+    reset(); replies.push_back(Reply(MEDIAFIRE_PAGE, mediafireHtml)); replies.push_back(rangeReply(MEDIAFIRE_CDN, pkgHeader, 0, total));
+    assert(startHubImportUrls(MEDIAFIRE_PAGE, strlen(MEDIAFIRE_PAGE))); r = finished();
+    assert(!r.errorCode && r.imports.added == 1 && !strcmp(r.catalog->at(0)->url, MEDIAFIRE_PAGE)); freeHubResult(&r);
 
     reset(); replies.push_back(Reply(std::string(ORIGIN) + "/api/login", sessionJson("premium", 3600, true), 200, 1)); holdSend = true;
     assert(startHubLogin("peppy_test", "password"));
@@ -266,6 +440,6 @@ int main() {
     const char* malformed[] = {"\"\\u0000\"", "\"\\ud800\"", "\"\\udc00\"", "01", "{\"a\":1,}", "[1,]", "true false", "\"\xc0\xaf\""};
     for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); ++i) { peppyHubJson::Cursor json(malformed[i], strlen(malformed[i])); assert(!json.skip() || !json.done()); }
     char utf[32]; peppyHubJson::Cursor unicode("\"\\ud83d\\ude00\"", 14); assert(unicode.string(utf, sizeof(utf)) && unicode.done() && strlen(utf) == 4);
-    printf("hub client: async session/catalog/admin/import, expiry, TLS/range framing, credential isolation and cancellation checks passed\n");
+    printf("hub client: async session/catalog/admin/import, user invalidation, independent 5-second verification, stale-session race guards, expiry, TLS/range framing, credential isolation, bounded MediaFire landing resolution and cancellation checks passed\n");
     return 0;
 }

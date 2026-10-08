@@ -17,7 +17,7 @@
   "limits": [
     "Author release metadata and small ranged header reads establish package identity and declared size, not full-file integrity or successful installation on a physical PS4.",
     "Some homebrew ports require authorized game data and/or platform modules; requirements are retained per entry.",
-    "Themes, streaming and adult-category UI support exists; source acceptance requires separate evidence and does not mean those categories contain new packages.",
+    "The next expansion includes one system theme and two media apps. Adult-category UI remains available; no newly verified adult game or paid streaming account is included.",
     "Packages are not payloads; the updater links a native PS4 PKG and does not promise browser-to-GoldHEN automatic installation.",
     "No claim of a complete Internet catalog or measured PS4 throughput."
   ],
@@ -749,5 +749,14 @@
   "new_homebrew_entries": 12,
   "new_update_entries": 2,
   "additional_source_review": "new-premium-source-review.json",
-  "update_requires_base": "Both new update packages require matching installed base games; their base games are not in the current free catalog."
+  "update_requires_base": "Both new update packages require matching installed base games; their base games are not in the current free catalog.",
+  "premium_entries": 30,
+  "next_expansion_review": "native/premium-expansion-next-review.json",
+  "next_expansion_summary": {
+    "added_packages": 16,
+    "new_distinct_game_titles": 3,
+    "new_regional_base_variants": 3,
+    "new_native_package_version": "01.11",
+    "verified_date": "2026-10-08"
+  }
 }

@@ -6,7 +6,8 @@
 #include "user_catalog.h"
 
 enum HubOperation { HUB_NONE = 0, HUB_LOGIN, HUB_LOGOUT, HUB_SYNC,
-                    HUB_IMPORT_URLS, HUB_ADMIN_CREATE_USER, HUB_ADMIN_PUBLISH };
+                    HUB_IMPORT_URLS, HUB_ADMIN_CREATE_USER, HUB_ADMIN_PUBLISH,
+                    HUB_ADMIN_LIST_USERS, HUB_ADMIN_REVOKE_USER, HUB_ADMIN_CHANGE_PASSWORD };
 enum HubState { HUB_IDLE = 0, HUB_RUNNING, HUB_DONE, HUB_FAILED, HUB_CANCELLED };
 enum HubError { HUB_OK = 0, HUB_ERROR_CONFIG = -4000, HUB_ERROR_INPUT = -4001,
                 HUB_ERROR_THREAD = -4002, HUB_ERROR_NETWORK = -4003,
@@ -27,11 +28,19 @@ struct HubSnapshot {
     int32_t nativeCode;
     size_t completed, requested;
 };
+const size_t HUB_ADMIN_MAX_USERS = 5000;
+struct HubAdminUser {
+    char id[65], username[65], plan[4];
+    bool admin, revoked, premiumActive;
+    uint64_t expiresAt;
+};
 struct HubResult {
     int operation, errorCode;
     uint64_t catalogVersion;
     UserCatalog* catalog; // Owned by result after consume; release with freeHubResult.
     UserCatalogImportReport imports;
+    HubAdminUser* users; // Owned metadata only; passwords/hashes are never returned.
+    size_t userCount;
 };
 
 // Controller-thread entry points. One operation runs at a time; completing a
@@ -51,6 +60,14 @@ bool startHubAdminCreateUser(const char* username, const char* password, int pla
 // JSON is an administrator-owned publication request. Server validates metadata;
 // successful publication does not make arbitrary source URLs trusted.
 bool startHubAdminPublish(const char* json, size_t bytes);
+bool startHubAdminListUsers();
+bool startHubAdminRevokeUser(const char* userId, bool revoked = true);
+bool startHubAdminChangePassword(const char* userId, const char* newPassword);
+// Call from the render/controller loop. An independent small session request
+// runs every five seconds, including while a download/import is active.
+// Server denial immediately clears RAM authorization; after 30 seconds without
+// a verified session, authorization is also cleared until the user logs in.
+void pollHubSession();
 void cancelHubOperation();
 HubSnapshot hubSnapshot();
 HubSession hubSession(); // Rechecks local session/premium expiry on every call.

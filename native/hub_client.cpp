@@ -45,12 +45,17 @@ HubResult g_result = {};
 char g_token[TOKEN_CAP] = {};
 char g_origin[ORIGIN_CAP] = PEPPY_HUB_URL;
 uint64_t g_sessionDeadline = 0, g_premiumDeadline = 0;
+uint64_t g_sessionGeneration = 1, g_verifiedDeadline = 0, g_nextSessionCheck = 0;
+int g_sessionCheckBusy = 0;
+const uint64_t SESSION_CHECK_US = 5000000ULL, SESSION_VERIFY_GRACE_US = 30000000ULL;
 struct Task {
     int operation, days;
+    uint64_t generation;
+    bool background;
     char username[65], password[PASSWORD_CAP], token[TOKEN_CAP], origin[ORIGIN_CAP];
     char* text;
     size_t bytes;
-    Task() : operation(0), days(0), text(0), bytes(0) {
+    Task() : operation(0), days(0), generation(0), background(false), text(0), bytes(0) {
         username[0] = password[0] = token[0] = origin[0] = 0;
     }
 };
@@ -67,11 +72,13 @@ uint64_t now() { time_t value = time(0); return value > 0 ? uint64_t(value) : 0;
 bool cancelled() { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE) != 0; }
 void clearSessionLocked() {
     wipe(g_token, sizeof(g_token)); memset(&g_session, 0, sizeof(g_session));
-    g_sessionDeadline = g_premiumDeadline = 0;
+    g_sessionDeadline = g_premiumDeadline = g_verifiedDeadline = g_nextSessionCheck = 0;
+    ++g_sessionGeneration; if (!g_sessionGeneration) ++g_sessionGeneration;
 }
 void expireLocked() {
     uint64_t clock = peppyHubUptime();
-    if (g_session.authenticated && (!g_sessionDeadline || clock >= g_sessionDeadline)) clearSessionLocked();
+    if (g_session.authenticated && (!g_sessionDeadline || clock >= g_sessionDeadline ||
+        !g_verifiedDeadline || clock >= g_verifiedDeadline)) clearSessionLocked();
     else if (g_session.premium && !g_session.admin && (!g_premiumDeadline || clock >= g_premiumDeadline)) g_session.premium = false;
 }
 bool usernameValid(const char* value) {
@@ -105,9 +112,10 @@ void activeRequest(int request) { lock(); g_request = request; if (request >= 0 
 
 struct Handles {
     int net, ssl, http, tmpl, conn, req;
-    Handles() : net(-1), ssl(-1), http(-1), tmpl(-1), conn(-1), req(-1) {}
+    bool quiet;
+    explicit Handles(bool background = false) : net(-1), ssl(-1), http(-1), tmpl(-1), conn(-1), req(-1), quiet(background) {}
     void closeRequest() {
-        lock(); g_request = -1; if (req >= 0) sceHttpDeleteRequest(req); unlock();
+        lock(); if (!quiet) g_request = -1; if (req >= 0) sceHttpDeleteRequest(req); unlock();
         if (conn >= 0) sceHttpDeleteConnection(conn);
         req = conn = -1;
     }
@@ -119,24 +127,31 @@ struct Handles {
         if (net >= 0) sceNetPoolDestroy(net);
     }
 };
-struct RangeContext { Handles handles; bool ready; RangeContext() : ready(false) {} };
+int transportFail(const Handles& h, int error, int32_t native = 0, int status = 0) {
+    return h.quiet ? error : fail(error, native, status);
+}
+struct RangeContext {
+    Handles handles; bool ready;
+    char mediafirePage[USER_CATALOG_MAX_URL_BYTES + 1], mediafireFinal[USER_CATALOG_MAX_URL_BYTES + 1];
+    RangeContext() : ready(false) { mediafirePage[0] = mediafireFinal[0] = 0; }
+};
 int init(Handles& h) {
     const OrbisSysModuleInternal modules[] = {ORBIS_SYSMODULE_INTERNAL_NET, ORBIS_SYSMODULE_INTERNAL_NETCTL,
         ORBIS_SYSMODULE_INTERNAL_SSL, ORBIS_SYSMODULE_INTERNAL_HTTP};
     for (size_t i = 0; i < sizeof(modules) / sizeof(modules[0]); ++i) {
         if (peppyHubModuleLoaded(modules[i]) == 0) continue;
         int32_t rc = int32_t(sceSysmoduleLoadModuleInternal(modules[i]));
-        if (rc < 0 && peppyHubModuleLoaded(modules[i]) != 0) return fail(HUB_ERROR_NETWORK, rc);
+        if (rc < 0 && peppyHubModuleLoaded(modules[i]) != 0) return transportFail(h, HUB_ERROR_NETWORK, rc);
     }
     int32_t state = -1, ctl = sceNetCtlInit(), rc = peppyHubNetworkState(&state);
-    if ((ctl != 0 && rc != 0) || rc != 0 || state != 3) return fail(HUB_ERROR_NETWORK, rc ? rc : ctl);
+    if ((ctl != 0 && rc != 0) || rc != 0 || state != 3) return transportFail(h, HUB_ERROR_NETWORK, rc ? rc : ctl);
     // Global networking is shared with downloads; own only context handles.
     sceNetInit();
-    h.net = sceNetPoolCreate("PeppyHub", 1024 * 1024, 0); if (h.net < 0) return fail(HUB_ERROR_NETWORK, h.net);
-    h.ssl = sceSslInit(256 * 1024); if (h.ssl < 0) return fail(HUB_ERROR_NETWORK, h.ssl);
-    h.http = sceHttpInit(h.net, h.ssl, 1024 * 1024); if (h.http < 0) return fail(HUB_ERROR_NETWORK, h.http);
+    h.net = sceNetPoolCreate("PeppyHub", 1024 * 1024, 0); if (h.net < 0) return transportFail(h, HUB_ERROR_NETWORK, h.net);
+    h.ssl = sceSslInit(256 * 1024); if (h.ssl < 0) return transportFail(h, HUB_ERROR_NETWORK, h.ssl);
+    h.http = sceHttpInit(h.net, h.ssl, 1024 * 1024); if (h.http < 0) return transportFail(h, HUB_ERROR_NETWORK, h.http);
     h.tmpl = sceHttpCreateTemplate(h.http, "PeppyStore/Hub", ORBIS_HTTP_VERSION_1_1, 0);
-    if (h.tmpl < 0) return fail(HUB_ERROR_NETWORK, h.tmpl);
+    if (h.tmpl < 0) return transportFail(h, HUB_ERROR_NETWORK, h.tmpl);
     rc = peppyHubHttpHeaderLimit(h.tmpl, peppyHttpRange::HEADER_CAP);
     if (!rc) rc = sceHttpsEnableOption(h.tmpl, 0xbd);
     if (!rc) rc = peppyHubHttpRedirect(h.tmpl, 0);
@@ -144,7 +159,7 @@ int init(Handles& h) {
     if (!rc) rc = sceHttpSetConnectTimeOut(h.tmpl, 10000000);
     if (!rc) rc = sceHttpSetSendTimeOut(h.tmpl, 15000000);
     if (!rc) rc = peppyHubHttpReceiveTimeout(h.tmpl, 15000000);
-    return rc < 0 ? fail(HUB_ERROR_NETWORK, rc) : 0;
+    return rc < 0 ? transportFail(h, HUB_ERROR_NETWORK, rc) : 0;
 }
 bool publicAddress(const unsigned char* ip) {
     return ip[0] != 0 && ip[0] != 10 && ip[0] != 127 && ip[0] < 224 &&
@@ -156,18 +171,18 @@ bool publicAddress(const unsigned char* ip) {
 }
 int publicDns(Handles& h, const char* url) {
     const char* start = url + 8; const char* slash = strchr(start, '/');
-    if (!slash) return fail(HUB_ERROR_SOURCE);
+    if (!slash) return transportFail(h, HUB_ERROR_SOURCE);
     size_t count = size_t(slash - start);
     if (count > 4 && !memcmp(slash - 4, ":443", 4)) count -= 4;
-    if (!count || count > 253) return fail(HUB_ERROR_SOURCE);
+    if (!count || count > 253) return transportFail(h, HUB_ERROR_SOURCE);
     char hostname[254]; memcpy(hostname, start, count); hostname[count] = 0;
     int32_t resolver = peppyHubResolverCreate("PeppyHubDns", h.net, 0);
-    if (resolver < 0) return fail(HUB_ERROR_NETWORK, resolver);
+    if (resolver < 0) return transportFail(h, HUB_ERROR_NETWORK, resolver);
     PeppyHubAddress address = {};
     int32_t rc = peppyHubResolverLookup(resolver, hostname, &address, 5000000, 1, 0);
     peppyHubResolverDestroy(resolver);
-    if (rc < 0) return fail(HUB_ERROR_NETWORK, rc);
-    if (!publicAddress(reinterpret_cast<const unsigned char*>(&address.address))) return fail(HUB_ERROR_SOURCE);
+    if (rc < 0) return transportFail(h, HUB_ERROR_NETWORK, rc);
+    if (!publicAddress(reinterpret_cast<const unsigned char*>(&address.address))) return transportFail(h, HUB_ERROR_SOURCE);
     // libSceHttp resolves again and cannot pin this answer. Package requests
     // additionally require provider-owned names and normal hostname/certificate
     // verification; arbitrary user-controlled rebinding domains stay unsupported.
@@ -176,15 +191,15 @@ int publicDns(Handles& h, const char* url) {
 int open(Handles& h, const char* url, int method, const char* body, size_t bytes,
          const char* bearer, const char* range, int& status) {
     h.closeRequest();
-    if (cancelled()) return fail(HUB_ERROR_CANCELLED);
+    if (!h.quiet && cancelled()) return transportFail(h, HUB_ERROR_CANCELLED);
     int dns = publicDns(h, url); if (dns) return dns;
     h.conn = sceHttpCreateConnectionWithURL(h.tmpl, url, false);
-    if (h.conn < 0) return fail(HUB_ERROR_NETWORK, h.conn);
+    if (h.conn < 0) return transportFail(h, HUB_ERROR_NETWORK, h.conn);
     h.req = sceHttpCreateRequestWithURL(h.conn, method, url, bytes);
-    if (h.req < 0) return fail(HUB_ERROR_NETWORK, h.req);
-    activeRequest(h.req);
+    if (h.req < 0) return transportFail(h, HUB_ERROR_NETWORK, h.req);
+    if (!h.quiet) activeRequest(h.req);
     int32_t rc = sceHttpAddRequestHeader(h.req, "Accept-Encoding", "identity", 0);
-    if (!rc) rc = sceHttpAddRequestHeader(h.req, "Accept", range ? "application/octet-stream" : "application/json", 0);
+    if (!rc) rc = sceHttpAddRequestHeader(h.req, "Accept", range ? "application/octet-stream" : peppyMediafire::isPageUrl(url, strlen(url)) ? "text/html" : "application/json", 0);
     if (!rc && body) rc = sceHttpAddRequestHeader(h.req, "Content-Type", "application/json", 0);
     if (!rc && range) rc = sceHttpAddRequestHeader(h.req, "Range", range, 0);
     char authorization[TOKEN_CAP + 8] = {};
@@ -195,19 +210,19 @@ int open(Handles& h, const char* url, int method, const char* body, size_t bytes
     }
     if (!rc) rc = sceHttpSendRequest(h.req, body, bytes);
     if (!rc) rc = sceHttpGetStatusCode(h.req, &status);
-    if (rc < 0) return fail(cancelled() ? HUB_ERROR_CANCELLED : HUB_ERROR_NETWORK, rc);
-    lock(); g_snapshot.httpStatus = status; unlock();
+    if (rc < 0) return transportFail(h, !h.quiet && cancelled() ? HUB_ERROR_CANCELLED : HUB_ERROR_NETWORK, rc);
+    if (!h.quiet) { lock(); g_snapshot.httpStatus = status; unlock(); }
     return 0;
 }
 int readExact(Handles& h, unsigned char* output, size_t bytes) {
     size_t done = 0;
     while (done < bytes) {
-        if (cancelled()) return fail(HUB_ERROR_CANCELLED);
+        if (!h.quiet && cancelled()) return transportFail(h, HUB_ERROR_CANCELLED);
         size_t remaining = bytes - done;
         uint32_t wanted = uint32_t(remaining > 64 * 1024 ? 64 * 1024 : remaining);
         int32_t got = sceHttpReadData(h.req, output + done, wanted);
-        if (got < 0) return fail(HUB_ERROR_NETWORK, got);
-        if (!got || uint32_t(got) > wanted) return fail(HUB_ERROR_RANGE);
+        if (got < 0) return transportFail(h, HUB_ERROR_NETWORK, got);
+        if (!got || uint32_t(got) > wanted) return transportFail(h, HUB_ERROR_RANGE);
         done += size_t(got);
     }
     // Content-Length/Content-Range already frame the response. Do not perform
@@ -218,24 +233,26 @@ int apiRequest(Handles& h, const Task& task, const char* path, bool post,
                const char* body, size_t bytes, char*& response, size_t& responseBytes) {
     response = 0; responseBytes = 0;
     char url[ORIGIN_CAP + 96]; int n = snprintf(url, sizeof(url), "%s%s", task.origin, path);
-    if (n < 0 || size_t(n) >= sizeof(url)) return fail(HUB_ERROR_CONFIG);
+    if (n < 0 || size_t(n) >= sizeof(url)) return transportFail(h, HUB_ERROR_CONFIG);
     int status = 0; int rc = open(h, url, post ? 1 : ORBIS_METHOD_GET, body, bytes,
         task.operation == HUB_LOGIN ? 0 : task.token, 0, status);
     if (rc) return rc;
-    if (status == 401 || status == 403) { lock(); clearSessionLocked(); unlock(); return fail(HUB_ERROR_AUTH, 0, status); }
+    if (status == 401 || status == 403) { lock();
+        if (task.generation == g_sessionGeneration) clearSessionLocked();
+        unlock(); return transportFail(h, HUB_ERROR_AUTH, 0, status); }
     // Never redirect a credential or bearer request to a second origin.
-    if (status < 200 || status > 299) return fail(HUB_ERROR_HTTP, 0, status);
+    if (status < 200 || status > 299) return transportFail(h, HUB_ERROR_HTTP, 0, status);
     char* headers = 0; size_t headerBytes = 0;
     rc = sceHttpGetAllResponseHeaders(h.req, &headers, &headerBytes);
     peppyHttpRange::Metadata meta = {};
-    if (rc < 0) return fail(HUB_ERROR_NETWORK, rc);
-    if (!peppyHttpRange::parseHeaders(headers, headerBytes, &meta)) return fail(HUB_ERROR_HTTP);
+    if (rc < 0) return transportFail(h, HUB_ERROR_NETWORK, rc);
+    if (!peppyHttpRange::parseHeaders(headers, headerBytes, &meta)) return transportFail(h, HUB_ERROR_HTTP);
     int32_t type = -1; size_t count = 0;
     rc = sceHttpGetResponseContentLength(h.req, &type, &count);
-    if (rc < 0) return fail(HUB_ERROR_NETWORK, rc);
-    if (type != ORBIS_HTTP_CONTENTLEN_EXIST || !meta.hasContentLength || meta.contentLength != count || !count || count > BODY_CAP)
-        return fail(HUB_ERROR_LIMIT);
-    response = static_cast<char*>(malloc(count + 1)); if (!response) return fail(HUB_ERROR_MEMORY);
+    if (rc < 0) return transportFail(h, HUB_ERROR_NETWORK, rc);
+    if (type != ORBIS_HTTP_CONTENTLEN_EXIST || !meta.hasContentLength || meta.contentLength != count || !count || count > (h.quiet ? 8192 : BODY_CAP))
+        return transportFail(h, HUB_ERROR_LIMIT);
+    response = static_cast<char*>(malloc(count + 1)); if (!response) return transportFail(h, HUB_ERROR_MEMORY);
     rc = readExact(h, reinterpret_cast<unsigned char*>(response), count);
     if (rc) { wipe(response, count); free(response); response = 0; return rc; }
     response[count] = 0; responseBytes = count; return 0;
@@ -263,7 +280,7 @@ bool parseUser(peppyHubJson::Cursor& json, HubSession& session) {
     session.premium = session.admin || !strcmp(role, "premium");
     return true;
 }
-int parseSession(const char* body, size_t bytes, bool login) {
+int parseSession(const char* body, size_t bytes, bool login, uint64_t generation = 0, bool quiet = false) {
     peppyHubJson::Cursor json(body, bytes); HubSession session = {}; char token[TOKEN_CAP] = {}, key[65];
     unsigned fields = 0; uint64_t serverTime = 0;
     bool valid = json.take('{') && !json.take('}');
@@ -285,9 +302,14 @@ int parseSession(const char* body, size_t bytes, bool login) {
     uint64_t ttl = !result ? session.expiresAt - reference : 0;
     if (ttl > 86400) ttl = 86400;
     lock();
-    if (!result && !cancelled()) {
+    if (generation && generation != g_sessionGeneration) {
+        unlock(); wipe(token, sizeof(token)); return HUB_ERROR_AUTH;
+    }
+    if (!result && (quiet || !cancelled())) {
         session.authenticated = true; g_session = session;
         uint64_t clock = peppyHubUptime();
+        g_verifiedDeadline = clock + SESSION_VERIFY_GRACE_US;
+        if (login) g_nextSessionCheck = clock + SESSION_CHECK_US;
         g_sessionDeadline = clock > UINT64_MAX - ttl * 1000000 ? UINT64_MAX : clock + ttl * 1000000;
         uint64_t premiumTtl = session.premiumExpiresAt > reference ? session.premiumExpiresAt - reference : 0;
         if (premiumTtl > ttl) premiumTtl = ttl;
@@ -295,7 +317,7 @@ int parseSession(const char* body, size_t bytes, bool login) {
         if (!session.admin && !premiumTtl) g_session.premium = false;
         if (login) { wipe(g_token, sizeof(g_token)); memcpy(g_token, token, strlen(token) + 1); }
     } else clearSessionLocked();
-    unlock(); wipe(token, sizeof(token)); return result ? fail(result) : 0;
+    unlock(); wipe(token, sizeof(token)); return result ? (quiet ? result : fail(result)) : 0;
 }
 bool parseEntry(peppyHubJson::Cursor& json, UserCatalogEntry& entry) {
     if (!json.take('{') || json.take('}')) return false;
@@ -369,13 +391,81 @@ int parseCatalog(const char* body, size_t bytes, HubResult& output) {
     if (!valid || !json.done() || fields != 3) { delete catalog; return fail(HUB_ERROR_JSON); }
     output.catalog = catalog; return 0;
 }
+bool adminIdValid(const char* id) {
+    if (length(id, 65) != 32) return false;
+    for (size_t i = 0; i < 32; ++i)
+        if (!((id[i] >= '0' && id[i] <= '9') || (id[i] >= 'a' && id[i] <= 'f'))) return false;
+    return true;
+}
+bool parseAdminUser(peppyHubJson::Cursor& json, HubAdminUser& user) {
+    if (!json.take('{') || json.take('}')) return false;
+    unsigned fields = 0; char key[65], role[17] = {};
+    do {
+        if (!json.string(key, sizeof(key)) || !json.take(':')) return false;
+        unsigned bit = !strcmp(key, "id") ? 1 : !strcmp(key, "username") ? 2 : !strcmp(key, "role") ? 4 :
+            !strcmp(key, "revoked") ? 8 : !strcmp(key, "premium_active") ? 16 : !strcmp(key, "expires_at") ? 32 : !strcmp(key, "plan") ? 64 : 0;
+        if (bit && (fields & bit)) return false;
+        fields |= bit;
+        if (bit == 1) { if (!json.string(user.id, sizeof(user.id))) return false; }
+        else if (bit == 2) { if (!json.string(user.username, sizeof(user.username))) return false; }
+        else if (bit == 4) { if (!json.string(role, sizeof(role))) return false; }
+        else if (bit == 8) { if (!json.boolean(user.revoked)) return false; }
+        else if (bit == 16) { if (!json.boolean(user.premiumActive)) return false; }
+        else if (bit == 32) { if (!json.literal("null") && !json.number(user.expiresAt)) return false; }
+        else if (bit == 64) { if (!json.literal("null") && !json.string(user.plan, sizeof(user.plan))) return false; }
+        else if (!json.skip()) return false;
+        if (json.take('}')) break;
+        if (!json.take(',')) return false;
+    } while (true);
+    if ((fields & 63) != 63 || (!adminIdValid(user.id) && (strcmp(user.id, "owner") || strcmp(role, "admin"))) || !usernameValid(user.username) ||
+        (strcmp(role, "admin") && strcmp(role, "premium")) ||
+        (user.plan[0] && strcmp(user.plan, "15d") && strcmp(user.plan, "1m") && strcmp(user.plan, "2m"))) return false;
+    user.admin = !strcmp(role, "admin");
+    return true;
+}
+int parseUsers(const char* body, size_t bytes, HubResult& output) {
+    peppyHubJson::Cursor json(body, bytes); char key[65]; bool found = false;
+    size_t count = 0, capacity = 0; HubAdminUser* users = 0;
+    bool valid = json.take('{') && !json.take('}');
+    while (valid) {
+        valid = json.string(key, sizeof(key)) && json.take(':'); if (!valid) break;
+        if (!strcmp(key, "users")) {
+            if (found) { valid = false; break; } found = true;
+            valid = json.take('[');
+            if (valid && !json.take(']')) do {
+                HubAdminUser user = {}; valid = parseAdminUser(json, user);
+                if (valid && count == capacity) {
+                    size_t next = capacity ? capacity * 2 : 16;
+                    if (next > HUB_ADMIN_MAX_USERS) next = HUB_ADMIN_MAX_USERS;
+                    if (count >= next) { valid = false; break; }
+                    void* grown = realloc(users, next * sizeof(*users));
+                    if (!grown) { free(users); return fail(HUB_ERROR_MEMORY); }
+                    users = static_cast<HubAdminUser*>(grown); capacity = next;
+                }
+                for (size_t i = 0; valid && i < count; ++i)
+                    if (!strcmp(users[i].id, user.id) || !strcmp(users[i].username, user.username)) valid = false;
+                if (valid) users[count++] = user;
+                if (!valid || json.take(']')) break;
+                valid = json.take(',');
+            } while (valid);
+        } else valid = json.skip();
+        if (!valid || json.take('}')) break;
+        valid = json.take(',');
+    }
+    if (!valid || !found || !json.done()) { free(users); return fail(HUB_ERROR_JSON); }
+    output.users = users; output.userCount = count; return 0;
+}
 char* credentialBody(Task& task, size_t& bytes) {
     size_t capacity = 6 * (strlen(task.username) + strlen(task.password)) + 128;
     char* body = static_cast<char*>(malloc(capacity)); if (!body) return 0;
-    const char* prefix = "{\"username\":\""; memcpy(body, prefix, strlen(prefix)); size_t used = strlen(prefix);
-    bool ok = peppyHubJson::escape(task.username, strlen(task.username), body, capacity, used);
-    const char* middle = "\",\"password\":\"";
-    if (ok) { memcpy(body + used, middle, strlen(middle)); used += strlen(middle); ok = peppyHubJson::escape(task.password, strlen(task.password), body, capacity, used); }
+    const char* prefix = task.operation == HUB_ADMIN_CHANGE_PASSWORD ? "{\"password\":\"" : "{\"username\":\""; memcpy(body, prefix, strlen(prefix)); size_t used = strlen(prefix);
+    bool ok = true;
+    if (task.operation != HUB_ADMIN_CHANGE_PASSWORD) {
+        ok = peppyHubJson::escape(task.username, strlen(task.username), body, capacity, used);
+        const char* middle = "\",\"password\":\"";
+        if (ok) { memcpy(body + used, middle, strlen(middle)); used += strlen(middle); }
+    }
+    if (ok) ok = peppyHubJson::escape(task.password, strlen(task.password), body, capacity, used);
     if (ok) {
         const char* plan = task.days == 15 ? "15d" : task.days == 30 ? "1m" : "2m";
         int count = task.operation == HUB_ADMIN_CREATE_USER ? snprintf(body + used, capacity - used, "\",\"plan\":\"%s\"}", plan) : snprintf(body + used, capacity - used, "\"}");
@@ -399,17 +489,27 @@ int execute(Task& task, HubResult& result) {
     }
     Handles handles; int error = init(handles); if (error) return error;
     char* body = 0; size_t bodyBytes = 0;
-    if (task.operation == HUB_LOGIN || task.operation == HUB_ADMIN_CREATE_USER) {
+    if (task.operation == HUB_LOGIN || task.operation == HUB_ADMIN_CREATE_USER || task.operation == HUB_ADMIN_CHANGE_PASSWORD) {
         body = credentialBody(task, bodyBytes); if (!body) return fail(HUB_ERROR_MEMORY);
     }
     char* response = 0; size_t bytes = 0;
     if (task.operation == HUB_LOGIN) error = apiRequest(handles, task, "/api/login", true, body, bodyBytes, response, bytes);
     else if (task.operation == HUB_LOGOUT) error = apiRequest(handles, task, "/api/logout", true, "{}", 2, response, bytes);
     else if (task.operation == HUB_ADMIN_CREATE_USER) error = apiRequest(handles, task, "/api/admin/users", true, body, bodyBytes, response, bytes);
+    else if (task.operation == HUB_ADMIN_LIST_USERS) error = apiRequest(handles, task, "/api/admin/users", false, 0, 0, response, bytes);
+    else if (task.operation == HUB_ADMIN_REVOKE_USER) {
+        char path[128]; snprintf(path, sizeof(path), "/api/admin/users/%s/revocation", task.username);
+        const char* revoke = task.days ? "{\"revoked\":true}" : "{\"revoked\":false}";
+        error = apiRequest(handles, task, path, true, revoke, strlen(revoke), response, bytes);
+    }
+    else if (task.operation == HUB_ADMIN_CHANGE_PASSWORD) {
+        char path[128]; snprintf(path, sizeof(path), "/api/admin/users/%s/password", task.username);
+        error = apiRequest(handles, task, path, true, body, bodyBytes, response, bytes);
+    }
     else if (task.operation == HUB_ADMIN_PUBLISH) error = apiRequest(handles, task, "/api/admin/catalog", true, task.text, task.bytes, response, bytes);
     else {
         error = apiRequest(handles, task, "/api/session", false, 0, 0, response, bytes);
-        if (!error) error = parseSession(response, bytes, false);
+        if (!error) error = parseSession(response, bytes, false, task.generation);
         if (response) { wipe(response, bytes); free(response); response = 0; }
         HubSession session = hubSession();
         if (!error && !session.premium) error = fail(HUB_ERROR_EXPIRED);
@@ -419,6 +519,7 @@ int execute(Task& task, HubResult& result) {
     wipe(task.password, sizeof(task.password));
     if (!error && task.operation == HUB_LOGIN) error = parseSession(response, bytes, true);
     else if (!error && task.operation == HUB_SYNC) error = parseCatalog(response, bytes, result);
+    else if (!error && task.operation == HUB_ADMIN_LIST_USERS) error = parseUsers(response, bytes, result);
     else if (!error) { peppyHubJson::Cursor json(response, bytes); if (!json.skip() || !json.done()) error = fail(HUB_ERROR_JSON); }
     if (response) { wipe(response, bytes); free(response); }
     return error;
@@ -437,6 +538,19 @@ void* worker(void* value) {
     destroyTask(task);
     __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE); return 0;
 }
+void* sessionCheckWorker(void* value) {
+    Task* task = static_cast<Task*>(value);
+    {
+        Handles handles(true); char* response = 0; size_t bytes = 0;
+        int error = init(handles);
+        if (!error) error = apiRequest(handles, *task, "/api/session", false, 0, 0, response, bytes);
+        if (!error) parseSession(response, bytes, false, task->generation, true);
+        if (response) { wipe(response, bytes); free(response); }
+    }
+    destroyTask(task);
+    __atomic_store_n(&g_sessionCheckBusy, 0, __ATOMIC_RELEASE);
+    return 0;
+}
 bool launch(Task* task, bool requiresSession, bool admin) {
     if (!task) return false;
     int expected = 0;
@@ -448,6 +562,7 @@ bool launch(Task* task, bool requiresSession, bool admin) {
     if (!error) {
         memcpy(task->origin, g_origin, strlen(g_origin) + 1); memcpy(task->token, g_token, strlen(g_token) + 1);
         if (task->operation == HUB_LOGIN || task->operation == HUB_LOGOUT) clearSessionLocked();
+        task->generation = g_sessionGeneration;
         g_snapshot = {}; g_snapshot.state = HUB_RUNNING; g_snapshot.operation = task->operation;
         g_result = {}; __atomic_store_n(&g_cancel, 0, __ATOMIC_RELEASE);
     }
@@ -534,9 +649,83 @@ int packageProvider(const char* url) {
     const char* github[] = {"github.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "github-releases.githubusercontent.com"};
     for (size_t i = 0; i < sizeof(github) / sizeof(github[0]); ++i) if (hostEquals(host, count, github[i])) return 1;
     if (archivePackageUrl(url)) return 2;
-    if (peppyMediafire::isCdnUrl(url, strlen(url))) return 3;
+    if (peppyMediafire::isCdnUrl(url, strlen(url)) || peppyMediafire::isPageUrl(url, strlen(url))) return 3;
     if (!strcmp(url, "https://gamebatoapp.ir/home/app.pkg")) return 4;
     return 0;
+}
+bool mediafireRedirect(const char* current, const char* next) {
+    size_t bytes = strlen(next);
+    return peppyMediafire::isPageUrl(current, strlen(current)) ?
+        peppyMediafire::isPageUrl(next, bytes) || peppyMediafire::isCdnUrl(next, bytes) :
+        peppyMediafire::isCdnUrl(current, strlen(current)) && peppyMediafire::isCdnUrl(next, bytes);
+}
+// libSceHttp decodes chunk framing before reads. Landing pages may have an
+// unknown length, while package ranges still require strict Content-Length.
+// Headers are bounded and identity encoding is mandatory; no JavaScript runs.
+bool mediafirePageHeaders(const char* headers, size_t bytes, bool known, size_t length) {
+    if (!headers || !bytes || bytes > peppyHttpRange::HEADER_CAP) return false;
+    if (!headers[bytes - 1]) --bytes;
+    size_t position = 0; bool lengthSeen = false, encodingSeen = false, transferSeen = false;
+    while (position < bytes) {
+        size_t begin = position;
+        while (position < bytes && headers[position] != '\r' && headers[position] != '\n' && headers[position]) ++position;
+        if (bytes - position < 2 || headers[position] != '\r' || headers[position + 1] != '\n') return false;
+        size_t end = position; position += 2;
+        if (begin == end) return position == bytes && known == lengthSeen && !(lengthSeen && transferSeen);
+        if (!begin) { if (!peppyHttpRange::detail::statusLine(headers, end)) return false; continue; }
+        size_t colon = begin;
+        while (colon < end && headers[colon] != ':') {
+            if (!peppyHttpRange::detail::tokenCharacter(static_cast<unsigned char>(headers[colon]))) return false;
+            ++colon;
+        }
+        if (colon == begin || colon == end || !peppyHttpRange::detail::safeValue(headers + colon + 1, end - colon - 1)) return false;
+        size_t valueStart = colon + 1;
+        while (valueStart < end && (headers[valueStart] == ' ' || headers[valueStart] == '\t')) ++valueStart;
+        while (end > valueStart && (headers[end - 1] == ' ' || headers[end - 1] == '\t')) --end;
+        const char* value = headers + valueStart; size_t valueBytes = end - valueStart, nameBytes = colon - begin;
+        if (peppyHttpRange::detail::equalNoCase(headers + begin, nameBytes, "Content-Length")) {
+            size_t cursor = 0; uint64_t declared = 0;
+            if (lengthSeen || !peppyHttpRange::detail::decimal(value, valueBytes, &cursor, &declared) ||
+                cursor != valueBytes || declared != length) return false;
+            lengthSeen = true;
+        } else if (peppyHttpRange::detail::equalNoCase(headers + begin, nameBytes, "Content-Encoding")) {
+            if (encodingSeen || !peppyHttpRange::detail::equalNoCase(value, valueBytes, "identity")) return false;
+            encodingSeen = true;
+        } else if (peppyHttpRange::detail::equalNoCase(headers + begin, nameBytes, "Transfer-Encoding")) {
+            if (transferSeen || !peppyHttpRange::detail::equalNoCase(value, valueBytes, "chunked")) return false;
+            transferSeen = true;
+        }
+    }
+    return false;
+}
+int resolveMediafirePage(Handles& h, const char* headers, size_t headerBytes, char* next) {
+    int32_t type = -1; size_t count = 0;
+    int32_t rc = sceHttpGetResponseContentLength(h.req, &type, &count);
+    if (rc < 0) return fail(HUB_ERROR_NETWORK, rc);
+    bool known = type == ORBIS_HTTP_CONTENTLEN_EXIST;
+    if ((known && count > peppyMediafire::HTML_CAP) || !mediafirePageHeaders(headers, headerBytes, known, count))
+        return fail(HUB_ERROR_SOURCE);
+    size_t capacity = known ? count : peppyMediafire::HTML_CAP;
+    char* html = static_cast<char*>(malloc(capacity + 1)); if (!html) return fail(HUB_ERROR_MEMORY);
+    size_t used = 0; int error = 0;
+    unsigned char chunk[16384];
+    while (!cancelled()) {
+        if (known && used == count) break;
+        size_t remaining = capacity - used;
+        size_t requested = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+        if (!requested) requested = 1; // One extra byte distinguishes exact cap EOF from overflow.
+        rc = sceHttpReadData(h.req, chunk, uint32_t(requested));
+        if (rc < 0) { error = fail(HUB_ERROR_NETWORK, rc); break; }
+        if (!rc) break;
+        if (size_t(rc) > requested || size_t(rc) > remaining) { error = fail(HUB_ERROR_SOURCE); break; }
+        memcpy(html + used, chunk, size_t(rc)); used += size_t(rc);
+    }
+    if (!error && cancelled()) error = fail(HUB_ERROR_CANCELLED);
+    if (!error && known && used != count) error = fail(HUB_ERROR_SOURCE);
+    html[used] = 0;
+    if (!error && (!peppyMediafire::extractUrl(html, used, next, USER_CATALOG_MAX_URL_BYTES + 1) ||
+                  !peppyMediafire::isCdnUrl(next, strlen(next)))) error = fail(HUB_ERROR_SOURCE);
+    free(html); return error;
 }
 bool redirect(const char* headers, size_t bytes, char* output) {
     if (!headers || !bytes || bytes > peppyHttpRange::HEADER_CAP) return false;
@@ -573,17 +762,30 @@ bool hubUserCatalogRangeReader(void* context, const char* url, uint64_t offset, 
     RangeContext* rangeContext = context ? static_cast<RangeContext*>(context) : &local;
     Handles& h = rangeContext->handles;
     if (!rangeContext->ready) { if (init(h)) return false; rangeContext->ready = true; }
-    char current[USER_CATALOG_MAX_URL_BYTES + 1]; strcpy(current, url);
+    char current[USER_CATALOG_MAX_URL_BYTES + 1];
+    bool stablePage = peppyMediafire::isPageUrl(url, strlen(url));
+    if (stablePage && !strcmp(rangeContext->mediafirePage, url) && rangeContext->mediafireFinal[0])
+        strcpy(current, rangeContext->mediafireFinal);
+    else strcpy(current, url);
     char range[96]; snprintf(range, sizeof(range), "bytes=%llu-%llu", (unsigned long long)offset, (unsigned long long)(offset + requested - 1));
+    bool sourceResolved = false;
     for (int attempt = 0; attempt <= 5; ++attempt) {
-        int status = 0; if (open(h, current, ORBIS_METHOD_GET, 0, 0, 0, range, status)) return false;
+        bool landing = peppyMediafire::isPageUrl(current, strlen(current));
+        int status = 0; if (open(h, current, ORBIS_METHOD_GET, 0, 0, 0, landing ? 0 : range, status)) return false;
         char* headers = 0; size_t headerBytes = 0;
         int32_t rc = sceHttpGetAllResponseHeaders(h.req, &headers, &headerBytes);
         if (rc < 0) { fail(HUB_ERROR_NETWORK, rc); return false; }
         if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
             char next[USER_CATALOG_MAX_URL_BYTES + 1];
-            if (attempt == 5 || !redirect(headers, headerBytes, next) || packageProvider(next) != packageProvider(current)) { fail(HUB_ERROR_SOURCE); return false; }
+            if (attempt == 5 || !redirect(headers, headerBytes, next) || packageProvider(next) != packageProvider(current) ||
+                (packageProvider(current) == 3 && !mediafireRedirect(current, next))) { fail(HUB_ERROR_SOURCE); return false; }
             strcpy(current, next); continue;
+        }
+        if (landing) {
+            if (status != 200 || sourceResolved || attempt == 5) { fail(HUB_ERROR_SOURCE, 0, status); return false; }
+            char next[USER_CATALOG_MAX_URL_BYTES + 1];
+            if (resolveMediafirePage(h, headers, headerBytes, next)) return false;
+            sourceResolved = true; strcpy(current, next); continue;
         }
         peppyHttpRange::Metadata metadata = {};
         if (status != 206 || !peppyHttpRange::parseHeaders(headers, headerBytes, &metadata) || !metadata.hasContentRange ||
@@ -592,6 +794,9 @@ bool hubUserCatalogRangeReader(void* context, const char* url, uint64_t offset, 
         rc = sceHttpGetResponseContentLength(h.req, &type, &count);
         if (rc < 0 || type != ORBIS_HTTP_CONTENTLEN_EXIST || count != requested) { fail(HUB_ERROR_RANGE, rc, status); return false; }
         if (readExact(h, output, requested)) return false;
+        if (stablePage) {
+            strcpy(rangeContext->mediafirePage, url); strcpy(rangeContext->mediafireFinal, current);
+        }
         info->received = requested; info->totalBytes = metadata.total; strcpy(info->effectiveUrl, current); return true;
     }
     return false;
@@ -599,7 +804,7 @@ bool hubUserCatalogRangeReader(void* context, const char* url, uint64_t offset, 
 bool setHubOrigin(const char* origin) {
     char normalized[ORIGIN_CAP] = {};
     if (origin && *origin && !originValid(origin, normalized)) return false;
-    if (__atomic_load_n(&g_busy, __ATOMIC_ACQUIRE)) return false;
+    if (__atomic_load_n(&g_busy, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_sessionCheckBusy, __ATOMIC_ACQUIRE)) return false;
     lock(); clearSessionLocked(); strcpy(g_origin, normalized); unlock(); return true;
 }
 bool hubConfigured() { lock(); bool configured = originValid(g_origin, 0); unlock(); return configured; }
@@ -615,6 +820,49 @@ bool startHubImportUrls(const char* urls, size_t bytes) { return textTask(HUB_IM
 bool startHubAdminPublish(const char* json, size_t bytes) { return textTask(HUB_ADMIN_PUBLISH, json, bytes); }
 bool startHubLogout() { Task* task = new (std::nothrow) Task(); if (!task) return false; task->operation = HUB_LOGOUT; return launch(task, true, false); }
 bool startHubSync() { Task* task = new (std::nothrow) Task(); if (!task) return false; task->operation = HUB_SYNC; return launch(task, true, false); }
+bool startHubAdminListUsers() {
+    Task* task = new (std::nothrow) Task(); if (!task) return false;
+    task->operation = HUB_ADMIN_LIST_USERS; return launch(task, true, true);
+}
+bool startHubAdminRevokeUser(const char* userId, bool revoked) {
+    if (!adminIdValid(userId)) return false;
+    Task* task = new (std::nothrow) Task(); if (!task) return false;
+    task->operation = HUB_ADMIN_REVOKE_USER; task->days = revoked ? 1 : 0;
+    strcpy(task->username, userId); return launch(task, true, true);
+}
+bool startHubAdminChangePassword(const char* userId, const char* password) {
+    size_t bytes = length(password, PASSWORD_CAP);
+    if (!adminIdValid(userId) || bytes < 8 || bytes >= PASSWORD_CAP) return false;
+    Task* task = new (std::nothrow) Task(); if (!task) return false;
+    task->operation = HUB_ADMIN_CHANGE_PASSWORD;
+    strcpy(task->username, userId); memcpy(task->password, password, bytes + 1);
+    return launch(task, true, true);
+}
+void pollHubSession() {
+    lock(); expireLocked();
+    uint64_t clock = peppyHubUptime();
+    bool due = g_session.authenticated && clock >= g_nextSessionCheck && originValid(g_origin, 0);
+    unlock(); if (!due) return;
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(&g_sessionCheckBusy, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
+    Task* task = new (std::nothrow) Task();
+    if (!task) { __atomic_store_n(&g_sessionCheckBusy, 0, __ATOMIC_RELEASE); return; }
+    lock(); expireLocked();
+    due = g_session.authenticated && clock >= g_nextSessionCheck;
+    if (due) {
+        task->background = true; task->generation = g_sessionGeneration;
+        strcpy(task->token, g_token); strcpy(task->origin, g_origin);
+        g_nextSessionCheck = clock + SESSION_CHECK_US;
+    }
+    unlock();
+    if (!due) { destroyTask(task); __atomic_store_n(&g_sessionCheckBusy, 0, __ATOMIC_RELEASE); return; }
+    OrbisPthreadAttr attr; int32_t rc = scePthreadAttrInit(&attr); bool initialized = !rc;
+    if (!rc) rc = scePthreadAttrSetdetachstate(&attr, 1);
+    OrbisPthread thread;
+    if (!rc) rc = scePthreadCreate(&thread, &attr, sessionCheckWorker, task, "PeppySession");
+    if (initialized) scePthreadAttrDestroy(&attr);
+    if (rc) { destroyTask(task); __atomic_store_n(&g_sessionCheckBusy, 0, __ATOMIC_RELEASE); }
+}
 void cancelHubOperation() {
     __atomic_store_n(&g_cancel, 1, __ATOMIC_RELEASE);
     lock(); if (g_request >= 0) sceHttpAbortRequest(g_request); unlock();
@@ -627,7 +875,7 @@ bool consumeHubResult(HubResult* output) {
     if (ready) { *output = g_result; g_result = {}; g_snapshot = {}; }
     unlock(); return ready;
 }
-void freeHubResult(HubResult* result) { if (!result) return; delete result->catalog; *result = {}; }
+void freeHubResult(HubResult* result) { if (!result) return; delete result->catalog; free(result->users); *result = {}; }
 const char* hubErrorMessage(int error) {
     switch (error) {
         case HUB_OK: return "Concluido";

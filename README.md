@@ -2,7 +2,7 @@
 
 Loja nativa de PKGs para PS4 homebrew, com interface em português, visual preto e azul, arte Peppy, controle DualShock 4 e música FIGHT → ACENDAOFAROL. O aplicativo usa OpenOrbis e o instalador do console; seus downloads não usam servidores da PlayStation.
 
-- [Peppy Assets Updater](https://peppy-assets-updater.quick-chime-0602.chatgpt.site): página de atualizações e acesso à central.
+- [Peppy Assets Updater](https://peppy-assets-updater.quick-chime-0602.chatgpt.site): página dedicada ao download da versão publicada da loja.
 - [Aplicativo nativo: instalação, controles, build e limites](native/README.md).
 - [Peppy Hub: API, contas, publicação e implantação](services/peppy-hub/README.md).
 
@@ -22,7 +22,7 @@ O importador lê metadados por HTTP Range e fixa tamanho, identidade e tipo do p
 
 ## Premium, administração e LivePix
 
-As contas são criadas pelo administrador na central. Senhas ficam como hashes no banco privado do serviço; o PKG não contém listas de usuários ou senhas. O aplicativo mantém a sessão em memória e o servidor confere função e validade do acesso. A central sincroniza após o login e, quando a loja está ociosa, a cada cinco minutos. Publicações recebidas não remapeiam pacotes durante um download ou uma instalação.
+As contas são criadas e gerenciadas pelo administrador dentro do PKG da Peppy. Senhas ficam como hashes no banco privado do serviço; o PKG não contém listas de usuários ou senhas. O aplicativo mantém a sessão em memória e o servidor confere função e validade do acesso. O catálogo sincroniza após o login e, quando a loja está ociosa, a cada cinco minutos. A sessão é conferida separadamente a cada cinco segundos, inclusive durante downloads. Invalidar uma conta ou trocar sua senha encerra todas as sessões no servidor; reativação exige novo login. Após 30 segundos sem conseguir confirmar a sessão, o acesso premium é encerrado até um novo login. Publicações recebidas não remapeiam pacotes durante um download ou uma instalação.
 
 | Opção | Valor |
 | --- | --- |
@@ -39,7 +39,7 @@ O atalho **R2 + R3 + Options**, na tela de login premium, revela o login de admi
 
 As transferências usam buffers limitados, preferindo 1 MiB e recuando para 256 KiB se faltar memória. PKGs grandes de fontes aprovadas podem usar duas conexões quando o servidor fornece intervalos e um ETag forte; caso contrário, a loja usa a transferência comum. Tamanho, tipo, Content ID e SHA-256, quando informado, continuam sendo conferidos. A velocidade depende do servidor e da conexão do PS4; os testes não medem o desempenho real do console. Consulte o [relatório de desempenho](native/download-performance-review.json).
 
-O Peppy Assets Updater apresenta as versões publicadas da loja. Uma atualização da Peppy é um **PKG**, não um payload: baixar pelo navegador não instala o aplicativo. Feche a loja e use o instalador do console para aplicar a atualização. Compatibilidade no firmware 13.52 precisa de teste no PS4.
+O Peppy Assets Updater contém apenas o botão direto para baixar a loja e as instruções de instalação. Login, premium, LivePix e administração ficam no aplicativo do PS4. O botão de download funciona sem JavaScript. Uma atualização da Peppy é um **PKG**, não um payload: baixar pelo navegador não instala o aplicativo. Feche a loja e use o instalador do console para aplicar a atualização. Compatibilidade no firmware 13.52 precisa de teste no PS4.
 
 ## Compilar e testar
 
