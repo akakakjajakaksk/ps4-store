@@ -72,14 +72,14 @@ $(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h catalog_search.h downloads.h dow
 archive_sources.h: archive_sources.json scripts/archive_policy.py
 	python3 scripts/archive_policy.py --policy archive_sources.json --output $@
 
-$(INTDIR)/downloads.o: downloads.h package_limits.h mediafire_source.h archive_sources.h http_range.h parallel_download.h stream_download.h download_buffers.h user_pkg_header.h
+$(INTDIR)/downloads.o: downloads.h pkg_zone_source.h package_limits.h mediafire_source.h archive_sources.h http_range.h parallel_download.h stream_download.h download_buffers.h user_pkg_header.h
 $(INTDIR)/install.o: install.h pkg_server.h package_limits.h
 $(INTDIR)/pkg_server.o: pkg_server.h
 $(INTDIR)/music.o: music.h
 $(INTDIR)/ftp_receiver.o: ftp_receiver.h user_pkg_header.h package_limits.h
 $(INTDIR)/goldhen_bridge.o: third_party/goldhen/GoldHEN.h
 $(INTDIR)/user_catalog.o: user_catalog.h user_pkg_header.h package_limits.h
-$(INTDIR)/hub_client.o: hub_client.h hub_json.h hub_saved_login.h user_catalog.h user_pkg_header.h peppy_hub_config.h archive_sources.h mediafire_source.h http_range.h
+$(INTDIR)/hub_client.o: hub_client.h pkg_zone_source.h hub_json.h hub_saved_login.h user_catalog.h user_pkg_header.h peppy_hub_config.h archive_sources.h mediafire_source.h http_range.h
 
 $(INTDIR)/%.o: %.cpp
 	mkdir -p $(INTDIR)

@@ -177,6 +177,61 @@ static Reply rangeReply(const std::string& url, const std::string& body, uint64_
     return r;
 }
 
+static void pkgZoneChecks() {
+    const char* urls[] = {
+        "https://pkg-zone.com/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com/download/ps4/CUSA00127/latest",
+        "https://pkg-zone.com/download/ps4/CUSA02644/latest"
+    };
+    unsigned char output[1080]; UserCatalogRangeInfo info = {};
+    for (size_t i = 0; i < sizeof(urls) / sizeof(urls[0]); ++i) {
+        reset(); assert(hubNativePackageUrl(urls[i])); login();
+        replies.push_back(rangeReply(urls[i], std::string(sizeof(output), 'x'), 0, 35454976));
+        assert(hubUserCatalogRangeReader(0, urls[i], 0, sizeof(output), output, &info));
+        assert(addedBearer.empty() && !strcmp(info.effectiveUrl, urls[i]) && info.totalBytes == 35454976 &&
+            info.received == sizeof(output) && hubSession().premium); cleanHandles();
+    }
+    const char* unsupported[] = {
+        "http://pkg-zone.com/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com.evil.example/download/ps4/CUSA01116/latest",
+        "https://www.pkg-zone.com/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com:443/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com/download/ps5/CUSA01116/latest",
+        "https://pkg-zone.com/download/ps4/CUSA01116/latest?auth=1",
+        "https://pkg-zone.com/download/ps4/CUSA01116/latest#file.pkg",
+        "https://pkg-zone.com/download/ps4/CUSA01116/latest/file.pkg",
+        "https://pkg-zone.com/download/ps4/CUSA01116%2flatest",
+        "https://pkg-zone.com/download/ps4/CUSA0111/latest",
+        "https://pkg-zone.com/details/CUSA01116",
+        "https://pkg-zone.com/download/ps4/CUSA01116/game.pkg"
+    };
+    reset();
+    for (size_t i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); ++i) {
+        assert(!hubNativePackageUrl(unsupported[i]));
+        assert(!hubUserCatalogRangeReader(0, unsupported[i], 0, sizeof(output), output, &info));
+    }
+    assert(!opened && !reads); cleanHandles();
+    reset(); Reply html(urls[0], "<html>login or unsupported</html>"); html.range = "bytes=0-1079"; replies.push_back(html);
+    assert(!hubUserCatalogRangeReader(0, urls[0], 0, sizeof(output), output, &info) && !reads); cleanHandles();
+    reset(); Reply compressed = rangeReply(urls[0], std::string(sizeof(output), 'x'), 0, 35454976);
+    compressed.headers.insert(compressed.headers.size() - 2, "Content-Encoding: gzip\r\n"); replies.push_back(compressed);
+    assert(!hubUserCatalogRangeReader(0, urls[0], 0, sizeof(output), output, &info) && !reads); cleanHandles();
+    reset(); Reply wrongRange = rangeReply(urls[0], std::string(sizeof(output), 'x'), 1, 35454976);
+    wrongRange.range = "bytes=0-1079"; replies.push_back(wrongRange);
+    assert(!hubUserCatalogRangeReader(0, urls[0], 0, sizeof(output), output, &info) && !reads); cleanHandles();
+    const char* badTargets[] = {urls[1], PKG, "https://pkg-zone.com/download/ps4/CUSA01116/latest?token=a"};
+    for (size_t i = 0; i < sizeof(badTargets) / sizeof(badTargets[0]); ++i) {
+        reset(); Reply redirect(urls[0], "", 302); redirect.range = "bytes=0-1079";
+        redirect.headers = std::string("HTTP/1.1 302 Found\r\nLocation: ") + badTargets[i] + "\r\n\r\n";
+        replies.push_back(redirect);
+        assert(!hubUserCatalogRangeReader(0, urls[0], 0, sizeof(output), output, &info) && opened == 1 && !reads); cleanHandles();
+    }
+    // A 206-framed HTML body is still rejected by the real PKG header importer.
+    reset(); replies.push_back(rangeReply(urls[0], std::string(1080, '<'), 0, 35454976));
+    assert(startHubImportUrls(urls[0], strlen(urls[0]))); HubResult r = finished();
+    assert(r.errorCode && r.imports.rejected == 1 && !r.catalog->count()); freeHubResult(&r);
+}
+
 static void savedLoginChecks() {
     char folder[] = "/tmp/peppy-login-test-XXXXXX"; assert(mkdtemp(folder));
     // Existing builds created the outer FTP/app directory as 0777. Credentials
@@ -587,7 +642,7 @@ int main() {
     const char* malformed[] = {"\"\\u0000\"", "\"\\ud800\"", "\"\\udc00\"", "01", "{\"a\":1,}", "[1,]", "true false", "\"\xc0\xaf\""};
     for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); ++i) { peppyHubJson::Cursor json(malformed[i], strlen(malformed[i])); assert(!json.skip() || !json.done()); }
     char utf[32]; peppyHubJson::Cursor unicode("\"\\ud83d\\ude00\"", 14); assert(unicode.string(utf, sizeof(utf)) && unicode.done() && strlen(utf) == 4);
-    savedLoginChecks();
+    pkgZoneChecks(); savedLoginChecks();
     printf("hub client: async session/catalog/admin/import, private saved login/restart/admin/expiry/logout, user invalidation, independent 5-second verification, stale-session race guards, expiry, TLS/range framing, credential isolation, bounded MediaFire landing resolution and cancellation checks passed\n");
     return 0;
 }

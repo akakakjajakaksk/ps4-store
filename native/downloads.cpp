@@ -6,6 +6,7 @@
 #include "parallel_download.h"
 #include "stream_download.h"
 #include "user_pkg_header.h"
+#include "pkg_zone_source.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -271,9 +272,13 @@ bool gamebatoUrl(const char* url, size_t* originLength = 0) {
     if (originLength) *originLength = sizeof("https://gamebatoapp.ir") - 1;
     return true;
 }
+bool pkgZoneUrl(const char* url, size_t* originLength = 0) {
+    const size_t length = boundedLength(url, URL_CAP);
+    return length < URL_CAP && peppyPkgZone::isDownloadUrl(url, length, originLength);
+}
 bool safeUrl(const char* url, size_t* originLength = 0) {
     if (githubUrl(url, originLength) || archiveUrl(url, originLength) ||
-        gamebatoUrl(url, originLength)) return true;
+        gamebatoUrl(url, originLength) || pkgZoneUrl(url, originLength)) return true;
     size_t length = boundedLength(url, URL_CAP);
     if (length == URL_CAP) return false;
     return peppyMediafire::isPageUrl(url, length, originLength) ||
@@ -285,6 +290,8 @@ bool allowedRedirect(const char* current, const char* next) {
     if (githubUrl(current)) return githubUrl(next);
     if (archiveUrl(current)) return archiveUrl(next);
     if (gamebatoUrl(current)) return gamebatoUrl(next);
+    if (pkgZoneUrl(current)) return peppyPkgZone::sameDownloadTarget(current, boundedLength(current, URL_CAP),
+        next, boundedLength(next, URL_CAP));
     if (mediafirePage(current)) return mediafirePage(next) || mediafireCdn(next);
     return mediafireCdn(current) && mediafireCdn(next);
 }
@@ -1042,7 +1049,9 @@ bool startDownload(const DownloadSpec& spec, const char* expectedContentId, int 
         expectedKind < USER_PACKAGE_BASE || expectedKind > USER_PACKAGE_DLC ||
         (expectedKind != USER_PACKAGE_BASE && !verifyContentId) ||
         (spec.expectedBytes && spec.expectedBytes < 4) || spec.expectedBytes > PEPPY_MAX_PACKAGE_BYTES ||
-        (verifyContentId && (!canonicalContentId(expectedContentId) || spec.expectedBytes < PACKAGE_HEADER_BYTES))) {
+        (verifyContentId && (!canonicalContentId(expectedContentId) || spec.expectedBytes < PACKAGE_HEADER_BYTES)) ||
+        (pkgZoneUrl(spec.url) && (!verifyContentId ||
+            !peppyPkgZone::matchesTitleId(spec.url, boundedLength(spec.url, URL_CAP), expectedContentId + 7, 9)))) {
         __atomic_store_n(&g_error, DOWNLOAD_ERROR_SPEC, __ATOMIC_RELEASE);
         stage(DOWNLOAD_STAGE_SPEC);
         __atomic_store_n(&g_state, FAILED, __ATOMIC_RELEASE);

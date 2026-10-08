@@ -138,3 +138,15 @@ Leak detection is disabled for environments where LeakSanitizer cannot run
 under the debugger or sandbox. The suite checks native handle cleanup explicitly.
 
 These tests check control flow and integrity handling. They do not verify the PS4 certificate store, TLS negotiation, firmware compatibility, native symbol ABI, or console filesystem behavior. The production implementation explicitly enables peer/hostname/CA/date checks and SNI, and fails on TLS errors; no bypass callback is installed.
+
+PKG-Zone cases use only the exact HTTPS PS4 binary route
+`https://pkg-zone.com/download/ps4/CUSA#####/latest`. Tests reject alternate
+hosts/ports, PS5 paths, queries/fragments, unobserved numeric versions and
+redirects to another provider or CUSA title. This provider requires a pinned
+Content ID and size, and each route must match its pinned CUSA title. The sole
+observed exception is YouTube's route CUSA01116 returning a package with actual
+Content ID `UP4381-CUSA01015_00-YOUTUBESCEA00000`; that true identity remains
+pinned, and the alias cannot apply to Netflix or arbitrary titles. Mock transfers
+retain size/header/SHA checks and the bounded single-response pipeline. This
+does not establish streaming-service access, account availability or firmware
+compatibility on a real PS4.

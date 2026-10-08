@@ -1,0 +1,45 @@
+{
+  "packages": [
+    {
+      "id": "CUSA01116",
+      "url": "https://pkg-zone.com/download/ps4/CUSA01116/latest",
+      "status": 206,
+      "range": "bytes 0-1079/151650304",
+      "header": {
+        "content_id": "UP4381-CUSA01015_00-YOUTUBESCEA00000",
+        "size": 151650304,
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0
+      }
+    },
+    {
+      "id": "CUSA00127",
+      "url": "https://pkg-zone.com/download/ps4/CUSA00127/latest",
+      "status": 206,
+      "range": "bytes 0-1079/64028672",
+      "header": {
+        "content_id": "EP4350-CUSA00127_00-NETFLIXPOLLUX001",
+        "size": 64028672,
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0
+      }
+    },
+    {
+      "id": "CUSA02644",
+      "url": "https://pkg-zone.com/download/ps4/CUSA02644/latest",
+      "status": 206,
+      "range": "bytes 0-1079/55640064",
+      "header": {
+        "content_id": "EP8805-CUSA02644_00-20150410XCRUNCHY",
+        "size": 55640064,
+        "content_type": 26,
+        "content_flags": 167772160,
+        "iro_tag": 0
+      }
+    }
+  ],
+  "method": "Exact HTTPS Range header and declared size checked. No full-file integrity or physical console/service execution test. Version from public provider listings.",
+  "premium_entries": 33
+}

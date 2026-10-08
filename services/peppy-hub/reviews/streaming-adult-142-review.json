@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "review_date": "2026-10-08",
+  "scope": "Build142 remote premium catalog metadata and public streaming-source review; no full downloads or hardware tests.",
+  "premium_seed_entries": 30,
+  "adult_entries": 3,
+  "adult_changes": [
+    {
+      "id": "CUSA08519-BASE-0113",
+      "name": "Red Dead Redemption 2 — edição EU 1.13",
+      "kind": "base",
+      "content_id": "EP1004-CUSA08519_00-REDEMPTION000002",
+      "title": "Red Dead Redemption 2",
+      "rating": "IARC 18+",
+      "evidence_url": "https://www.playstation.com/en-th/games/red-dead-redemption-2/",
+      "evidence_scope": "Official PS4 game page gives IARC 18+; regional package bytes were separately header-probed during Build141. This rating does not establish the package language or runtime compatibility."
+    },
+    {
+      "id": "CUSA00411-BASE-0127",
+      "name": "Grand Theft Auto V — edição EU 1.27",
+      "kind": "base",
+      "content_id": "EP1004-CUSA00411_00-GTAVDIGITALDOWNL",
+      "title": "Grand Theft Auto V",
+      "rating": "PEGI 18",
+      "evidence_url": "https://pegi.info/es/search-pegi?id=110935",
+      "evidence_scope": "Primary PEGI game classification is 18; the rating concerns the game title, not a new inspection of this regional package."
+    },
+    {
+      "id": "CUSA10216-UPDATE-0107",
+      "name": "Agony — atualização 01.07",
+      "kind": "update",
+      "content_id": "UP2047-CUSA10216_00-AGONY666AMERICAS",
+      "title": "Agony",
+      "rating": "DJCTQ 18",
+      "evidence_url": "https://store.playstation.com/pt-br/product/UP2047-CUSA10216_00-AGONY666AMERICAS",
+      "evidence_scope": "Official PS4 base-game product matches this update content ID and shows DJCTQ 18. The package remains an update requiring the matching installed base."
+    }
+  ],
+  "preserved_free_entries": 860,
+  "notes": [
+    "All three entries existed in premium before this change. This fixes missing age-category metadata; it does not add three new games.",
+    "The two full regional bases remain base packages; Agony remains an update.",
+    "Free catalog entries are unchanged.",
+    "Public source labels do not establish licensing, internal integrity or working streaming services.",
+    "Subscription accounts and paid streaming access are not supplied by Peppy."
+  ],
+  "existing_media_entries": [
+    {
+      "id": "GMCA00000-MEDIA-v130",
+      "name": "GMCA",
+      "kind": "media",
+      "source_url": "https://github.com/thcolin/gamepad-media-center-aggregator/releases/tag/v1.3.0"
+    },
+    {
+      "id": "WILI00000-MEDIA-v160",
+      "name": "wiliwili",
+      "kind": "media",
+      "source_url": "https://github.com/xfangfang/wiliwili/releases/tag/v1.6.0"
+    }
+  ],
+  "streaming_candidates": [
+    {
+      "name": "YouTube",
+      "title_id": "CUSA01116",
+      "listed_version": "2.32",
+      "author": "Rayku22",
+      "source_url": "https://pkg-zone.com/details/CUSA01116",
+      "public_download_endpoint": "https://pkg-zone.com/download/ps4/CUSA01116/latest",
+      "status": "public_pkg_identity_size_confirmed_header_kind_pending",
+      "note": "Listing content ID reports CUSA01015, so actual package bytes must determine identity.",
+      "verified_content_id": "UP4381-CUSA01015_00-YOUTUBESCEA00000",
+      "verified_package_size": 151650304,
+      "verified_http_range": "bytes 0-1079/151650304",
+      "header_evidence_file": "/tmp/peppy-142-pkgzone-probes-retry.json"
+    },
+    {
+      "name": "Netflix",
+      "title_id": "CUSA00127",
+      "listed_version": "1.53",
+      "author": "Cyb1k",
+      "source_url": "https://pkg-zone.com/details/CUSA00127",
+      "public_download_endpoint": "https://pkg-zone.com/download/ps4/CUSA00127/latest",
+      "status": "public_pkg_identity_size_confirmed_header_kind_pending",
+      "verified_content_id": "EP4350-CUSA00127_00-NETFLIXPOLLUX001",
+      "verified_package_size": 64028672,
+      "verified_http_range": "bytes 0-1079/64028672",
+      "header_evidence_file": "/tmp/peppy-142-pkgzone-probes-retry.json"
+    },
+    {
+      "name": "Crunchyroll",
+      "title_id": "CUSA02644",
+      "listed_version": "1.34",
+      "author": "HK31",
+      "source_url": "https://pkg-zone.com/details/CUSA02644",
+      "public_download_endpoint": "https://pkg-zone.com/download/ps4/CUSA02644/latest",
+      "status": "public_pkg_identity_size_confirmed_header_kind_pending",
+      "verified_content_id": "EP8805-CUSA02644_00-20150410XCRUNCHY",
+      "verified_package_size": 55640064,
+      "verified_http_range": "bytes 0-1079/55640064",
+      "header_evidence_file": "/tmp/peppy-142-pkgzone-probes-retry.json"
+    }
+  ],
+  "validation": {
+    "public_web_listing_review": true,
+    "new_streaming_package_headers_verified": false,
+    "console_runtime_verified": false,
+    "backend_tests_passed": 23,
+    "metadata_text_bounds_verified": true
+  },
+  "free_media_entries": [
+    {
+      "id": "PSMP00001",
+      "name": "PS4 Media Player",
+      "description": "Player de midia local baseado no pPlay, com interface renovada.",
+      "url": "https://github.com/buckethatboy3/pplay-Ps4-Media-Player/releases/download/v1.0/IV0001-PSMP00001_00-PSMP000012500000.pkg"
+    },
+    {
+      "id": "KALA00009",
+      "name": "AvPlayer Test Homebrew",
+      "description": "Homebrew experimental para testar reprodução de vídeo e áudio usando o AvPlayer do PS4.",
+      "url": "https://github.com/kalaposfos13/ps4-homebrew-base/releases/download/avplayer-0.02/IV0000-KALA00009_00-AVPLAYER00000000.pkg"
+    },
+    {
+      "id": "MLNT00001",
+      "name": "Moonlight PS4",
+      "description": "Cliente Moonlight para transmitir jogos do seu PC com Sunshine para o PS4.",
+      "url": "https://github.com/JaimeJimenezG/Moonlight-ps4/releases/download/v1.1.0/Moonlight-1.1.0.pkg"
+    }
+  ],
+  "streaming_probe_evidence": "Initial bounded public download requests timed out. A later ordinary retry obtained HTTP206, exactly1080PKG-header bytes and matching declared/HTTP size for all3. Full content-type/flags/IRO fields are pending before import; no authentication or challenge bypass used."
+}

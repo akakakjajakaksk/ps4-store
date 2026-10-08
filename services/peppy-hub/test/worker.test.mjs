@@ -355,7 +355,7 @@ test('catalog publishing persists versions, kinds, exact sizes, provenance and o
   assert.equal((await direct.json()).version, 2);
 });
 
-test('only the reviewed public MediaFire PKG landing format is accepted; no remote fetch occurs', async () => {
+test('only reviewed public MediaFire and PKG-Zone download formats are accepted; no remote fetch occurs', async () => {
   const { request, owner } = fixture();
   const admin = await owner();
   const fetch = globalThis.fetch;
@@ -366,6 +366,9 @@ test('only the reviewed public MediaFire PKG landing format is accepted; no remo
       'https://www.mediafire.com/file/ABC123/sample.pkg/file',
       'https://mediafire.com/file/abc123/Game%20%5BPS4%5D%20%281.00%29.PKG/file',
       'https://www.mediafire.com/file/A1/Game[PS4]~release-1.pkg/file',
+      'https://pkg-zone.com/download/ps4/CUSA01116/latest',
+      'https://pkg-zone.com/download/ps4/CUSA00127/latest',
+      'https://pkg-zone.com/download/ps4/CUSA02644/latest',
       'https://example.com/sample.pkg',
     ];
     for (let index = 0; index < accepted.length; index++) {
@@ -374,9 +377,17 @@ test('only the reviewed public MediaFire PKG landing format is accepted; no remo
       assert.equal(result.status, 200, accepted[index]);
       const current = await request('/api/catalog', { token: admin.json.token });
       assert.equal(current.json.entries[0].url, accepted[index]);
-      if (index < 3) assert.equal(current.json.entries[0].source_kind, 'community');
+      if (index < 6) assert.equal(current.json.entries[0].source_kind, 'community');
     }
     const rejected = [
+      'https://pkg-zone.com/download/ps5/CUSA00127/latest',
+      'https://pkg-zone.com/download/ps4/CUSA00127/1.53',
+      'https://pkg-zone.com/download/ps4/CUSA00127/latest?x=1',
+      'https://pkg-zone.com/download/ps4/CUSA00127/latest?',
+      'https://pkg-zone.com/download/ps4/cusa00127/latest',
+      'https://pkg-zone.com/download/ps4/CUSA00127/latest.pkg',
+      'https://pkg-zone.com.evil.example/download/ps4/CUSA00127/latest',
+      'https://www.pkg-zone.com/download/ps4/CUSA00127/latest',
       'https://www.mediafire.com.evil.example/file/ABC123/sample.pkg/file',
       'https://files.mediafire.com/file/ABC123/sample.pkg/file',
       'https://example.com/file/ABC123/sample.pkg/file',

@@ -5,6 +5,7 @@
 #include "mediafire_source.h"
 #include "peppy_hub_config.h"
 #include "hub_saved_login.h"
+#include "pkg_zone_source.h"
 
 #include <new>
 #include <stdio.h>
@@ -721,6 +722,7 @@ int packageProvider(const char* url) {
     if (archivePackageUrl(url)) return 2;
     if (peppyMediafire::isCdnUrl(url, strlen(url)) || peppyMediafire::isPageUrl(url, strlen(url))) return 3;
     if (!strcmp(url, "https://gamebatoapp.ir/home/app.pkg")) return 4;
+    if (peppyPkgZone::isDownloadUrl(url, strlen(url))) return 5;
     return 0;
 }
 bool mediafireRedirect(const char* current, const char* next) {
@@ -848,7 +850,8 @@ bool hubUserCatalogRangeReader(void* context, const char* url, uint64_t offset, 
         if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
             char next[USER_CATALOG_MAX_URL_BYTES + 1];
             if (attempt == 5 || !redirect(headers, headerBytes, next) || packageProvider(next) != packageProvider(current) ||
-                (packageProvider(current) == 3 && !mediafireRedirect(current, next))) { fail(HUB_ERROR_SOURCE); return false; }
+                (packageProvider(current) == 3 && !mediafireRedirect(current, next)) ||
+                (packageProvider(current) == 5 && !peppyPkgZone::sameDownloadTarget(current, strlen(current), next, strlen(next)))) { fail(HUB_ERROR_SOURCE); return false; }
             strcpy(current, next); continue;
         }
         if (landing) {

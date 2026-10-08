@@ -1060,6 +1060,75 @@ void gamebatoTests() {
     assert(downloadSnapshot().received == CID_TEST_HEADER && downloadSnapshot().total == actualBytes);
     assert(sourceResponses[0].body.size() == CID_TEST_HEADER);
 }
+void pkgZoneTests() {
+    const char* urls[]={
+        "https://pkg-zone.com/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com/download/ps4/CUSA00127/latest",
+        "https://pkg-zone.com/download/ps4/CUSA02644/latest"
+    };
+    for(const char* url:urls){
+        size_t origin=0;assert(safeUrl(url,&origin)&&origin==strlen("https://pkg-zone.com"));
+        std::string cid="UP0000-"+std::string(url+strlen(peppyPkgZone::PREFIX),9)+"_00-PKGZONETEST00000";
+        assert(cid.size()==36);
+        resetBinarySource(url,cid.c_str());DownloadSpec spec=binarySourceSpec(url);
+        std::string digest=hashText(std::string(reinterpret_cast<char*>(payload.data()),payload.size()));
+        spec.sha256=digest.c_str();checkBinarySuccess(spec,cid.c_str(),1);
+        assert(downloadSnapshot().connections==1&&downloadSnapshot().transferMode==DOWNLOAD_MODE_PIPELINED);
+        resetBinaryRedirect(url,url,cid.c_str());checkBinarySuccess(spec,cid.c_str(),2);
+        spec.sha256=0;
+        resetBinarySource(url,cid.c_str());sourceResponses[0].body[0x40]='E';
+        checkBinaryFailure(spec,cid.c_str(),DOWNLOAD_ERROR_PACKAGE,DOWNLOAD_STAGE_PACKAGE);
+        resetBinarySource(url,cid.c_str());sourceResponses[0].overrideLength=true;sourceResponses[0].length=CID_TEST_HEADER+1;
+        checkBinaryFailure(spec,cid.c_str(),DOWNLOAD_ERROR_LENGTH,DOWNLOAD_STAGE_CONTENT_LENGTH);
+        resetBinarySource(url,cid.c_str());spec.sha256="0000000000000000000000000000000000000000000000000000000000000000";
+        checkBinaryFailure(spec,cid.c_str(),DOWNLOAD_ERROR_HASH,DOWNLOAD_STAGE_HASH);spec.sha256=0;
+        // Provider routes require a metadata pin and the matching CUSA title.
+        reset(MODE_MEDIAFIRE);assert(!startDownload(spec));
+        assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC&&!requests);
+        reset(MODE_MEDIAFIRE);assert(!startDownload(spec,CID_TEST_VALUE));
+        assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC&&!requests);
+    }
+    const char* invalid[]={
+        "http://pkg-zone.com/download/ps4/CUSA01116/latest",
+        "https://www.pkg-zone.com/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com:443/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com.evil.example/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com@evil.example/download/ps4/CUSA01116/latest",
+        "https://pkg-zone.com/download/ps5/CUSA01116/latest",
+        "https://pkg-zone.com/download/ps4/NPXS01116/latest",
+        "https://pkg-zone.com/download/ps4/CUSA1116/latest",
+        "https://pkg-zone.com/download/ps4/CUSA001116/latest",
+        "https://pkg-zone.com/download/ps4/cusa01116/latest",
+        "https://pkg-zone.com/download/ps4/CUSA01116/LATEST",
+        "https://pkg-zone.com/download/ps4/CUSA01116/01.01",
+        "https://pkg-zone.com/download/ps4/CUSA01116/101",
+        "https://pkg-zone.com/download/ps4/CUSA01116/latest?key=x",
+        "https://pkg-zone.com/download/ps4/CUSA01116/latest#fragment",
+        "https://pkg-zone.com/download/ps4/CUSA01116/latest/extra",
+        "https://pkg-zone.com/download/ps4/CUSA01116/%6catest"
+    };
+    for(const char* url:invalid)checkRejectedSource(url,CID_TEST_VALUE);
+    // Synthetic body uses the independently observed YouTube alias. Its true
+    // Content ID is retained; the route name never substitutes for the header.
+    const char* youtubeCid="UP4381-CUSA01015_00-YOUTUBESCEA00000";
+    resetBinarySource(urls[0],youtubeCid);
+    checkBinarySuccess(binarySourceSpec(urls[0]),youtubeCid,1);
+    reset(MODE_MEDIAFIRE);
+    assert(!startDownload(binarySourceSpec(urls[1]),youtubeCid));
+    assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC&&!requests);
+    const char* cid="UP0000-CUSA01116_00-PKGZONETEST00000";
+    DownloadSpec spec=binarySourceSpec(urls[0]);
+    const char* foreign[]={urls[1],CID_GITHUB_URL,SOURCE_PAGE_URL,SOURCE_CDN_URL,ARCHIVE_TEST_URL,
+        "https://pkg-zone.com/download/ps4/CUSA01116/01.01","https://pkg-zone.com/app.pkg"};
+    for(const char* to:foreign){
+        resetBinaryRedirect(urls[0],to,cid);
+        checkBinaryFailure(spec,cid,DOWNLOAD_ERROR_REDIRECT,DOWNLOAD_STAGE_HEADERS);
+    }
+    for(const char* from:{CID_GITHUB_URL,SOURCE_PAGE_URL,SOURCE_CDN_URL,ARCHIVE_TEST_URL}){
+        resetBinaryRedirect(from,urls[0],cid);
+        checkBinaryFailure(binarySourceSpec(from),cid,DOWNLOAD_ERROR_REDIRECT,DOWNLOAD_STAGE_HEADERS);
+    }
+}
 
 void hitmanArchiveMirrorTests() {
     const char* cid = "UP4572-CUSA13612_00-000000BLOODMONHD";
@@ -1459,6 +1528,7 @@ int main(){
  pinnedPackageKindTests();
  archiveTests();
  gamebatoTests();
+ pkgZoneTests();
  hitmanArchiveMirrorTests();
  pinnedItemzflowMirrorTests();
  packageBufferFailureTests();

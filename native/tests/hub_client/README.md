@@ -111,3 +111,14 @@ that CDN across its subsequent metadata reads, while entries retain the stable
 page URL so normal downloads resolve a fresh public URL when needed. Fixtures
 cover fragmented/known/unknown/exact-cap HTML, overflow/truncation, malformed
 anchors, challenge pages, unsafe redirects and withholding hub credentials.
+
+PKG-Zone binary metadata uses only the reviewed
+`https://pkg-zone.com/download/ps4/CUSA#####/latest` route. Website/details/API
+paths, PS5 routes, alternate hosts/ports, queries/fragments and encoded path
+escapes are rejected before connecting. Redirects must retain the same provider
+and route Title ID within the existing bounded redirect budget. Requests stay
+anonymous even when the hub session is premium/admin. Exact HTTP 206 range,
+Content-Range, Content-Length and identity-encoding checks remain mandatory;
+HTML/200 bodies are never treated as package metadata, and even a 206-framed
+HTML body fails the actual PKG importer. Confirmed source route names do not
+replace the binary package's actual Content ID.

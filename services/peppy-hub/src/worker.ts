@@ -212,6 +212,11 @@ function requireDirectPkg(url: string): void {
   try { path = decodeURIComponent(parsed.pathname); }
   catch { fail(400, 'INVALID_URL', 'URL inválida.'); }
   const publicMediafire = parsed.hostname === 'mediafire.com' || parsed.hostname === 'www.mediafire.com';
+  const publicPkgZone = parsed.hostname === 'pkg-zone.com';
+  if (publicPkgZone) {
+    if (!url.includes('?') && /^\/download\/ps4\/CUSA[0-9]{5}\/latest$/.test(parsed.pathname)) return;
+    fail(400, 'INDIRECT_URL', 'Use o endereço público de download PS4 do PKG-Zone.');
+  }
   if (!publicMediafire && /\.pkg$/i.test(path)) return;
   // The native downloader already resolves this one bounded, public landing
   // format. This service validates its shape only; it never fetches the HTML.
@@ -223,7 +228,7 @@ function requireDirectPkg(url: string): void {
           !/[\/\\]/.test(filename) && /\.pkg$/i.test(filename)) return;
     }
   }
-  fail(400, 'INDIRECT_URL', 'Informe um PKG direto ou um link público MediaFire de arquivo .pkg.');
+  fail(400, 'INDIRECT_URL', 'Informe um PKG direto ou um download público compatível de MediaFire ou PKG-Zone.');
 }
 function sourceKind(url: string, env: Env): CatalogEntry['source_kind'] {
   const parsed = new URL(url);

@@ -142,14 +142,18 @@ inline int load(const char* path, Record& output) {
     NativeFileInfo before, after; unsigned char bytes[1536] = {};
     bool ok = fileInfo(fd, before) && S_ISREG(before.mode) && before.links == 1 &&
         (before.mode & 0777) == 0600 && before.sizeBytes >= 36 && before.sizeBytes <= int64_t(sizeof(bytes));
-    size_t wanted = ok ? size_t(before.sizeBytes) : 0, done = 0;
-    while (ok && done < wanted) {
-        ssize_t n = read(fd, bytes + done, wanted - done);
+    if (!ok) { close(fd); return -1; }
+    const size_t wanted = size_t(before.sizeBytes);
+    size_t done = 0;
+    while (ok && done < wanted && done < sizeof(bytes)) {
+        const size_t available = sizeof(bytes) - done, remaining = wanted - done;
+        const size_t requested = remaining < available ? remaining : available;
+        ssize_t n = read(fd, bytes + done, requested);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) ok = false; else done += size_t(n);
+        if (n <= 0 || size_t(n) > requested) ok = false; else done += size_t(n);
     }
     unsigned char extra;
-    ok = ok && read(fd, &extra, 1) == 0 && fileInfo(fd, after) && before.device == after.device &&
+    ok = ok && done == wanted && read(fd, &extra, 1) == 0 && fileInfo(fd, after) && before.device == after.device &&
         before.inode == after.inode && before.sizeBytes == after.sizeBytes && before.mode == after.mode && after.links == 1;
     close(fd);
     ok = ok && !memcmp(bytes, "PEPPYLOG", 8) && get32(bytes + 8) == 1 && get32(bytes + 12) == wanted &&
