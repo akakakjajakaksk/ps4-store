@@ -31,6 +31,24 @@ Concurrent Archive transfer, offset writes, cancellation and fallback have
 a separate integration suite in [../parallel_download/README.md](../parallel_download/README.md).
 The speed/ETA calculation is tested in [../download_meter/README.md](../download_meter/README.md).
 
+Normal single-response downloads use two bounded transfer buffers to overlap
+receiving the next block with writing and optionally hashing the previous one.
+A deterministic integration case holds the first disk write and requires the
+receiver to finish the next 1 MiB buffer before releasing that write, then
+compares every output byte and verifies optional SHA-256. This proves overlap,
+not a particular network speed. Short HTTP fragments are coalesced without
+changing per-read header checks, progress or the known-length ending rule.
+
+Additional cases reject a partial disk write, abort a blocked HTTP read after
+disk failure while retaining its original error, and cancel with a held writer.
+File and buffer lifetime assertions require joining that writer before closing
+stdio or deleting the partial file. A failed first native join waits for the
+worker's last access and reaps it with a second join. If creating the extra
+writer thread fails before body reads, the same response continues through the
+identical validation/framing path synchronously. Download snapshots identify
+the actual single connection, pipelined single connection or two validated
+range connections; this is independent of a premium account.
+
 The shim preserves the OpenOrbis 0.5.4 declarations needed by the downloader, including incomplete SDK declarations handled through asm aliases. It replaces network and thread calls with deterministic host mocks and uses a unique temporary directory per run. It does not contact GitHub, MediaFire or a PS4. All source pages, CDN paths and tokens are synthetic fixtures.
 
 Coverage includes four SHA-256 NIST vectors, fragmented PKG magic, normal and redirected transfers, strict HTTPS/host/filename checks, redirect limits, HTTP/TLS errors, truncation and overflow, missing content lengths, mismatched digests, write/flush/close failures, preservation of an existing complete file on a failed replacement, detached worker creation, one transfer at a time, cancellation, and handle/partial-file cleanup. Initialization checks cover already-loaded modules, a failed load with a confirmed loaded probe, failed module loading, NetCtl initialization/state errors, bounded local-IP readiness, cancellation during readiness, pool errors, individual timeout errors, original native/SSL diagnostics, and repeated download cleanup. Error fixture numbers are mock values, not a whitelist of hardware errors.

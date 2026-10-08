@@ -77,6 +77,8 @@ const char* musicTrackName(int track) { return track == 1 ? "ACENDAOFAROL" : "FI
 static uint64_t previewTimeUs = 0;
 static uint64_t previewNowUs() { return previewTimeUs; }
 static HubSession previewHubSession = {};
+static HubSavedLoginStatus previewSavedLogin = {};
+static char previewSavedUser[65] = {}, previewSavedPassword[129] = {};
 static HubSnapshot previewHub = {};
 static HubResult previewHubResult = {};
 static bool previewHubReady = false;
@@ -95,12 +97,19 @@ static bool previewStartHub(int operation) {
 bool setHubOrigin(const char* origin) { snprintf(previewHubOrigin, sizeof(previewHubOrigin), "%s", origin); previewHubSession = {}; return true; }
 bool hubConfigured() { return previewHubOrigin[0]; }
 bool hubOrigin(char* output, size_t cap) { if (!output || !cap) return false; snprintf(output, cap, "%s", previewHubOrigin); return hubConfigured(); }
+bool configureHubSavedLogin(const char*) { previewSavedLogin.configured = true; return true; }
+HubSavedLoginStatus hubSavedLoginStatus() { return previewSavedLogin; }
+bool hubSavedLoginCredentials(char* user, size_t uc, char* password, size_t pc) {
+    if (!user || !password || !uc || !pc || !previewSavedLogin.hasUsername) return false;
+    snprintf(user, uc, "%s", previewSavedUser); snprintf(password, pc, "%s", previewSavedPassword); return true;
+}
+bool startHubSavedLogin() { previewSavedLogin.restoring = true; return previewStartHub(HUB_LOGIN); }
 bool startHubLogin(const char* user, const char* password) {
     if (!previewStartHub(HUB_LOGIN)) return false;
     snprintf(previewLoginUser, sizeof(previewLoginUser), "%s", user);
     snprintf(previewLoginPassword, sizeof(previewLoginPassword), "%s", password); return true;
 }
-bool startHubLogout() { if (!previewStartHub(HUB_LOGOUT)) return false; previewHubSession = {}; return true; }
+bool startHubLogout() { if (!previewStartHub(HUB_LOGOUT)) return false; previewHubSession = {}; previewSavedLogin.hasPassword = previewSavedLogin.hasToken = false; previewSavedPassword[0] = 0; return true; }
 bool startHubSync() { return previewStartHub(HUB_SYNC); }
 bool startHubImportUrls(const char* urls, size_t bytes) {
     if (!bytes || bytes >= sizeof(previewImportedUrls) || !previewStartHub(HUB_IMPORT_URLS)) return false;
@@ -149,10 +158,13 @@ static void resetController() {
     previewHubReady = false; previewHubResult = {}; previewHub = {}; previewHubSession = {};
     previewHubCalls = 0; storePanel = STORE_PANEL_NONE; storeMenuSelection = 0;
     storeAdminLogin = storeAdminChord = storeAdultConfirmed = storeFtpRequested = false;
+    storePremiumCatalogRequested = storeLoginSyncPending = false;
+    previewSavedLogin = {}; previewSavedUser[0] = previewSavedPassword[0] = 0;
     storeHadSession = storeHadAdmin = storeHadEntitlement = false;
     previewSessionCheckCalls = 0; previewRevokedUser[0] = 0; previewRevokedValue = false;
     storeKeyboard = StoreKeyboard(); storeNotice[0] = 0;
     storeLoginUser[0] = storeLoginPassword[0] = storeAdminUser[0] = storeAdminPassword[0] = 0;
+    storeSessionUserId[0] = 0;
     lastDownloadKind = lastInstallKind = 0;
     catalogSearch = CatalogSearchState();
     downloadingApp = installingApp = -1;
@@ -227,6 +239,30 @@ static bool verifyServicesController() {
     previewHubResult = {}; previewHubResult.operation = HUB_LOGIN; previewHubResult.errorCode = HUB_ERROR_AUTH; previewHubReady = true;
     pollStoreExtensions();
     if (!expect(!previewHubSession.authenticated && storeNotice[0], "failed authentication displays an error and grants no session")) return false;
+    storeAdminLogin = false;
+    previewHubSession.authenticated = previewHubSession.premium = true;
+    previewHubResult = {}; previewHubResult.operation = HUB_LOGIN; previewHubReady = true;
+    pollStoreExtensions();
+    if (!expect(storeLoginSyncPending && previewHub.operation == HUB_SYNC, "validated login automatically starts the premium catalog sync")) return false;
+    previewHubResult = {}; previewHubResult.operation = HUB_SYNC; previewHubResult.catalog = new UserCatalog;
+    previewHubResult.catalog->add(serviceFixture(99989, 0, false, false, 4)); previewHubReady = true;
+    pollStoreExtensions(); applyPremiumCatalogRequest(selected, details);
+    if (!expect(storePanel == STORE_PANEL_NONE && activeCategory == 11 && categoryCount() == 1,
+                "premium login opens its populated catalog without another menu action")) return false;
+    storeClearRemote(); previewHubSession = {}; pollStoreExtensions(); activeCategory = 0;
+    previewSavedLogin.configured = previewSavedLogin.hasUsername = previewSavedLogin.hasPassword = true;
+    snprintf(previewSavedUser, sizeof(previewSavedUser), "%s", "remembered_fixture");
+    snprintf(previewSavedPassword, sizeof(previewSavedPassword), "%s", "remembered_secret");
+    storeLoginUser[0] = 0; storeOpenPanel(STORE_PANEL_PREMIUM);
+    if (!expect(!strcmp(storeLoginUser, "remembered_fixture") && !strcmp(storeLoginPassword, "remembered_secret"),
+                "opening premium prefills the remembered fields for the masked login UI")) return false;
+    storeBeginText(STORE_TEXT_LOGIN_USER, STORE_PANEL_PREMIUM);
+    snprintf(storeKeyboard.draft, sizeof(storeKeyboard.draft), "%s", "different_fixture");
+    handleCatalogController(CATALOG_OPTIONS, selected, details);
+    if (!expect(!storeLoginPassword[0], "editing the remembered username clears the old account's password")) return false;
+    storeOpenPanel(STORE_PANEL_PREMIUM);
+    if (!expect(!storeLoginPassword[0], "saved password is never reused with a newly entered different username")) return false;
+    previewSavedLogin = {}; previewSavedPassword[0] = 0; storeClearPasswords();
     storeOpenPanel(STORE_PANEL_NONE); storeAdminLogin = false;
     for (int kind = 0; kind < 3; ++kind) if (!expect(storeLocal.add(serviceFixture(99990, kind)) == 0, "personal base/update/DLC metadata accepted")) return false;
     storeRebuildViews();
@@ -332,6 +368,7 @@ static bool verifyServicesController() {
     previewInstall.state = INSTALL_DONE; pollAutoInstall(); pollStoreExtensions();
     if (!expect(!storeHasPending && storeRemote == replacement && storeCatalogVersion == 9 && downloadingApp == -1,
                 "idle refresh replaces the remote catalog and clears old operation associations")) return false;
+    if (!expect(storeAdultConfirmed, "same-account catalog refresh preserves the user's age confirmation")) return false;
     previewHub = {}; startHubLogout();
     if (!expect(!storeAppAllowed(STORE_REMOTE_FIRST) && categoryCount() == UI_APP_COUNT + 3,
                 "logout immediately hides premium entries but retains free and personal packages")) return false;

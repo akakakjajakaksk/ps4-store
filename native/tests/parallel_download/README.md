@@ -25,8 +25,9 @@ package size and a strong ETag. The successful case requires two overlapping
 native response reads, complementary exact byte ranges, `If-Range`, matching
 ETag and exact Content-Length/Content-Range. It compares every published
 byte against the original fixture and checks the complete final length.
-With 16 KiB HTTP fragments, buffering produces 128 native writes instead of
-one write per fragment. A 32 MiB + 123-byte case exercises both range tails.
+With 16 KiB HTTP fragments, the preferred 1 MiB buffers produce 32 native
+writes instead of one write per fragment; the 256 KiB allocation fallback
+produces 128 writes. A 32 MiB + 123-byte case exercises both range tails.
 These checks establish actual host concurrency and correctness; they do
 not measure PS4 bandwidth or establish a twofold speed increase.
 
@@ -36,7 +37,11 @@ mismatched/duplicate ETag, wrong range offsets/total/Content-Length, second
 network-pool failure, read-buffer allocation failure and joinable-thread
 creation failure. Missing/weak ETag retains the original response. Other
 fallback cases start a fresh response and never mix its bytes with range
-data. All successful fallbacks still compare the complete output.
+data. The normal fallback overlaps receiving and writing through a bounded
+single-response pipeline, or continues synchronously if the additional native
+thread cannot start. Snapshot assertions distinguish those actual modes and
+their connection counts. All successful fallbacks still compare the complete
+output.
 
 After range reading starts, these failures stop both requests and preserve
 a prior completed package: native body error, early EOF, impossible read

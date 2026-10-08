@@ -61,3 +61,5 @@ O [workflow da build nativa](.github/workflows/build-native.yml) executa os test
 ## Página web anterior
 
 `index.html`, `app.js`, `style.css` e `apps.json` preservam a primeira loja web estática. Ela pode ser publicada pelo GitHub Pages a partir da raiz e mantém seu próprio catálogo. Editar `apps.json` altera essa página; o botão **Adicionar URL** salva apenas no `localStorage` daquele navegador. Essa versão estática não administra contas premium nem publica o catálogo da central.
+
+O login premium e ADM pode ser lembrado neste PS4. Ao reabrir, a conta é validada online e a biblioteca premium abre após sincronizar; sair da conta ou receber uma invalidação esquece senha/token. O FTP escolhe outra porta quando o GoldHEN já usa 2121: confira o endereço exibido no PKG, use modo passivo e login anônimo. Downloads em uma conexão agora podem sobrepor recepção e gravação com buffers limitados; a taxa continua sendo a medida da fonte e da rede.

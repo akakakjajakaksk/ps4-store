@@ -1,6 +1,7 @@
 The native hub worker is tested with the existing OpenOrbis HTTP/thread stubs,
-mock HTTP replies and the real user-catalog parser. It does not access a network
-or write login credentials to files.
+mock HTTP replies and the real user-catalog parser. It does not access a network.
+Saved-login checks use disposable private directories and synthetic test-only
+credentials; they never read or write a real owner's account.
 
 ```sh
 g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
@@ -20,10 +21,34 @@ through the same range callback used on the console. Header/SFO parsing and
 catalog persistence have their own tests under `tests/user_catalog`.
 
 The hub origin must be an explicitly trusted HTTPS service; changing it clears
-the current session. The origin contains no password. Credentials and bearer
-tokens remain in RAM and are cleared after use/logout/expiry. Login/session
+the current session and prevents reuse of another origin's remembered record.
+The origin contains no password. If `configureHubSavedLogin()` is enabled, the
+last successful username, password and revocable bearer are saved only under
+`/data/peppy-store/private/login.dat`. The child directory is 0700 and the file
+is 0600, independent of older builds' 0777 outer FTP/app directory. The record
+contains no role or premium access flag. This is filesystem privacy, not a
+platform keychain or encryption; credentials are never included in the PKG,
+source code, hub catalog, logs or FTP inbox.
+
+Startup restoration runs asynchronously and validates the bearer with the
+trusted server before granting any access. If a denied saved token's original
+server expiry has already passed according to the console calendar, restoration
+can try the remembered password once through the ordinary login endpoint. It
+cannot turn a revoked account into a valid one. A non-expired token denial, a
+heartbeat denial and explicit logout erase the remembered password/bearer while
+retaining the username. Heartbeats never automatically relogin. An offline
+verification failure still closes RAM authorization after 30 seconds but keeps
+the local record for a later startup or user retry. Wrong entered credentials,
+cancelled restores and transient startup network failures do not replace the
+last successful saved login. Logging out also forgets it when no RAM session
+remains. Atomic writes use a private temporary file, fsync and rename; bounded
+reads reject symlinks, hardlinks, unsafe permissions and corrupt records using
+the actual 120-byte PS4 `sceKernelFstat` ABI.
+
+Login/session
 `server_time` and `expires_at` establish monotonic RAM deadlines, so changing the
-console calendar cannot extend a session. Session TTL is capped at 24 hours;
+console calendar cannot extend authorized access. Native session TTL is capped
+at 24 hours and the current service issues eight-hour bearer sessions;
 catalog synchronization rechecks the session with the server. API replies require
 identity encoding and a matching Content-Length no larger than 4 MiB. A failed
 catalog parse preserves the UI's previous catalog because results transfer only

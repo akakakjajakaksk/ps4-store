@@ -548,7 +548,10 @@ static void fallbackTests() {
         mock::reset(mode); assert(startDownload(spec(), mock::CID));
         DownloadSnapshot s = mock::finish();
         assert(s.state == DONE && !s.errorCode && s.received == mock::BYTES);
-        assert(!mock::pwriteCalls && !mock::rangeReadCalls && !mock::joins);
+        assert(!mock::pwriteCalls && !mock::rangeReadCalls);
+        assert(s.connections == 1);
+        assert(s.transferMode == (mode == mock::THREAD_FAILURE ? DOWNLOAD_MODE_SINGLE : DOWNLOAD_MODE_PIPELINED));
+        assert(mock::joins == (mode == mock::THREAD_FAILURE ? 0 : 1));
         if (mode == mock::NO_ETAG || mode == mock::WEAK_ETAG) assert(!mock::rangedSent);
         else assert(mock::rangedSent > 0 || mode == mock::POOL_FAILURE);
         mock::clean(); mock::exactOutput();
@@ -582,7 +585,8 @@ static void approvedProviderTests() {
             if (mode == mock::GOOD) {
                 assert(mock::rangedSent == 2 && mock::peakRangeReads >= 2 && mock::pwriteCalls == 32);
             } else {
-                assert(!mock::pwriteCalls && !mock::rangeReadCalls && !mock::joins);
+                assert(!mock::pwriteCalls && !mock::rangeReadCalls && mock::joins == 1);
+                assert(s.connections == 1 && s.transferMode == DOWNLOAD_MODE_PIPELINED);
                 if (mode != mock::RANGE_REDIRECT) assert(!mock::rangedSent);
                 else assert(mock::history.size() == 3); // Initial body, rejected range, one single restart.
             }

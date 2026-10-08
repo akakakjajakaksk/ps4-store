@@ -158,6 +158,9 @@ jobs:
             -o /tmp/peppy-pkg-server-tests-bin
           /tmp/peppy-pkg-server-tests-bin
 
+      - name: Test FTP receiver on host
+        run: sh native/tests/ftp_receiver/run.sh
+
       - name: Test native music on host
         run: |
           cd native

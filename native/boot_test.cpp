@@ -26,7 +26,7 @@ static const uint32_t BG = 0x800B0F17, PANEL = 0x80131925;
 static const uint32_t WHITE = 0x80F4F6FA, MUTED = 0x809BA7BA;
 static const uint32_t BLUE = 0x8073B7FF, LINE = 0x80252D3C;
 static const int CATEGORY_COUNT = 13;
-static const char* CATEGORY_NAMES[CATEGORY_COUNT] = {"Todos", "Utilitários", "Emuladores", "Jogos", "Mídia", "Atualizações", "DLCs", "Temas", "Base do usuário", "Update do usuário", "DLC do usuário", "Premium", "+18 premium"};
+static const char* CATEGORY_NAMES[CATEGORY_COUNT] = {"Todos", "Utilitários", "Emuladores", "Jogos", "Streaming / mídia", "Atualizações", "DLCs", "Temas", "Base do usuário", "Update do usuário", "DLC do usuário", "Premium", "+18 premium"};
 static const uint32_t CATEGORY_COLORS[CATEGORY_COUNT] = {BLUE, 0x807BDECC, 0x80B9A2F9, 0x80EBC48A, 0x8085BBFB, BLUE, BLUE, BLUE, BLUE, BLUE, BLUE, BLUE, 0x80EBA5B4};
 enum CatalogControllerButton {
     CATALOG_LEFT = 1U << 0, CATALOG_RIGHT = 1U << 1,
@@ -41,6 +41,12 @@ enum CatalogControllerButton {
 
 static int activeCategory = 0, downloadingApp = -1, installingApp = -1;
 static CatalogSearchState catalogSearch;
+static void applyPremiumCatalogRequest(int& selected, bool& details) {
+    if (!storePremiumCatalogRequested) return;
+    storePremiumCatalogRequested = false;
+    activeCategory = 11; selected = 0; details = false;
+    catalogSearch.query[0] = 0; catalogSearch.open = false;
+}
 static bool autoInstallPending = false, installCancelRequested = false;
 static uint64_t downloadedBytes[STORE_CAPACITY] = {};
 static bool installedApps[STORE_CAPACITY] = {};
@@ -53,7 +59,7 @@ static int ftpInboxCount = 0;
 static int ftpInboxSelected = 0;
 static bool ftpInboxOpen = false;
 static uint32_t ftpInboxInstallGeneration = 0;
-static char ftpInboxInstallName[96] = {};
+static char ftpInboxInstallName[192] = {};
 static int ftpInboxInstallKind = -1;
 
 static bool refreshFtpInbox() {
@@ -287,6 +293,7 @@ static bool handleFtpInboxController(uint32_t pressed) {
     }
 
     if (pressed & CATALOG_SQUARE) {
+        if (!ftpReceiverSnapshot().running) ftpReceiverStart();
         refreshFtpInbox();
         changed = true;
     }
@@ -622,7 +629,7 @@ static void transferMeasurementLabel(char* label, size_t capacity,
         return;
     }
     // MB/s is decimal, matching network speed units. The measured counter
-    // includes the downloader's file writes and optional hash verification.
+    // follows received bytes; completion still waits for queued writes and hash.
     double mbps = meter.bytesPerSecond / 1000000.0;
     if (!meter.etaAvailable) {
         snprintf(label, capacity, "%.2f MB/s | %s", mbps,
@@ -691,8 +698,9 @@ static void footer(uint32_t* p, bool details, int selectedIndex) {
     } else if (download.state == RUNNING && validApp(downloadingApp)) {
         DownloadMeasurement meter = downloadMeter.measurement();
         if (meter.rateAvailable && (!download.total || download.received < download.total))
-            snprintf(label, sizeof(label), "Baixando: %d%% | %.2f MB/s | %s",
+            snprintf(label, sizeof(label), "Baixando: %d%% | %.2f MB/s | %d conexão%s | %s",
                      transferPercent(download.received, download.total), meter.bytesPerSecond / 1000000.0,
+                     download.connections > 0 ? download.connections : 1, download.connections > 1 ? "s" : "",
                      storeApp(downloadingApp).name);
         else snprintf(label, sizeof(label), "Baixando: %s | %d%%", storeApp(downloadingApp).name,
                       transferPercent(download.received, download.total));
@@ -817,7 +825,12 @@ static void drawStore(uint32_t* p, int selected, int padState) {
         line(p, x + cw - 40, y + 275, x + cw - 33, y + 268, 2, focus ? BLUE : MUTED);
     }
     if (!count) {
-        const char* message = catalogSearch.query[0] ? "Nenhum resultado para esta busca nesta categoria." :
+        HubSession session = hubSession();
+        const char* message = activeCategory == 12 && session.authenticated && (session.premium || session.admin) && !storeAdultConfirmed ?
+            "X  Confirme sua idade para abrir os jogos +18." :
+            (activeCategory == 11 || activeCategory == 12) && !(session.authenticated && (session.premium || session.admin)) ?
+            "X  Entre na sua conta premium para abrir o catálogo." :
+            catalogSearch.query[0] ? "Nenhum resultado para esta busca nesta categoria." :
             (activeCategory == 5 ? "Ainda não há atualizações disponíveis." :
              (activeCategory == 6 ? "Ainda não há DLCs disponíveis." : "Nenhum item nesta categoria."));
         text(p, 72, 706, message, FONT_BODY, MUTED);
@@ -965,6 +978,11 @@ static void drawStorePanel(uint32_t* p) {
         HubSession session = hubSession();
         char account[192]; snprintf(account, sizeof(account), session.authenticated ? "Conta: %s" : "Sem sessão premium", session.username);
         textElided(p, 1218, 688, account, FONT_SMALL, BLUE, 530);
+        if (storePanel == STORE_PANEL_PREMIUM) {
+            HubSavedLoginStatus saved = hubSavedLoginStatus();
+            text(p, 1218, 886, saved.restoring ? "Validando login salvo..." : saved.hasPassword ? "Login salvo neste PS4" :
+                 "O login será salvo após entrar.", FONT_SMALL, BLUE);
+        }
         textWrapped(p, 1218, 733, storePanel == STORE_PANEL_SERVICES ? "Importe links diretos de PKG ou uma lista, um link por linha. Base, update e DLC são identificados pelo pacote." :
             "A conta é validada pelo servidor. Seu catálogo gratuito e seus links pessoais continuam disponíveis.", FONT_SMALL, MUTED, 530, 4);
     }
@@ -1164,9 +1182,10 @@ static void drawFtpInbox(uint32_t* p) {
 
     if (!ftpInboxCount) {
         text(p, 104, 458, "Nenhum PKG concluído no inbox ainda.", FONT_BODY, WHITE);
-        text(p, 104, 514, "No app FTP do celular, conecte ao endereço acima.", FONT_SMALL, MUTED);
+        text(p, 104, 514, "Conecte ao IP e à porta acima com login anônimo e modo passivo.", FONT_SMALL, MUTED);
         text(p, 104, 550, "Entre em /base, /update ou /dlc e envie os arquivos .pkg.", FONT_SMALL, MUTED);
-        text(p, 104, 586, "Uploads incompletos ficam como .part e não aparecem aqui.", FONT_SMALL, BLUE);
+        text(p, 104, 586, ftp.running ? "A porta pode mudar quando o FTP do GoldHEN está ativo." :
+             "Quadrado  Tentar iniciar o FTP novamente", FONT_SMALL, BLUE);
     } else {
         const int visible = 7;
         int first = (ftpInboxSelected / visible) * visible;
@@ -1320,6 +1339,8 @@ int main(void){
  int localLoad=storeLocal.load();
  if(localLoad && localLoad!=USER_CATALOG_ERROR_NOT_FOUND)
   snprintf(storeNotice,sizeof(storeNotice),"%s",userCatalogErrorMessage(localLoad));
+ if(configureHubSavedLogin()) startHubSavedLogin();
+ else snprintf(storeNotice,sizeof(storeNotice),"Não foi possível preparar o login salvo neste PS4.");
  storeRebuildViews();
  uint32_t ftpReceivedSeen=ftpReceiverSnapshot().filesReceived;
  int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
@@ -1332,6 +1353,7 @@ int main(void){
  InstallSnapshot previousInstall=installSnapshot();
  MusicSnapshot previousMusic=musicSnapshot();
  HubSnapshot previousHub=hubSnapshot();
+ FtpReceiverSnapshot previousFtp=ftpReceiverSnapshot();
  uint32_t previousStoreView=storeViewRevision;
  drawStore(fb[front],selected,2);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
@@ -1339,6 +1361,7 @@ int main(void){
  for(;;){
   bool changed=pollAutoInstall();
   changed=pollStoreExtensions() || changed;
+  if(storePremiumCatalogRequested) { applyPremiumCatalogRequest(selected,details); changed=true; }
   if(previousStoreView!=storeViewRevision){previousStoreView=storeViewRevision;selected=0;details=false;changed=true;}
   OrbisPadData pd;
   if(pad>=0 && scePadReadState(pad,&pd)>=0){
@@ -1398,11 +1421,14 @@ int main(void){
    if(hub.state!=previousHub.state || hub.completed!=previousHub.completed || hub.errorCode!=previousHub.errorCode) changed=true;
    previousHub=hub;
    FtpReceiverSnapshot ftp=ftpReceiverSnapshot();
+   if(ftp.running!=previousFtp.running || ftp.port!=previousFtp.port ||
+      ftp.lastError!=previousFtp.lastError || strcmp(ftp.ip,previousFtp.ip)) changed=true;
    if(ftp.filesReceived!=ftpReceivedSeen){
     ftpReceivedSeen=ftp.filesReceived;
     refreshFtpInbox();
     changed=true;
    }
+   previousFtp=ftp;
   }
   if(changed){
    front=1-front;

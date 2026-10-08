@@ -50,7 +50,7 @@
     "fallback_buffer_bytes": 262144,
     "maximum_application_transfer_buffer_bytes": 2097152,
     "allocation_policy": "Allocate both preferred transfer buffers or free them and retry both fallback buffers. Post-download hashing uses one buffer with the same bounded fallback.",
-    "normal_transfer": "Retains per-read PKG identity validation, progress and cancellation. Caller-owned stdio buffer remains alive through fflush/fclose. No manual fragment-fill loop.",
+    "normal_transfer": "Two 1 MiB (or both 256 KiB fallback) buffers alternate reception and disk/hash work. A caller-owned 16 KiB stdio tail buffer remains alive through fflush/fclose. Short fragments are coalesced while every native read retains PKG identity validation, progress and cancellation.",
     "parallel_eligibility": "Already approved final Archive, GitHub and MediaFire CDN HTTPS URLs only. Requires pinned Content ID/kind/size, strong identical ETags, exact 206 and range lengths, and assembled PKG verification. Missing validators or rejected range setup retain/restart the normal stream once.",
     "eof_error_regression": "Verified Content-Length ends the body without waiting for another EOF read; unknown-length bodies still require actual EOF.",
     "host_fixture_results": {
@@ -62,6 +62,21 @@
       "Fixture call counts are algorithm checks, not measured network speed or PS4 hardware tests.",
       "The 1 MiB cap is deliberate. No real-console maximum buffer or throughput guarantee has been established.",
       "This does not change HTTP/SSL native pool sizes, disable TLS validation, bypass proxy rules, or add download hosts."
-    ]
+    ],
+    "stdio_tail_buffer_bytes": 16384,
+    "maximum_application_transfer_and_stdio_buffer_bytes": 2113536
+  },
+  "single_stream_pipeline_revision": {
+    "behavior": "One validated HTTP response, a bounded two-slot queue and a joined native SCE pthread disk/hash worker. Network reception can overlap the previous block write. No extra server connection or unsupported host is introduced.",
+    "thread_setup_fallback": "Failure to create the additional worker before response data is consumed continues the same response synchronously using identical validation and framing.",
+    "actual_mode_reporting": "DownloadSnapshot distinguishes connecting, synchronous single response, pipelined single response and two validated byte-range responses; connection counts are 0, 1, 1 and 2 respectively.",
+    "host_validation": [
+      "Held first disk write while requiring reception of the next 1 MiB block, then exact output comparison with and without SHA-256.",
+      "Disk failure aborts a blocked HTTP receiver without replacing the original disk error with the induced network abort.",
+      "Partial writes fail and preserve the previous completed package.",
+      "Cancellation and a transient failed first join retain file and buffer ownership until the worker finishes and is joined.",
+      "Existing known Content-Length EOF timeout 0x80431068, unknown-length EOF, package identity/kind/size and two-range fallback regressions retained."
+    ],
+    "limits": "Deterministic concurrency and integrity tests, not a measured PS4 speed increase. Hosting limits, Wi-Fi conditions, console disk speed and native HTTP behavior can still limit throughput."
   }
 }

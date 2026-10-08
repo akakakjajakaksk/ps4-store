@@ -58,6 +58,9 @@ static size_t packageDataReads, packageMaxReadRequest, packageMaxReadBytes;
 static FILE* trackedPackageFile;
 static unsigned char* trackedStdioBuffer;
 static size_t trackedStdioBytes;
+static bool holdPackageWrite, failWriteAfterBlockedRead, shortPackageWrite, failJoinableCreate, failFirstJoin;
+static std::atomic<bool> packageWriteEntered(false), releasePackageWrite(false);
+static std::atomic<unsigned> liveJoinableThreads(0), nativeJoinAttempts(0);
 struct JoinableThreadMock { std::thread* thread; void* result; JoinableThreadMock():thread(0),result(0){} };
 static std::vector<JoinableThreadMock*> joinableThreads;
 static SourceResponse& sourceResponse() {
@@ -80,7 +83,7 @@ extern "C" void* __wrap_malloc(size_t bytes){
 }
 extern "C" int __wrap_setvbuf(FILE* file,char* buffer,int buffering,size_t bytes){
     if(file==g_log)return __real_setvbuf(file,buffer,buffering,bytes);
-    assert(file&&buffer&&buffering==_IOFBF&&(bytes==BUFFER_TEST_BYTES||bytes==FALLBACK_TEST_BYTES));
+    assert(file&&buffer&&buffering==_IOFBF&&bytes==16*1024);
     assert(!trackedPackageFile);
     ++packageSetvbufCalls;trackedPackageFile=file;
     trackedStdioBuffer=(unsigned char*)buffer;trackedStdioBytes=bytes;
@@ -89,11 +92,20 @@ extern "C" int __wrap_setvbuf(FILE* file,char* buffer,int buffering,size_t bytes
     if(setvbufFailure){errno=setvbufFailureErrno;return -1;}
     return __real_setvbuf(file,buffer,buffering,bytes);
 }
-extern "C" size_t __wrap_fwrite(const void* p,size_t s,size_t n,FILE* f){if(mode==11)return n? n-1:0;return __real_fwrite(p,s,n,f);}
+extern "C" size_t __wrap_fwrite(const void* p,size_t s,size_t n,FILE* f){
+    if(f==trackedPackageFile){
+        if(holdPackageWrite){packageWriteEntered=true;while(!releasePackageWrite.load())sceKernelUsleep(1000);}
+        if(failWriteAfterBlockedRead){while(!blocked.load())sceKernelUsleep(1000);errno=ENOSPC;return 0;}
+        if(shortPackageWrite){errno=ENOSPC;return __real_fwrite(p,s,n/2,f);}
+    }
+    if(mode==11)return n? n-1:0;
+    return __real_fwrite(p,s,n,f);
+}
 extern "C" int __wrap_fflush(FILE* f){if(mode==12){errno=ENOSPC;return EOF;}return __real_fflush(f);}
 extern "C" int __wrap_fclose(FILE* f){
     bool tracked=trackedPackageFile&&f==trackedPackageFile;
     if(tracked){
+        assert(!liveJoinableThreads.load());
         assert(trackedStdioBuffer);
         // ASan checks that the caller-owned buffer still lives at fclose.
         volatile unsigned char last=trackedStdioBuffer[trackedStdioBytes-1];(void)last;
@@ -110,14 +122,16 @@ extern "C" int32_t scePthreadAttrSetdetachstate(OrbisPthreadAttr* a,int n){asser
 extern "C" int32_t scePthreadCreate(OrbisPthread* t,const OrbisPthreadAttr* a,void*(*f)(void*),void* p,const char*){
     assert(*a==0||*a==1);if(mode==27)return (int32_t)0x8002000c;
     if(*a==1){*t=1;std::thread(f,p).detach();}
-    else{JoinableThreadMock* slot=new JoinableThreadMock;joinableThreads.push_back(slot);*t=(int)joinableThreads.size()+1;slot->thread=new std::thread([slot,f,p](){slot->result=f(p);});}
+    else{if(failJoinableCreate)return (int32_t)0x8002000c;JoinableThreadMock* slot=new JoinableThreadMock;joinableThreads.push_back(slot);*t=(int)joinableThreads.size()+1;++liveJoinableThreads;slot->thread=new std::thread([slot,f,p](){slot->result=f(p);});}
     return 0;
 }
 extern "C" int32_t scePthreadJoin(OrbisPthread thread,void** result){
+    unsigned attempt=++nativeJoinAttempts;
     assert(thread>=2&&(size_t)(thread-2)<joinableThreads.size());
     JoinableThreadMock* slot=joinableThreads[(size_t)thread-2];assert(slot&&slot->thread);
+    if(failFirstJoin&&attempt==1)return (int32_t)0x80020016;
     slot->thread->join();if(result)*result=slot->result;delete slot->thread;delete slot;
-    joinableThreads[(size_t)thread-2]=0;return 0;
+    joinableThreads[(size_t)thread-2]=0;--liveJoinableThreads;return 0;
 }
 extern "C" int64_t mockParallelPwrite(int32_t,const void*,size_t,int64_t) __asm__("sceKernelPwrite");
 extern "C" int64_t mockParallelPwrite(int32_t fd,const void* bytes,size_t count,int64_t offset){return (int64_t)pwrite(fd,bytes,count,(off_t)offset);}
@@ -164,6 +178,9 @@ extern "C" int32_t sceHttpGetResponseContentLength(int32_t,int32_t* type,size_t*
 extern "C" int32_t sceHttpReadData(int32_t,void* out,uint32_t max){
     if(mode==MODE_MEDIAFIRE){
         SourceResponse& value=sourceResponse();
+        if(!value.page&&holdPackageWrite&&sourceCursor==BUFFER_TEST_BYTES){
+            while(!packageWriteEntered.load())sceKernelUsleep(1000);
+        }
         value.readRequests.push_back(max);
         if(value.page){
             ++sourceReadCalls;
@@ -196,7 +213,7 @@ extern "C" int32_t sceHttpTerm(int32_t){++closedHttp;return 0;}
 
 std::string hashText(const std::string& input){Sha256 s;for(size_t i=0;i<input.size();i+=7)s.update((const uint8_t*)input.data()+i,input.size()-i>7?7:input.size()-i);uint8_t digest[32];s.finish(digest);char buf[65];for(int i=0;i<32;++i)sprintf(buf+2*i,"%02x",digest[i]);return buf;}
 DownloadSnapshot finished(){for(int i=0;i<5000;++i){if(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE))return downloadSnapshot();sceKernelUsleep(1000);}assert(false);return downloadSnapshot();}
-void reset(int nextMode){assert(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));assert(!trackedPackageFile&&!trackedStdioBuffer);mode=nextMode;cursor=0;requests=0;moduleLoads=moduleProbes=stateQueries=0;advertisedLength=0;contentLengthCalls=0;netError=0;aborted=false;blocked=false;releaseRead=false;secure=false;manual=false;closedRequests=closedConnections=closedTemplates=closedHttp=closedSsl=closedPools=0;payload={0x7f,0x43,0x4e,0x54,'a','b','c','d'};sourceResponses.clear();sourceRequestUrls.clear();sourceCursor=sourceBytes=sourceReadCalls=packageReadCalls=0;templateCreates=tlsEnables=0;packageMallocFailureMask=0;setvbufFailureErrno=0;setvbufFailure=false;packageMallocCalls=packageSetvbufCalls=packageBufferLifetimeChecks=0;packageDataReads=packageMaxReadRequest=packageMaxReadBytes=0;unlink(outputPath().c_str());unlink(outputPath(true).c_str());}
+void reset(int nextMode){assert(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));assert(!trackedPackageFile&&!trackedStdioBuffer&&!liveJoinableThreads.load());mode=nextMode;cursor=0;requests=0;moduleLoads=moduleProbes=stateQueries=0;advertisedLength=0;contentLengthCalls=0;netError=0;aborted=false;blocked=false;releaseRead=false;secure=false;manual=false;closedRequests=closedConnections=closedTemplates=closedHttp=closedSsl=closedPools=0;payload={0x7f,0x43,0x4e,0x54,'a','b','c','d'};sourceResponses.clear();sourceRequestUrls.clear();sourceCursor=sourceBytes=sourceReadCalls=packageReadCalls=0;templateCreates=tlsEnables=0;packageMallocFailureMask=0;setvbufFailureErrno=0;setvbufFailure=false;packageMallocCalls=packageSetvbufCalls=packageBufferLifetimeChecks=0;packageDataReads=packageMaxReadRequest=packageMaxReadBytes=0;holdPackageWrite=failWriteAfterBlockedRead=shortPackageWrite=failJoinableCreate=failFirstJoin=false;packageWriteEntered=releasePackageWrite=false;nativeJoinAttempts=0;unlink(outputPath().c_str());unlink(outputPath(true).c_str());}
 void cleanHandles(){assert(closedRequests==requests&&closedConnections==requests);assert(closedTemplates==1&&closedHttp==1&&closedSsl==1&&closedPools==1);assert(access(outputPath(true).c_str(),F_OK)!=0);}
 void seedPrevious(){FILE* f=fopen(outputPath().c_str(),"wb");assert(f);assert(__real_fwrite("previous",1,8,f)==8);assert(__real_fclose(f)==0);}
 void checkPrevious(){FILE* f=fopen(outputPath().c_str(),"rb");assert(f);char data[9]={0};assert(fread(data,1,8,f)==8);assert(!strcmp(data,"previous"));assert(__real_fclose(f)==0);}
@@ -1311,6 +1328,87 @@ void largePackageTests(DownloadSpec& spec) {
     }
     spec.expectedBytes = 8;
 }
+void resetPipelineFixture(size_t bytes) {
+    reset(MODE_MEDIAFIRE);
+    payload = contentIdPackage(bytes);
+    for(size_t at=CID_TEST_HEADER;at<bytes;++at)payload[at]=static_cast<uint8_t>((at*29+(at>>12)*7)&255);
+    SourceResponse response=sourcePackage(CID_GITHUB_URL);
+    response.fragment=16*1024;
+    // Any read beyond a complete framed body is the reported PS4 regression.
+    response.readFailureAfter=bytes;response.readRc=EOF_TIMEOUT_ERROR;
+    sourceResponses.push_back(response);
+}
+void waitPipelineReceived(uint64_t bytes) {
+    for(unsigned attempt=0;attempt<5000;++attempt){
+        if(downloadSnapshot().received>=bytes)return;
+        assert(__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));sceKernelUsleep(1000);
+    }
+    assert(!"receiver did not advance while the writer was held");
+}
+void pipelinedTransferTests() {
+    const size_t block=1024*1024,bytes=3*block+17;
+    for(bool hashed:{false,true}){
+        resetPipelineFixture(bytes);holdPackageWrite=true;
+        DownloadSpec spec=binarySourceSpec(CID_GITHUB_URL,bytes);
+        std::string digest=hashText(std::string(reinterpret_cast<char*>(payload.data()),bytes));
+        if(hashed)spec.sha256=digest.c_str();
+        assert(startDownload(spec,CID_TEST_VALUE));waitPipelineReceived(2*block);
+        // The first disk write cannot finish, yet the next buffer was received.
+        // A serial receive/write path would remain at one block indefinitely.
+        for(unsigned n=0;!packageWriteEntered.load()&&n<5000;++n)sceKernelUsleep(1000);
+        assert(packageWriteEntered.load());
+        DownloadSnapshot s=downloadSnapshot();
+        assert(s.received==2*block&&s.transferMode==DOWNLOAD_MODE_PIPELINED&&s.connections==1);
+        assert(__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE)&&!packageBufferLifetimeChecks);
+        releasePackageWrite=true;s=finished();
+        assert(s.state==DONE&&s.received==bytes&&nativeJoinAttempts==1);
+        cleanHandles();checkPackageOutput(payload);
+    }
+    // With no extra native thread available, keep this original response and
+    // use the same validation/framing path synchronously without data mixing.
+    resetPipelineFixture(bytes);failJoinableCreate=true;
+    DownloadSpec spec=binarySourceSpec(CID_GITHUB_URL,bytes);
+    assert(startDownload(spec,CID_TEST_VALUE));DownloadSnapshot s=finished();
+    assert(s.state==DONE&&s.received==bytes&&s.transferMode==DOWNLOAD_MODE_SINGLE&&s.connections==1);
+    assert(!nativeJoinAttempts&&requests==1);cleanHandles();checkPackageOutput(payload);
+
+    // Disk failure wakes an already blocked socket and retains the disk error
+    // rather than replacing it with the network abort produced during cleanup.
+    resetPipelineFixture(bytes);seedPrevious();failWriteAfterBlockedRead=true;
+    sourceResponses[0].blockAfter=block+16*1024;
+    assert(startDownload(spec,CID_TEST_VALUE));s=finished();
+    assert(blocked.load()&&aborted.load()&&s.state==FAILED&&s.errorCode==DOWNLOAD_ERROR_FILESYSTEM);
+    assert(s.stage==DOWNLOAD_STAGE_FILE_WRITE&&s.nativeCode==ENOSPC&&nativeJoinAttempts==1);
+    cleanHandles();checkPrevious();
+
+    resetPipelineFixture(bytes);seedPrevious();shortPackageWrite=true;
+    assert(startDownload(spec,CID_TEST_VALUE));s=finished();
+    assert(s.state==FAILED&&s.errorCode==DOWNLOAD_ERROR_FILESYSTEM&&s.stage==DOWNLOAD_STAGE_FILE_WRITE);
+    assert(s.nativeCode==ENOSPC);cleanHandles();checkPrevious();
+
+    // Cancellation does not close stdio or free buffers while a disk worker
+    // still owns one. The pending partial is removed only after it is joined.
+    resetPipelineFixture(bytes);seedPrevious();holdPackageWrite=true;
+    assert(startDownload(spec,CID_TEST_VALUE));waitPipelineReceived(2*block);
+    cancelDownload();sceKernelUsleep(5000);
+    assert(__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE)&&liveJoinableThreads.load()==1);
+    assert(!packageBufferLifetimeChecks&&access(outputPath(true).c_str(),F_OK)==0);
+    releasePackageWrite=true;s=finished();
+    assert(s.state==CANCELLED&&s.received==2*block&&nativeJoinAttempts==1);
+    cleanHandles();checkPrevious();
+
+    // A failed first join cannot release resources while that worker is alive.
+    resetPipelineFixture(2*block);seedPrevious();holdPackageWrite=true;failFirstJoin=true;
+    spec=binarySourceSpec(CID_GITHUB_URL,2*block);
+    assert(startDownload(spec,CID_TEST_VALUE));waitPipelineReceived(2*block);
+    for(unsigned n=0;!nativeJoinAttempts.load()&&n<5000;++n)sceKernelUsleep(1000);
+    assert(nativeJoinAttempts==1&&__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));
+    assert(liveJoinableThreads==1&&!packageBufferLifetimeChecks);
+    releasePackageWrite=true;s=finished();
+    assert(s.state==FAILED&&s.errorCode==DOWNLOAD_ERROR_THREAD&&s.stage==DOWNLOAD_STAGE_THREAD);
+    assert(static_cast<uint32_t>(s.nativeCode)==0x80020016U&&nativeJoinAttempts==2);
+    cleanHandles();checkPrevious();
+}
 int main(){
  assert(hashText("")=="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
  assert(hashText("abc")=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
@@ -1369,6 +1467,7 @@ int main(){
  knownLengthCompletionTests();
  unknownLengthCompletionTests();
  sourceFramingCompletionTests();
+ pipelinedTransferTests();
  spec.filename="../sample.pkg";assert(!startDownload(spec));assert(downloadSnapshot().errorCode==DOWNLOAD_ERROR_SPEC);
  FILE* log=fopen((std::string(testDirectory())+"/download.log").c_str(),"rb");assert(log);char logged[8192]={0};size_t loggedBytes=fread(logged,1,sizeof(logged)-1,log);assert(loggedBytes>0&&!ferror(log));assert(__real_fclose(log)==0);assert(!strstr(logged,"https://")&&!strstr(logged,"token="));
  unlink(outputPath().c_str());unlink((std::string(testDirectory())+"/download.log").c_str());rmdir(testDirectory());

@@ -28,6 +28,9 @@ struct HubSnapshot {
     int32_t nativeCode;
     size_t completed, requested;
 };
+struct HubSavedLoginStatus {
+    bool configured, hasUsername, hasPassword, hasToken, restoring, storageError;
+};
 const size_t HUB_ADMIN_MAX_USERS = 5000;
 struct HubAdminUser {
     char id[65], username[65], plan[4];
@@ -45,13 +48,28 @@ struct HubResult {
 
 // Controller-thread entry points. One operation runs at a time; completing a
 // result does not download/install packages. Consume/free a result before starting
-// another operation. Credentials and bearer tokens are never persisted/logged.
+// another operation. Credentials and bearer tokens are never logged or included
+// in the PKG. Saved login is opt-in through configureHubSavedLogin below.
 // Setting the origin clears any session. Configure only the administrator's
 // trusted HTTPS origin; a login sends credentials to that exact origin.
 bool setHubOrigin(const char* trustedHttpsOrigin);
 inline bool configureHubBaseUrl(const char* origin) { return setHubOrigin(origin); }
 bool hubConfigured();
 bool hubOrigin(char* output, size_t capacity);
+// Creates the private /data/peppy-store/private directory (0700), separate from
+// the FTP inbox, after the app's base directory exists. The local file is 0600
+// and contains the last successful login's password and revocable
+// bearer. This is filesystem privacy, not a PS4 keychain or encryption.
+// Its stored role/metadata cannot grant access: restore always asks the server.
+bool configureHubSavedLogin(const char* path = 0);
+HubSavedLoginStatus hubSavedLoginStatus();
+bool hubSavedLoginCredentials(char* username, size_t usernameCapacity,
+                             char* password, size_t passwordCapacity);
+// Non-blocking startup restore. Reports HUB_LOGIN so the normal result handler
+// can synchronize premium items. Expired tokens allow one saved-password login;
+// a heartbeat denial never starts a replacement login. Explicit logout forgets
+// the local password/token, retaining only the username.
+bool startHubSavedLogin();
 bool startHubLogin(const char* username, const char* password);
 bool startHubLogout();
 bool startHubSync();

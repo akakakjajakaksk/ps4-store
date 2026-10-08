@@ -4,6 +4,7 @@
 #include "archive_sources.h"
 #include "mediafire_source.h"
 #include "peppy_hub_config.h"
+#include "hub_saved_login.h"
 
 #include <new>
 #include <stdio.h>
@@ -47,16 +48,20 @@ char g_origin[ORIGIN_CAP] = PEPPY_HUB_URL;
 uint64_t g_sessionDeadline = 0, g_premiumDeadline = 0;
 uint64_t g_sessionGeneration = 1, g_verifiedDeadline = 0, g_nextSessionCheck = 0;
 int g_sessionCheckBusy = 0;
+char g_savedPath[1024] = {};
+peppyHubSavedLogin::Record g_savedLogin = {};
+bool g_savedDirty = false, g_savedStorageError = false, g_restoreActive = false;
 const uint64_t SESSION_CHECK_US = 5000000ULL, SESSION_VERIFY_GRACE_US = 30000000ULL;
 struct Task {
     int operation, days;
     uint64_t generation;
-    bool background;
-    char username[65], password[PASSWORD_CAP], token[TOKEN_CAP], origin[ORIGIN_CAP];
+    bool background, restore, restoreSessionRequest;
+    uint64_t savedExpiresAt;
+    char username[65], password[PASSWORD_CAP], rememberedPassword[PASSWORD_CAP], token[TOKEN_CAP], origin[ORIGIN_CAP];
     char* text;
     size_t bytes;
-    Task() : operation(0), days(0), generation(0), background(false), text(0), bytes(0) {
-        username[0] = password[0] = token[0] = origin[0] = 0;
+    Task() : operation(0), days(0), generation(0), background(false), restore(false), restoreSessionRequest(false), savedExpiresAt(0), text(0), bytes(0) {
+        username[0] = password[0] = rememberedPassword[0] = token[0] = origin[0] = 0;
     }
 };
 void lock() { while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE)) sceKernelUsleep(1000); }
@@ -70,6 +75,23 @@ void destroyTask(Task* task) {
 size_t length(const char* text, size_t cap) { if (!text) return cap; size_t n = 0; while (n < cap && text[n]) ++n; return n; }
 uint64_t now() { time_t value = time(0); return value > 0 ? uint64_t(value) : 0; }
 bool cancelled() { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE) != 0; }
+void forgetSavedAuthorizationLocked() {
+    wipe(g_savedLogin.password, sizeof(g_savedLogin.password));
+    wipe(g_savedLogin.token, sizeof(g_savedLogin.token)); g_savedLogin.expiresAt = 0;
+    if (g_savedPath[0]) g_savedDirty = true;
+}
+void flushSavedLogin() {
+    // Serialize record changes and publication. This tiny, infrequent local
+    // write runs on the operation/heartbeat thread, never a network UI wait.
+    lock();
+    if (g_savedDirty && g_savedPath[0]) {
+        g_savedStorageError = !peppyHubSavedLogin::save(g_savedPath, g_savedLogin);
+        if (g_savedStorageError && !g_savedLogin.password[0] && !g_savedLogin.token[0])
+            g_savedStorageError = !peppyHubSavedLogin::forget(g_savedPath);
+        g_savedDirty = false;
+    }
+    unlock();
+}
 void clearSessionLocked() {
     wipe(g_token, sizeof(g_token)); memset(&g_session, 0, sizeof(g_session));
     g_sessionDeadline = g_premiumDeadline = g_verifiedDeadline = g_nextSessionCheck = 0;
@@ -235,10 +257,15 @@ int apiRequest(Handles& h, const Task& task, const char* path, bool post,
     char url[ORIGIN_CAP + 96]; int n = snprintf(url, sizeof(url), "%s%s", task.origin, path);
     if (n < 0 || size_t(n) >= sizeof(url)) return transportFail(h, HUB_ERROR_CONFIG);
     int status = 0; int rc = open(h, url, post ? 1 : ORBIS_METHOD_GET, body, bytes,
-        task.operation == HUB_LOGIN ? 0 : task.token, 0, status);
+        task.operation == HUB_LOGIN && !task.restoreSessionRequest ? 0 : task.token, 0, status);
     if (rc) return rc;
     if (status == 401 || status == 403) { lock();
-        if (task.generation == g_sessionGeneration) clearSessionLocked();
+        if (task.generation == g_sessionGeneration) {
+            clearSessionLocked();
+            // A failed entered password must not replace the remembered login.
+            // Session restoration handles an expired saved token separately.
+            if (task.operation != HUB_LOGIN) forgetSavedAuthorizationLocked();
+        }
         unlock(); return transportFail(h, HUB_ERROR_AUTH, 0, status); }
     // Never redirect a credential or bearer request to a second origin.
     if (status < 200 || status > 299) return transportFail(h, HUB_ERROR_HTTP, 0, status);
@@ -280,7 +307,8 @@ bool parseUser(peppyHubJson::Cursor& json, HubSession& session) {
     session.premium = session.admin || !strcmp(role, "premium");
     return true;
 }
-int parseSession(const char* body, size_t bytes, bool login, uint64_t generation = 0, bool quiet = false) {
+int parseSession(const char* body, size_t bytes, bool login, uint64_t generation = 0, bool quiet = false,
+                 const char* rememberedPassword = 0, const char* restoredToken = 0) {
     peppyHubJson::Cursor json(body, bytes); HubSession session = {}; char token[TOKEN_CAP] = {}, key[65];
     unsigned fields = 0; uint64_t serverTime = 0;
     bool valid = json.take('{') && !json.take('}');
@@ -296,7 +324,8 @@ int parseSession(const char* body, size_t bytes, bool login, uint64_t generation
         if (!valid || json.take('}')) break;
         valid = json.take(',');
     }
-    valid = valid && json.done() && (fields & 6) == 6 && (!login || ((fields & 1) && tokenValid(token)));
+    valid = valid && json.done() && (fields & 6) == 6 && (!login || ((fields & 1) && tokenValid(token))) &&
+        (!restoredToken || tokenValid(restoredToken));
     uint64_t reference = (fields & 8) ? serverTime : now();
     int result = !valid ? HUB_ERROR_JSON : !reference || session.expiresAt <= reference ? HUB_ERROR_EXPIRED : 0;
     uint64_t ttl = !result ? session.expiresAt - reference : 0;
@@ -309,13 +338,22 @@ int parseSession(const char* body, size_t bytes, bool login, uint64_t generation
         session.authenticated = true; g_session = session;
         uint64_t clock = peppyHubUptime();
         g_verifiedDeadline = clock + SESSION_VERIFY_GRACE_US;
-        if (login) g_nextSessionCheck = clock + SESSION_CHECK_US;
+        if (login || restoredToken) g_nextSessionCheck = clock + SESSION_CHECK_US;
         g_sessionDeadline = clock > UINT64_MAX - ttl * 1000000 ? UINT64_MAX : clock + ttl * 1000000;
         uint64_t premiumTtl = session.premiumExpiresAt > reference ? session.premiumExpiresAt - reference : 0;
         if (premiumTtl > ttl) premiumTtl = ttl;
         g_premiumDeadline = !premiumTtl ? 0 : clock > UINT64_MAX - premiumTtl * 1000000 ? UINT64_MAX : clock + premiumTtl * 1000000;
         if (!session.admin && !premiumTtl) g_session.premium = false;
-        if (login) { wipe(g_token, sizeof(g_token)); memcpy(g_token, token, strlen(token) + 1); }
+        if (login || restoredToken) {
+            const char* bearer = login ? token : restoredToken;
+            wipe(g_token, sizeof(g_token)); memcpy(g_token, bearer, strlen(bearer) + 1);
+            if (g_savedPath[0] && rememberedPassword) {
+                peppyHubSavedLogin::wipe(&g_savedLogin, sizeof(g_savedLogin));
+                strcpy(g_savedLogin.origin, g_origin); strcpy(g_savedLogin.username, session.username);
+                strcpy(g_savedLogin.password, rememberedPassword); strcpy(g_savedLogin.token, bearer);
+                g_savedLogin.expiresAt = session.expiresAt; g_savedDirty = true;
+            }
+        }
     } else clearSessionLocked();
     unlock(); wipe(token, sizeof(token)); return result ? (quiet ? result : fail(result)) : 0;
 }
@@ -476,6 +514,7 @@ char* credentialBody(Task& task, size_t& bytes) {
     bytes = used; return body;
 }
 int execute(Task& task, HubResult& result) {
+    if (task.operation == HUB_LOGOUT && !task.token[0]) return 0;
     if (task.operation == HUB_IMPORT_URLS) {
         result.catalog = new (std::nothrow) UserCatalog(); if (!result.catalog) return fail(HUB_ERROR_MEMORY);
         RangeContext context;
@@ -488,6 +527,24 @@ int execute(Task& task, HubResult& result) {
         return result.imports.added || result.imports.duplicates ? 0 : fail(error);
     }
     Handles handles; int error = init(handles); if (error) return error;
+    if (task.operation == HUB_LOGIN && task.restore && task.token[0]) {
+        char* response = 0; size_t bytes = 0; task.restoreSessionRequest = true;
+        error = apiRequest(handles, task, "/api/session", false, 0, 0, response, bytes);
+        if (!error) error = parseSession(response, bytes, false, task.generation, false,
+            task.rememberedPassword, task.token);
+        if (response) { wipe(response, bytes); free(response); }
+        task.restoreSessionRequest = false;
+        if (!error) return 0;
+        bool expired = task.savedExpiresAt && now() && task.savedExpiresAt <= now();
+        if (error != HUB_ERROR_AUTH || !expired || !task.password[0] || cancelled()) {
+            if (error == HUB_ERROR_AUTH) { lock(); forgetSavedAuthorizationLocked(); unlock(); }
+            return error;
+        }
+        // Only the startup operation may try an already-expired token's saved
+        // password once. Revoked accounts still fail the ordinary server login.
+        lock(); task.generation = g_sessionGeneration;
+        g_snapshot.errorCode = g_snapshot.nativeCode = g_snapshot.httpStatus = 0; unlock();
+    }
     char* body = 0; size_t bodyBytes = 0;
     if (task.operation == HUB_LOGIN || task.operation == HUB_ADMIN_CREATE_USER || task.operation == HUB_ADMIN_CHANGE_PASSWORD) {
         body = credentialBody(task, bodyBytes); if (!body) return fail(HUB_ERROR_MEMORY);
@@ -517,15 +574,20 @@ int execute(Task& task, HubResult& result) {
     }
     if (body) { wipe(body, bodyBytes); free(body); }
     wipe(task.password, sizeof(task.password));
-    if (!error && task.operation == HUB_LOGIN) error = parseSession(response, bytes, true);
+    if (!error && task.operation == HUB_LOGIN) error = parseSession(response, bytes, true,
+        task.generation, false, task.rememberedPassword);
     else if (!error && task.operation == HUB_SYNC) error = parseCatalog(response, bytes, result);
     else if (!error && task.operation == HUB_ADMIN_LIST_USERS) error = parseUsers(response, bytes, result);
     else if (!error) { peppyHubJson::Cursor json(response, bytes); if (!json.skip() || !json.done()) error = fail(HUB_ERROR_JSON); }
     if (response) { wipe(response, bytes); free(response); }
+    if (error == HUB_ERROR_AUTH && task.restore) { lock(); forgetSavedAuthorizationLocked(); unlock(); }
     return error;
 }
 void* worker(void* value) {
     Task* task = static_cast<Task*>(value); HubResult result = {}; result.operation = task->operation;
+    // Explicit logout forgets local secrets even when the server is offline or
+    // the operation is cancelled. The server token is still sent for revocation.
+    if (task->operation == HUB_LOGOUT) flushSavedLogin();
     int error = execute(*task, result);
     if (cancelled()) error = HUB_ERROR_CANCELLED;
     if (error && result.catalog && task->operation != HUB_IMPORT_URLS) { delete result.catalog; result.catalog = 0; }
@@ -534,19 +596,23 @@ void* worker(void* value) {
     if (error && task->operation == HUB_LOGIN) clearSessionLocked();
     g_result = result; g_snapshot.errorCode = error;
     g_snapshot.state = error == HUB_ERROR_CANCELLED ? HUB_CANCELLED : error ? HUB_FAILED : HUB_DONE;
+    g_restoreActive = false;
     unlock();
+    flushSavedLogin();
     destroyTask(task);
     __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE); return 0;
 }
 void* sessionCheckWorker(void* value) {
     Task* task = static_cast<Task*>(value);
-    {
+    flushSavedLogin();
+    if (task->token[0]) {
         Handles handles(true); char* response = 0; size_t bytes = 0;
         int error = init(handles);
         if (!error) error = apiRequest(handles, *task, "/api/session", false, 0, 0, response, bytes);
         if (!error) parseSession(response, bytes, false, task->generation, true);
         if (response) { wipe(response, bytes); free(response); }
     }
+    flushSavedLogin();
     destroyTask(task);
     __atomic_store_n(&g_sessionCheckBusy, 0, __ATOMIC_RELEASE);
     return 0;
@@ -557,13 +623,16 @@ bool launch(Task* task, bool requiresSession, bool admin) {
     if (!__atomic_compare_exchange_n(&g_busy, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { destroyTask(task); return false; }
     lock(); expireLocked();
     bool waiting = g_snapshot.state == HUB_DONE || g_snapshot.state == HUB_FAILED || g_snapshot.state == HUB_CANCELLED;
-    int error = waiting ? HUB_ERROR_INPUT : task->operation != HUB_IMPORT_URLS && !originValid(g_origin, 0) ? HUB_ERROR_CONFIG :
+    int error = waiting ? HUB_ERROR_INPUT : task->operation != HUB_IMPORT_URLS && task->operation != HUB_LOGOUT && !originValid(g_origin, 0) ? HUB_ERROR_CONFIG :
         requiresSession && !g_session.authenticated ? HUB_ERROR_AUTH : admin && !g_session.admin ? HUB_ERROR_AUTH : 0;
     if (!error) {
-        memcpy(task->origin, g_origin, strlen(g_origin) + 1); memcpy(task->token, g_token, strlen(g_token) + 1);
+        memcpy(task->origin, g_origin, strlen(g_origin) + 1);
+        if (!task->restore) memcpy(task->token, g_token, strlen(g_token) + 1);
+        if (task->operation == HUB_LOGOUT) forgetSavedAuthorizationLocked();
         if (task->operation == HUB_LOGIN || task->operation == HUB_LOGOUT) clearSessionLocked();
         task->generation = g_sessionGeneration;
         g_snapshot = {}; g_snapshot.state = HUB_RUNNING; g_snapshot.operation = task->operation;
+        g_restoreActive = task->restore;
         g_result = {}; __atomic_store_n(&g_cancel, 0, __ATOMIC_RELEASE);
     }
     unlock();
@@ -574,7 +643,7 @@ bool launch(Task* task, bool requiresSession, bool admin) {
     if (!rc) rc = scePthreadCreate(&thread, &attr, worker, task, "PeppyHub");
     if (initialized) scePthreadAttrDestroy(&attr);
     if (rc) {
-        lock(); g_snapshot.state = HUB_FAILED; g_snapshot.errorCode = HUB_ERROR_THREAD; g_snapshot.nativeCode = rc; g_result = {}; g_result.operation = task->operation; g_result.errorCode = HUB_ERROR_THREAD; unlock();
+        lock(); g_snapshot.state = HUB_FAILED; g_snapshot.errorCode = HUB_ERROR_THREAD; g_snapshot.nativeCode = rc; g_result = {}; g_result.operation = task->operation; g_result.errorCode = HUB_ERROR_THREAD; g_restoreActive = false; unlock();
         destroyTask(task); __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE); return false;
     }
     return true;
@@ -584,6 +653,7 @@ bool credentials(int operation, const char* username, const char* password, int 
     if (!usernameValid(username) || !n || n >= PASSWORD_CAP || (operation == HUB_ADMIN_CREATE_USER && days != 15 && days != 30 && days != 60)) return false;
     Task* task = new (std::nothrow) Task(); if (!task) return false;
     task->operation = operation; task->days = days; strcpy(task->username, username); memcpy(task->password, password, n + 1);
+    if (operation == HUB_LOGIN) memcpy(task->rememberedPassword, password, n + 1);
     return launch(task, operation != HUB_LOGIN, operation == HUB_ADMIN_CREATE_USER);
 }
 bool textTask(int operation, const char* text, size_t bytes) {
@@ -805,7 +875,9 @@ bool setHubOrigin(const char* origin) {
     char normalized[ORIGIN_CAP] = {};
     if (origin && *origin && !originValid(origin, normalized)) return false;
     if (__atomic_load_n(&g_busy, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_sessionCheckBusy, __ATOMIC_ACQUIRE)) return false;
-    lock(); clearSessionLocked(); strcpy(g_origin, normalized); unlock(); return true;
+    lock(); clearSessionLocked();
+    if (strcmp(g_origin, normalized)) { peppyHubSavedLogin::wipe(&g_savedLogin, sizeof(g_savedLogin)); g_savedDirty = false; }
+    strcpy(g_origin, normalized); unlock(); return true;
 }
 bool hubConfigured() { lock(); bool configured = originValid(g_origin, 0); unlock(); return configured; }
 bool hubOrigin(char* output, size_t capacity) {
@@ -814,11 +886,57 @@ bool hubOrigin(char* output, size_t capacity) {
     if (fits) memcpy(output, g_origin, n + 1); else output[0] = 0;
     unlock(); return fits;
 }
+bool configureHubSavedLogin(const char* path) {
+    if (__atomic_load_n(&g_busy, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_sessionCheckBusy, __ATOMIC_ACQUIRE)) return false;
+    bool parentReady = true;
+    if (!path) {
+        path = "/data/peppy-store/private/login.dat";
+        parentReady = mkdir("/data/peppy-store/private", 0700) == 0 || errno == EEXIST;
+    }
+    if (*path && !peppyHubSavedLogin::safePath(path)) return false;
+    peppyHubSavedLogin::Record saved = {};
+    int loaded = !parentReady ? -1 : *path ? peppyHubSavedLogin::load(path, saved) : 0;
+    lock(); peppyHubSavedLogin::wipe(&g_savedLogin, sizeof(g_savedLogin)); strcpy(g_savedPath, path);
+    g_savedDirty = false; g_savedStorageError = loaded < 0;
+    bool valid = loaded > 0 && !strcmp(saved.origin, g_origin) && usernameValid(saved.username) &&
+        (!saved.token[0] || (tokenValid(saved.token) && saved.expiresAt)) &&
+        (!saved.password[0] || length(saved.password, PASSWORD_CAP) < PASSWORD_CAP);
+    if (valid) memcpy(&g_savedLogin, &saved, sizeof(saved));
+    else if (loaded > 0 && !strcmp(saved.origin, g_origin)) g_savedStorageError = true;
+    unlock(); peppyHubSavedLogin::wipe(&saved, sizeof(saved)); return loaded >= 0;
+}
+HubSavedLoginStatus hubSavedLoginStatus() {
+    lock(); HubSavedLoginStatus status = {};
+    status.configured = g_savedPath[0] != 0; status.hasUsername = g_savedLogin.username[0] != 0;
+    status.hasPassword = g_savedLogin.password[0] != 0; status.hasToken = g_savedLogin.token[0] != 0;
+    status.restoring = g_restoreActive;
+    status.storageError = g_savedStorageError; unlock(); return status;
+}
+bool hubSavedLoginCredentials(char* username, size_t usernameCapacity, char* password, size_t passwordCapacity) {
+    if (!username || !usernameCapacity || !password || !passwordCapacity) return false;
+    lock(); bool fits = g_savedLogin.username[0] && strlen(g_savedLogin.username) < usernameCapacity &&
+        strlen(g_savedLogin.password) < passwordCapacity;
+    if (fits) { strcpy(username, g_savedLogin.username); strcpy(password, g_savedLogin.password); }
+    else username[0] = password[0] = 0;
+    unlock(); return fits;
+}
+bool startHubSavedLogin() {
+    Task* task = new (std::nothrow) Task(); if (!task) return false;
+    lock(); bool valid = g_savedPath[0] && !strcmp(g_savedLogin.origin, g_origin) &&
+        usernameValid(g_savedLogin.username) && (g_savedLogin.token[0] || g_savedLogin.password[0]);
+    if (valid) {
+        task->operation = HUB_LOGIN; task->restore = true; task->savedExpiresAt = g_savedLogin.expiresAt;
+        strcpy(task->username, g_savedLogin.username); strcpy(task->password, g_savedLogin.password);
+        strcpy(task->rememberedPassword, g_savedLogin.password); strcpy(task->token, g_savedLogin.token);
+    }
+    unlock(); if (!valid) { destroyTask(task); return false; }
+    return launch(task, false, false);
+}
 bool startHubLogin(const char* username, const char* password) { return credentials(HUB_LOGIN, username, password, 0); }
 bool startHubAdminCreateUser(const char* username, const char* password, int days) { return credentials(HUB_ADMIN_CREATE_USER, username, password, days); }
 bool startHubImportUrls(const char* urls, size_t bytes) { return textTask(HUB_IMPORT_URLS, urls, bytes); }
 bool startHubAdminPublish(const char* json, size_t bytes) { return textTask(HUB_ADMIN_PUBLISH, json, bytes); }
-bool startHubLogout() { Task* task = new (std::nothrow) Task(); if (!task) return false; task->operation = HUB_LOGOUT; return launch(task, true, false); }
+bool startHubLogout() { Task* task = new (std::nothrow) Task(); if (!task) return false; task->operation = HUB_LOGOUT; return launch(task, false, false); }
 bool startHubSync() { Task* task = new (std::nothrow) Task(); if (!task) return false; task->operation = HUB_SYNC; return launch(task, true, false); }
 bool startHubAdminListUsers() {
     Task* task = new (std::nothrow) Task(); if (!task) return false;
@@ -842,20 +960,22 @@ void pollHubSession() {
     lock(); expireLocked();
     uint64_t clock = peppyHubUptime();
     bool due = g_session.authenticated && clock >= g_nextSessionCheck && originValid(g_origin, 0);
-    unlock(); if (!due) return;
+    bool save = g_savedDirty;
+    unlock(); if (!due && !save) return;
     int expected = 0;
     if (!__atomic_compare_exchange_n(&g_sessionCheckBusy, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
     Task* task = new (std::nothrow) Task();
     if (!task) { __atomic_store_n(&g_sessionCheckBusy, 0, __ATOMIC_RELEASE); return; }
     lock(); expireLocked();
     due = g_session.authenticated && clock >= g_nextSessionCheck;
+    save = g_savedDirty;
     if (due) {
         task->background = true; task->generation = g_sessionGeneration;
         strcpy(task->token, g_token); strcpy(task->origin, g_origin);
         g_nextSessionCheck = clock + SESSION_CHECK_US;
     }
     unlock();
-    if (!due) { destroyTask(task); __atomic_store_n(&g_sessionCheckBusy, 0, __ATOMIC_RELEASE); return; }
+    if (!due && !save) { destroyTask(task); __atomic_store_n(&g_sessionCheckBusy, 0, __ATOMIC_RELEASE); return; }
     OrbisPthreadAttr attr; int32_t rc = scePthreadAttrInit(&attr); bool initialized = !rc;
     if (!rc) rc = scePthreadAttrSetdetachstate(&attr, 1);
     OrbisPthread thread;

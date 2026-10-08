@@ -12,6 +12,13 @@ struct DownloadSpec {
 
 enum DownloadState { IDLE = 0, RUNNING = 1, DONE = 2, FAILED = 3, CANCELLED = 4 };
 
+enum DownloadTransferMode {
+    DOWNLOAD_MODE_CONNECTING = 0,
+    DOWNLOAD_MODE_SINGLE = 1,
+    DOWNLOAD_MODE_PIPELINED = 2,
+    DOWNLOAD_MODE_RANGED = 3
+};
+
 enum DownloadError {
     DOWNLOAD_ERROR_SPEC = -1000,
     DOWNLOAD_ERROR_THREAD = -1001,
@@ -59,6 +66,8 @@ struct DownloadSnapshot {
     int32_t sslCode;
     uint32_t sslDetails;
     int networkState;
+    int transferMode;
+    int connections;
 };
 
 // Only one transfer can run. A rejected spec or thread failure sets FAILED.

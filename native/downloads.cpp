@@ -4,6 +4,7 @@
 #include "archive_sources.h"
 #include "http_range.h"
 #include "parallel_download.h"
+#include "stream_download.h"
 #include "user_pkg_header.h"
 
 #include <stddef.h>
@@ -58,6 +59,7 @@ int g_reqLock = 0, g_request = -1, g_parallelRequest = -1;
 int g_stage = DOWNLOAD_STAGE_NONE, g_native = 0, g_network = 0, g_ssl = 0;
 uint32_t g_sslDetails = 0;
 int g_networkState = -1;
+int g_transferMode = DOWNLOAD_MODE_CONNECTING, g_connections = 0;
 char g_url[URL_CAP], g_filename[NAME_CAP], g_digest[65];
 char g_contentId[CONTENT_ID_BYTES + 1];
 uint64_t g_expected = 0;
@@ -539,6 +541,8 @@ void clearAttemptDiagnostics() {
     __atomic_store_n(&g_ssl, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_sslDetails, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_received, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_transferMode, DOWNLOAD_MODE_CONNECTING, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_connections, 0, __ATOMIC_RELEASE);
 }
 bool openRange(HttpHandles& handles, const char* url, uint64_t first, uint64_t last,
                uint64_t total, const peppyHttpRange::Metadata& seed) {
@@ -597,6 +601,65 @@ void parallelReadFailure(void* value, int32_t native, peppyParallelDownload::Fai
 bool parallelCancelled(void*) { return cancelled(); }
 void parallelAbort(void*) { abortRequests(); }
 void parallelProgress(void*, uint64_t bytes) { __atomic_add_fetch(&g_received, bytes, __ATOMIC_ACQ_REL); }
+struct StreamContext {
+    HttpHandles* handles;
+    FILE* file;
+    uint64_t required;
+    uint8_t magic[4], packageHeader[PACKAGE_HEADER_BYTES];
+    size_t magicCount, packageHeaderCount;
+    Sha256 hash;
+    StreamContext(HttpHandles& h, FILE* f, uint64_t length)
+        : handles(&h), file(f), required(length), magic{0,0,0,0}, magicCount(0), packageHeaderCount(0) {}
+};
+int32_t streamRead(void* value, void* buffer, size_t bytes) {
+    StreamContext& context = *static_cast<StreamContext*>(value);
+    stage(DOWNLOAD_STAGE_READ);
+    return sceHttpReadData(context.handles->req, buffer, static_cast<uint32_t>(bytes));
+}
+void streamReadFailure(void* value, int32_t native, peppyStreamDownload::Failure* failure) {
+    parallelReadFailure(static_cast<StreamContext*>(value)->handles, native, failure);
+}
+bool streamValidate(void* value, const void* data, size_t bytes, peppyStreamDownload::Failure* failure) {
+    StreamContext& context = *static_cast<StreamContext*>(value);
+    const uint8_t* buffer = static_cast<const uint8_t*>(data);
+    if (!bytes && g_contentId[0] && context.packageHeaderCount != PACKAGE_HEADER_BYTES) {
+        *failure = peppyStreamDownload::detail::simpleFailure(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0);
+        return false;
+    }
+    for (size_t i = 0; i < bytes && context.magicCount < 4; ++i)
+        context.magic[context.magicCount++] = buffer[i];
+    if (context.magicCount == 4 && (context.magic[0] != 0x7f || context.magic[1] != 0x43 ||
+        context.magic[2] != 0x4e || context.magic[3] != 0x54)) {
+        *failure = peppyStreamDownload::detail::simpleFailure(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0);
+        return false;
+    }
+    if (g_contentId[0] && context.packageHeaderCount < PACKAGE_HEADER_BYTES) {
+        size_t take = PACKAGE_HEADER_BYTES - context.packageHeaderCount;
+        if (take > bytes) take = bytes;
+        memcpy(context.packageHeader + context.packageHeaderCount, buffer, take);
+        context.packageHeaderCount += take;
+        if (context.packageHeaderCount == PACKAGE_HEADER_BYTES && !matchingExpectedHeader(context.packageHeader, context.required)) {
+            *failure = peppyStreamDownload::detail::simpleFailure(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0);
+            return false;
+        }
+    }
+    return true;
+}
+bool streamConsume(void* value, const void* data, size_t bytes, peppyStreamDownload::Failure* failure) {
+    StreamContext& context = *static_cast<StreamContext*>(value);
+    errno = 0;
+    if (fwrite(data, 1, bytes, context.file) != bytes) {
+        *failure = peppyStreamDownload::detail::simpleFailure(DOWNLOAD_ERROR_FILESYSTEM,
+            DOWNLOAD_STAGE_FILE_WRITE, errno ? errno : EIO);
+        return false;
+    }
+    if (g_digest[0]) context.hash.update(static_cast<const uint8_t*>(data), bytes);
+    return true;
+}
+void streamMode(void*, bool threaded) {
+    __atomic_store_n(&g_transferMode, threaded ? DOWNLOAD_MODE_PIPELINED : DOWNLOAD_MODE_SINGLE, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_connections, 1, __ATOMIC_RELEASE);
+}
 int reportParallelFailure(const peppyParallelDownload::Failure& value) {
     __atomic_store_n(&g_ssl, value.ssl, __ATOMIC_RELEASE);
     __atomic_store_n(&g_sslDetails, value.sslDetails, __ATOMIC_RELEASE);
@@ -647,6 +710,8 @@ ParallelAttempt tryParallel(HttpHandles& primary, const char* url, uint64_t requ
     plan.lanes[0] = {&primary, parallelRead, parallelReadFailure, 0, middle};
     plan.lanes[1] = {&secondary, parallelRead, parallelReadFailure, middle, required - middle};
     stage(DOWNLOAD_STAGE_READ);
+    __atomic_store_n(&g_transferMode, DOWNLOAD_MODE_RANGED, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_connections, 2, __ATOMIC_RELEASE);
     peppyParallelDownload::Outcome outcome = peppyParallelDownload::run(plan);
     primary.closeRequest(true); secondary.closeRequest(true);
     // The helper returns only once every worker's last access has finished.
@@ -881,59 +946,33 @@ openResponse:
     FILE* file = fopen(partPath, "wb");
     if (!file) { int code = errno; removePartial(partPath); return fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, code); }
     int result = 0;
-    // OpenOrbis musl does not allocate a buffer for setvbuf(NULL, ...).
-    // The supplied buffer must remain owned through both fflush and fclose.
+    // Full queued blocks bypass most stdio buffering. A small caller-owned
+    // buffer handles tails; it remains alive through both fflush and fclose.
+    // The two larger buffers can now alternate network reception and writes.
+    char stdioBuffer[16 * 1024];
     errno = 0;
-    if (setvbuf(file, reinterpret_cast<char*>(buffers.second), _IOFBF, buffers.capacity) != 0)
+    if (setvbuf(file, stdioBuffer, _IOFBF, sizeof(stdioBuffer)) != 0)
         result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, errno ? errno : EIO);
-    uint64_t received = 0;
-    uint8_t* buffer = buffers.first;
-    uint8_t magic[4] = {0,0,0,0};
-    size_t magicCount = 0;
-    uint8_t packageHeader[PACKAGE_HEADER_BYTES];
-    size_t packageHeaderCount = 0;
-    Sha256 hash;
-    while (!result && !cancelled()) {
-        // A verified Content-Length completes the HTTP body at this byte count;
-        // waiting for a further EOF can time out after a complete download.
-        if (knownLength && received == responseLength) break;
-        uint64_t remaining = required - received;
-        size_t requested = remaining < buffers.capacity ? static_cast<size_t>(remaining) : buffers.capacity;
-        // Without HTTP framing, the catalog length alone does not prove EOF.
-        if (!requested) requested = 1;
-        stage(DOWNLOAD_STAGE_READ);
-        int32_t got = sceHttpReadData(handles.req, buffer, requested);
-        if (got < 0) { result = transferError(handles.req, DOWNLOAD_STAGE_READ, got); break; }
-        if (got == 0) break;
-        if ((size_t)got > requested || (uint64_t)got > remaining) {
-            result = fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_READ, got); break;
-        }
-        for (int32_t i = 0; i < got && magicCount < 4; ++i) magic[magicCount++] = buffer[i];
-        if (magicCount == 4 && (magic[0] != 0x7f || magic[1] != 0x43 ||
-            magic[2] != 0x4e || magic[3] != 0x54)) { result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0); break; }
-        if (g_contentId[0] && packageHeaderCount < PACKAGE_HEADER_BYTES) {
-            size_t take = PACKAGE_HEADER_BYTES - packageHeaderCount;
-            if (take > static_cast<size_t>(got)) take = static_cast<size_t>(got);
-            memcpy(packageHeader + packageHeaderCount, buffer, take);
-            packageHeaderCount += take;
-            if (packageHeaderCount == PACKAGE_HEADER_BYTES && !matchingExpectedHeader(packageHeader, required)) {
-                result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0); break;
-            }
-        }
-        if (fwrite(buffer, 1, (size_t)got, file) != (size_t)got) {
-            result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_WRITE, errno); break;
-        }
-        if (g_digest[0]) hash.update(buffer, (size_t)got);
-        received += (uint64_t)got;
-        __atomic_store_n(&g_received, received, __ATOMIC_RELEASE);
+    StreamContext stream(handles, file, required);
+    if (!result && !cancelled()) {
+        peppyStreamDownload::Plan plan = {};
+        plan.buffers = &buffers; plan.context = &stream;
+        plan.read = streamRead; plan.captureReadError = streamReadFailure;
+        plan.validate = streamValidate; plan.consume = streamConsume;
+        plan.cancelled = parallelCancelled; plan.abort = parallelAbort; plan.mode = streamMode;
+        plan.progress = parallelProgress;
+        plan.length = required; plan.framed = knownLength;
+        const peppyStreamDownload::Outcome outcome = peppyStreamDownload::run(plan);
+        if (outcome.failure.category) result = reportParallelFailure(outcome.failure);
     }
-    if (!result && !cancelled() && g_contentId[0] && packageHeaderCount != PACKAGE_HEADER_BYTES)
+    const uint64_t received = __atomic_load_n(&g_received, __ATOMIC_ACQUIRE);
+    if (!result && !cancelled() && g_contentId[0] && stream.packageHeaderCount != PACKAGE_HEADER_BYTES)
         result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0);
-    if (!result && !cancelled() && (received != required || magicCount != 4 ||
+    if (!result && !cancelled() && (received != required || stream.magicCount != 4 ||
         (knownLength && received != responseLength))) result = fail(DOWNLOAD_ERROR_LENGTH, DOWNLOAD_STAGE_READ, 0);
     if (!result && !cancelled() && g_digest[0]) {
         uint8_t digest[32];
-        hash.finish(digest);
+        stream.hash.finish(digest);
         for (int i = 0; i < 32; ++i)
             if (digest[i] != (uint8_t)((hex(g_digest[2*i]) << 4) | hex(g_digest[2*i+1])))
                 result = fail(DOWNLOAD_ERROR_HASH, DOWNLOAD_STAGE_HASH, 0);
@@ -990,6 +1029,8 @@ bool startDownload(const DownloadSpec& spec, const char* expectedContentId, int 
     __atomic_store_n(&g_ssl, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_sslDetails, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_networkState, -1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_transferMode, DOWNLOAD_MODE_CONNECTING, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_connections, 0, __ATOMIC_RELEASE);
     g_contentId[0] = 0;
     bool verifyContentId = expectedContentId && expectedContentId[0];
     bool digestOkay = !spec.sha256 || !spec.sha256[0];
@@ -1061,6 +1102,8 @@ DownloadSnapshot downloadSnapshot() {
     snapshot.sslCode = __atomic_load_n(&g_ssl, __ATOMIC_ACQUIRE);
     snapshot.sslDetails = __atomic_load_n(&g_sslDetails, __ATOMIC_ACQUIRE);
     snapshot.networkState = __atomic_load_n(&g_networkState, __ATOMIC_ACQUIRE);
+    snapshot.transferMode = __atomic_load_n(&g_transferMode, __ATOMIC_ACQUIRE);
+    snapshot.connections = __atomic_load_n(&g_connections, __ATOMIC_ACQUIRE);
     return snapshot;
 }
 

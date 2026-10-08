@@ -145,6 +145,7 @@ static void reset() {
     contexts = pools = sslContexts = templates = resolverCount = threadFailure = 0;
     privateDns = badDns = secure = noRedirect = false; holdSend = insideSend = aborted = false; heldReplyIndex = SIZE_MAX;
     assert(setHubOrigin(ORIGIN));
+    assert(configureHubSavedLogin(""));
 }
 static std::string sessionJson(const char* role = "premium", int seconds = 3600, bool token = false) {
     std::string text = "{\"server_time\":" + std::to_string(now()) + ",\"expires_at\":" + std::to_string(now() + seconds) + ",\"user\":{\"id\":\"a-user-id\",\"username\":\"peppy_test\",\"role\":\"" + role + "\",\"expires_at\":" + std::to_string(now() + seconds) + "}";
@@ -174,6 +175,152 @@ static Reply rangeReply(const std::string& url, const std::string& body, uint64_
     r.headers = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" + std::to_string(total) +
         "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n";
     return r;
+}
+
+static void savedLoginChecks() {
+    char folder[] = "/tmp/peppy-login-test-XXXXXX"; assert(mkdtemp(folder));
+    // Existing builds created the outer FTP/app directory as 0777. Credentials
+    // use a dedicated private child, so those upgrades still save successfully.
+    assert(!chmod(folder, 0777)); const std::string privateFolder = std::string(folder) + "/private";
+    assert(!mkdir(privateFolder.c_str(), 0700));
+    const std::string path = privateFolder + "/login.dat";
+    reset(); assert(configureHubSavedLogin(path.c_str()));
+    assert(hubSavedLoginStatus().configured && !hubSavedLoginStatus().hasUsername);
+    assert(!startHubSavedLogin() && !hubSession().authenticated);
+    login();
+    HubSavedLoginStatus status = hubSavedLoginStatus();
+    assert(status.hasUsername && status.hasPassword && status.hasToken && !status.storageError && !status.restoring);
+    struct stat st; assert(!stat(path.c_str(), &st) && (st.st_mode & 0777) == 0600);
+    peppyHubSavedLogin::Record record = {};
+    assert(peppyHubSavedLogin::load(path.c_str(), record) == 1);
+    assert(!strcmp(record.username, "peppy_test") && !strcmp(record.password, "some_test_password") &&
+        !strcmp(record.token, TOKEN.c_str()) && !strcmp(record.origin, ORIGIN));
+    const uint64_t expiry = record.expiresAt;
+
+    // Restart has no authorization until the actual token's server validation
+    // completes. No saved role/flag can expose premium or administrator actions.
+    reset(); assert(configureHubSavedLogin(path.c_str()));
+    char username[65], password[129];
+    assert(hubSavedLoginCredentials(username, sizeof(username), password, sizeof(password)));
+    assert(!strcmp(username, "peppy_test") && !strcmp(password, "some_test_password") && !hubSession().authenticated);
+    sessionReply(); holdSend = true; heldReplyIndex = 0;
+    assert(startHubSavedLogin());
+    for (int i = 0; i < 10000 && !insideSend; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(insideSend && hubSavedLoginStatus().restoring && !hubSession().authenticated && sentBody.empty());
+    holdSend = false; HubResult r = finished();
+    assert(!r.errorCode && r.operation == HUB_LOGIN && hubSession().premium && !hubSession().admin);
+    freeHubResult(&r);
+
+    // The same remembered login can become admin/user only by a server reply.
+    reset(); assert(configureHubSavedLogin(path.c_str())); sessionReply("admin");
+    assert(startHubSavedLogin()); r = finished(); assert(!r.errorCode && hubSession().admin); freeHubResult(&r);
+    reset(); assert(configureHubSavedLogin(path.c_str())); sessionReply("user");
+    assert(startHubSavedLogin()); r = finished(); assert(!r.errorCode && hubSession().authenticated && !hubSession().premium && !hubSession().admin); freeHubResult(&r);
+
+    // A mistyped replacement login cannot corrupt the previous successful one.
+    replies.push_back(Reply(std::string(ORIGIN) + "/api/login", "{}", 401, 1));
+    assert(startHubLogin("other_user", "wrong_password")); r = finished();
+    assert(r.errorCode == HUB_ERROR_AUTH && !hubSession().authenticated); freeHubResult(&r);
+    assert(peppyHubSavedLogin::load(path.c_str(), record) == 1 && !strcmp(record.username, "peppy_test") &&
+        !strcmp(record.password, "some_test_password") && !strcmp(record.token, TOKEN.c_str()));
+
+    // A non-expired token denied at startup never retries a saved password.
+    reset(); assert(configureHubSavedLogin(path.c_str()));
+    Reply denied(std::string(ORIGIN) + "/api/session", "{}", 401); denied.bearer = "Bearer " + TOKEN; replies.push_back(denied);
+    assert(startHubSavedLogin()); r = finished(); assert(r.errorCode == HUB_ERROR_AUTH && opened == 1); freeHubResult(&r);
+    assert(peppyHubSavedLogin::load(path.c_str(), record) == 1 && record.username[0] && !record.password[0] && !record.token[0]);
+    reset(); assert(configureHubSavedLogin(path.c_str())); assert(!startHubSavedLogin());
+
+    // A proven expired saved token permits exactly one anonymous password login.
+    login(); assert(peppyHubSavedLogin::load(path.c_str(), record) == 1);
+    record.expiresAt = now() - 1; assert(peppyHubSavedLogin::save(path.c_str(), record));
+    reset(); assert(configureHubSavedLogin(path.c_str())); replies.push_back(denied);
+    replies.push_back(Reply(std::string(ORIGIN) + "/api/login", sessionJson("premium", 3600, true), 200, 1));
+    assert(startHubSavedLogin()); r = finished();
+    assert(!r.errorCode && opened == 2 && hubSession().premium && sentBody.find("some_test_password") != std::string::npos); freeHubResult(&r);
+    assert(peppyHubSavedLogin::load(path.c_str(), record) == 1 && record.expiresAt >= expiry && record.password[0]);
+    record.expiresAt = now() - 1; assert(peppyHubSavedLogin::save(path.c_str(), record));
+    reset(); assert(configureHubSavedLogin(path.c_str())); replies.push_back(denied);
+    replies.push_back(Reply(std::string(ORIGIN) + "/api/login", "{}", 401, 1));
+    assert(startHubSavedLogin()); r = finished(); assert(r.errorCode == HUB_ERROR_AUTH && opened == 2 && !hubSession().authenticated); freeHubResult(&r);
+    assert(!hubSavedLoginStatus().hasPassword && !hubSavedLoginStatus().hasToken);
+
+    // A heartbeat denial clears remembered authorization and cannot relogin.
+    reset(); assert(configureHubSavedLogin(path.c_str())); login(); replies.push_back(denied);
+    clockAdvanceUs = 6000000; pollHubSession(); sessionChecked();
+    assert(!hubSession().authenticated && !hubSavedLoginStatus().hasPassword && !hubSavedLoginStatus().hasToken && opened == 2);
+    pollHubSession(); assert(opened == 2);
+
+    // Offline verification remains fail-closed while preserving the saved login
+    // for a later restart/retry. A temporary network outage is not revocation.
+    reset(); assert(configureHubSavedLogin(path.c_str())); login(); sessionReply(); replies.back().sendError = -72;
+    clockAdvanceUs = 6000000; pollHubSession(); sessionChecked();
+    clockAdvanceUs = 31000000; assert(!hubSession().authenticated);
+    assert(hubSavedLoginStatus().hasPassword && hubSavedLoginStatus().hasToken);
+    assert(startHubLogout()); r = finished(); assert(!r.errorCode && opened == 2); freeHubResult(&r);
+    assert(!hubSavedLoginStatus().hasPassword && !hubSavedLoginStatus().hasToken);
+    // Prepare another remembered login for the restart/admin and online-logout
+    // checks after the unauthenticated local logout.
+    reset(); assert(configureHubSavedLogin(path.c_str())); login();
+    reset(); assert(configureHubSavedLogin(path.c_str())); sessionReply("admin");
+    assert(startHubSavedLogin()); r = finished(); assert(!r.errorCode && hubSession().admin); freeHubResult(&r);
+
+    // Even an offline logout forgets the local password/token before its request.
+    Reply logout(std::string(ORIGIN) + "/api/logout", "{}", 200, 1); logout.bearer = "Bearer " + TOKEN; logout.sendError = -72; replies.push_back(logout);
+    assert(startHubLogout()); r = finished(); assert(r.errorCode == HUB_ERROR_NETWORK && !hubSession().authenticated); freeHubResult(&r);
+    assert(peppyHubSavedLogin::load(path.c_str(), record) == 1 && record.username[0] && !record.password[0] && !record.token[0]);
+
+    // Cancelled restore cannot authorize or overwrite the previous good login.
+    reset(); assert(configureHubSavedLogin(path.c_str())); login();
+    reset(); assert(configureHubSavedLogin(path.c_str())); sessionReply("admin"); holdSend = true;
+    assert(startHubSavedLogin());
+    for (int i = 0; i < 10000 && !insideSend; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(insideSend); cancelHubOperation(); r = finished();
+    assert(r.errorCode == HUB_ERROR_CANCELLED && !hubSession().authenticated && hubSavedLoginStatus().hasPassword); freeHubResult(&r);
+
+    // A delayed success/401 for an old token must not erase the newer saved
+    // password/token or rewrite its role. Both requests run on real host threads.
+    for (int staleStatus = 200; staleStatus <= 401; staleStatus += 201) {
+        reset(); assert(configureHubSavedLogin(path.c_str())); login();
+        Reply stale(std::string(ORIGIN) + "/api/session", sessionJson(), staleStatus);
+        stale.bearer = "Bearer " + TOKEN; replies.push_back(stale);
+        std::string newLogin = sessionJson("admin", 3600, true);
+        size_t tokenAt = newLogin.find(TOKEN); assert(tokenAt != std::string::npos);
+        const std::string newToken(64, 'b'); newLogin.replace(tokenAt, TOKEN.size(), newToken);
+        replies.push_back(Reply(std::string(ORIGIN) + "/api/login", newLogin, 200, 1));
+        holdSend = true; heldReplyIndex = 1; insideSend = false; clockAdvanceUs = 6000000; pollHubSession();
+        for (int i = 0; i < 10000 && !insideSend; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        assert(insideSend && startHubLogin("peppy_test", "new_saved_password"));
+        // finished() normally checks all HTTP handles, including this intentionally
+        // held heartbeat; wait for just the main result before releasing it.
+        bool ready = false;
+        for (int i = 0; i < 10000 && !ready; ++i) { ready = consumeHubResult(&r); if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+        assert(ready && !r.errorCode && hubSession().admin); freeHubResult(&r);
+        holdSend = false; sessionChecked();
+        assert(hubSession().admin && !strcmp(g_token, newToken.c_str()));
+        assert(peppyHubSavedLogin::load(path.c_str(), record) == 1 && !strcmp(record.token, newToken.c_str()) &&
+            !strcmp(record.password, "new_saved_password"));
+    }
+
+    // Credentials are origin-bound; a changed origin cannot reuse the record.
+    reset(); assert(setHubOrigin("https://other.example.org")); assert(configureHubSavedLogin(path.c_str()));
+    assert(!hubSavedLoginStatus().hasUsername && !startHubSavedLogin() && !hubSession().authenticated);
+
+    // Reject files that disclose credentials, symlinks, hardlinks and malformed
+    // records rather than granting even a temporary offline session.
+    assert(!chmod(path.c_str(), 0644)); reset(); assert(!configureHubSavedLogin(path.c_str()));
+    assert(hubSavedLoginStatus().storageError && !startHubSavedLogin()); assert(!chmod(path.c_str(), 0600));
+    const std::string linkPath = privateFolder + "/symlink.dat", hardPath = privateFolder + "/hard.dat";
+    assert(!symlink(path.c_str(), linkPath.c_str())); assert(!configureHubSavedLogin(linkPath.c_str()));
+    assert(!peppyHubSavedLogin::save(linkPath.c_str(), record));
+    assert(peppyHubSavedLogin::forget(linkPath.c_str()) && !stat(path.c_str(), &st));
+    assert(!link(path.c_str(), hardPath.c_str())); assert(!configureHubSavedLogin(path.c_str())); assert(!unlink(hardPath.c_str()));
+    int fd = open(path.c_str(), O_WRONLY); assert(fd >= 0); const char broken = '!'; assert(write(fd, &broken, 1) == 1); assert(!close(fd));
+    assert(!configureHubSavedLogin(path.c_str()) && !startHubSavedLogin());
+    assert(!chmod(privateFolder.c_str(), 0755)); assert(!peppyHubSavedLogin::save(path.c_str(), record)); assert(!chmod(privateFolder.c_str(), 0700));
+    assert(!peppyHubSavedLogin::safePath("/tmp/../login.dat") && !peppyHubSavedLogin::safePath("/tmp/login.dat/"));
+    reset(); assert(!unlink(path.c_str()) && !rmdir(privateFolder.c_str()) && !rmdir(folder));
+    peppyHubSavedLogin::wipe(&record, sizeof(record)); wipe(password, sizeof(password));
 }
 
 int main() {
@@ -440,6 +587,7 @@ int main() {
     const char* malformed[] = {"\"\\u0000\"", "\"\\ud800\"", "\"\\udc00\"", "01", "{\"a\":1,}", "[1,]", "true false", "\"\xc0\xaf\""};
     for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); ++i) { peppyHubJson::Cursor json(malformed[i], strlen(malformed[i])); assert(!json.skip() || !json.done()); }
     char utf[32]; peppyHubJson::Cursor unicode("\"\\ud83d\\ude00\"", 14); assert(unicode.string(utf, sizeof(utf)) && unicode.done() && strlen(utf) == 4);
-    printf("hub client: async session/catalog/admin/import, user invalidation, independent 5-second verification, stale-session race guards, expiry, TLS/range framing, credential isolation, bounded MediaFire landing resolution and cancellation checks passed\n");
+    savedLoginChecks();
+    printf("hub client: async session/catalog/admin/import, private saved login/restart/admin/expiry/logout, user invalidation, independent 5-second verification, stale-session race guards, expiry, TLS/range framing, credential isolation, bounded MediaFire landing resolution and cancellation checks passed\n");
     return 0;
 }
