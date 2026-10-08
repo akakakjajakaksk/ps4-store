@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "source_reviewed_at": "2026-10-08",
+  "accepted_new_entries": [
+    {
+      "id": "CUSA08171-PATCH-0100",
+      "name": "Serial Cleaner — atualização 01.00",
+      "version": "01.00",
+      "size": 601161728,
+      "url": "https://archive.org/download/ps4-fpkg-collection-english-s/Serial%20Cleaner%20-%20[US]%20[EN]%20[1.00].pkg",
+      "filename": "CUSA08171_update_0100.pkg",
+      "kind": "update",
+      "source_kind": "community",
+      "platform": "ps4",
+      "language": [],
+      "requires_data": "Requer o jogo base CUSA08171 instalado. A Peppy ainda não oferece esse jogo base.",
+      "description": "Atualização de PS4 publicada por uma fonte da comunidade. Idioma e funcionamento no firmware 13.52 não confirmados.",
+      "content_id": "UP4395-CUSA08171_00-SERIALCLEANERUSX",
+      "content_type": 26,
+      "content_flags": 1785724928,
+      "iro_tag": 0,
+      "is_theme": false,
+      "adult": false,
+      "source_url": "https://archive.org/details/ps4-fpkg-collection-english-s"
+    },
+    {
+      "id": "CUSA16579-PATCH-0131",
+      "name": "Cyberpunk 2077 — atualização 01.31",
+      "version": "01.31",
+      "size": 59416903680,
+      "url": "https://archive.org/download/ps4-fpkg-collection-english-c/Cyberpunk%202077%20-%20[EU]%20[EN]%20[1.31].pkg",
+      "filename": "CUSA16579_update_0131.pkg",
+      "kind": "update",
+      "source_kind": "community",
+      "platform": "ps4",
+      "language": [],
+      "requires_data": "Requer o jogo base CUSA16579 instalado. A Peppy ainda não oferece esse jogo base.",
+      "description": "Atualização de PS4 publicada por uma fonte da comunidade. Idioma e funcionamento no firmware 13.52 não confirmados.",
+      "content_id": "EP4497-CUSA16579_00-0000000000000001",
+      "content_type": 26,
+      "content_flags": 1785724928,
+      "iro_tag": 0,
+      "is_theme": false,
+      "adult": false,
+      "source_url": "https://archive.org/details/ps4-fpkg-collection-english-c"
+    }
+  ],
+  "accepted_count": 2,
+  "evidence": [
+    {
+      "id": "CUSA08171-PATCH-0100",
+      "name": "Serial Cleaner — atualização 01.00",
+      "title_id": "CUSA08171",
+      "category": "Atualizações",
+      "platform": "PS4",
+      "package_kind": "update",
+      "version": "01.00",
+      "source_kind": "external_archive",
+      "source": "Internet Archive",
+      "source_url": "https://archive.org/download/ps4-fpkg-collection-english-s/Serial%20Cleaner%20-%20[US]%20[EN]%20[1.00].pkg",
+      "url": "https://archive.org/download/ps4-fpkg-collection-english-s/Serial%20Cleaner%20-%20[US]%20[EN]%20[1.00].pkg",
+      "download_url": "https://archive.org/download/ps4-fpkg-collection-english-s/Serial%20Cleaner%20-%20[US]%20[EN]%20[1.00].pkg",
+      "size_bytes": 601161728,
+      "content_id": "UP4395-CUSA08171_00-SERIALCLEANERUSX",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_id": "UP4395-CUSA08171_00-SERIALCLEANERUSX",
+        "content_type": 26,
+        "content_flags": 1785724928,
+        "package_size": 601161728,
+        "content_range": "bytes 0-1079/601161728",
+        "final_host": "dn721501.ca.archive.org",
+        "received": 1080
+      },
+      "verification_status": "previous_public_pkg_header_checked_not_reprobed_this_round",
+      "verification_method": "Previous HTTPS Range bytes=0-1079; binary header/content ID/package size checked. Network revalidation unavailable this round.",
+      "requires_data": "Requer o jogo base com o mesmo Title ID; esse jogo base não está no catálogo atual.",
+      "base_available_in_current_catalog": false,
+      "language": "en",
+      "language_evidence": "Collection/filename EN label only; not verified in binary.",
+      "portuguese_confirmed": false,
+      "firmware": "13.52: testar no console",
+      "verified_console_execution": false,
+      "header_evidence_file": "research/unofficial-review/archive-max-probes.json",
+      "content_flags_hex": "6a700000",
+      "add_decision": "eligible_update_if_runtime_supports_patch_and_missing_base_is_explained"
+    },
+    {
+      "id": "CUSA16579-PATCH-0131",
+      "name": "Cyberpunk 2077 — atualização 01.31",
+      "title_id": "CUSA16579",
+      "category": "Atualizações",
+      "platform": "PS4",
+      "package_kind": "update",
+      "version": "01.31",
+      "source_kind": "external_archive",
+      "source": "Internet Archive",
+      "source_url": "https://archive.org/download/ps4-fpkg-collection-english-c/Cyberpunk%202077%20-%20[EU]%20[EN]%20[1.31].pkg",
+      "url": "https://archive.org/download/ps4-fpkg-collection-english-c/Cyberpunk%202077%20-%20[EU]%20[EN]%20[1.31].pkg",
+      "download_url": "https://archive.org/download/ps4-fpkg-collection-english-c/Cyberpunk%202077%20-%20[EU]%20[EN]%20[1.31].pkg",
+      "size_bytes": 59416903680,
+      "content_id": "EP4497-CUSA16579_00-0000000000000001",
+      "header_verification": {
+        "magic": "7f434e54",
+        "content_id": "EP4497-CUSA16579_00-0000000000000001",
+        "content_type": 26,
+        "content_flags": 1785724928,
+        "package_size": 59416903680,
+        "content_range": "bytes 0-1079/59416903680",
+        "final_host": "ia601509.us.archive.org",
+        "received": 1080
+      },
+      "verification_status": "previous_public_pkg_header_checked_not_reprobed_this_round",
+      "verification_method": "Previous HTTPS Range bytes=0-1079; binary header/content ID/package size checked. Network revalidation unavailable this round.",
+      "requires_data": "Requer o jogo base com o mesmo Title ID; esse jogo base não está no catálogo atual.",
+      "base_available_in_current_catalog": false,
+      "language": "en",
+      "language_evidence": "Collection/filename EN label only; not verified in binary.",
+      "portuguese_confirmed": false,
+      "firmware": "13.52: testar no console",
+      "verified_console_execution": false,
+      "header_evidence_file": "research/unofficial-review/archive-replica-probes.json",
+      "content_flags_hex": "6a700000",
+      "add_decision": "eligible_update_if_runtime_supports_patch_and_missing_base_is_explained"
+    }
+  ],
+  "network_note": "The two new author PKG header probes were interrupted while waiting on network permission and produced no results. These two updates reuse prior public 1080-byte Range proof; they were not freshly reprobed in this round. Client still checks the downloaded PKG header before installation.",
+  "baseline_catalog": {
+    "free_entries": 860,
+    "new_homebrew_seed_before_updates": 12,
+    "premium_seed_after_updates": 14
+  },
+  "eligibility_change": "Earlier rejected because only base packages were supported. The user now allows updates; content type 0x1A with patch flags 0x6A700000 correctly maps to update. Base packages of these exact Title IDs are not supplied.",
+  "language_priority": "Portuguese wins only with actual evidence. EN in archive collection/filename alone does not establish packaged text or audio; no Portuguese/audio claims added.",
+  "source_classification": "community is a provenance label, not proof of lawful redistribution, license possession, or PS4 firmware compatibility.",
+  "excluded_author_candidates": [
+    {
+      "name": "Relic Hunters Zero",
+      "platform": "PS4",
+      "package_kind": "base",
+      "category": "Jogos homebrew",
+      "repository": "MDashK/Relic-Hunters-Zero-PS4",
+      "release_url": "https://github.com/MDashK/Relic-Hunters-Zero-PS4/releases/tag/v1.0.0",
+      "version": "v1.0.0",
+      "url": "https://github.com/MDashK/Relic-Hunters-Zero-PS4/releases/download/v1.0.0/IV0000-RHZR00001_00-RELICHUNTERSZER0-A0100-V0100.pkg",
+      "filename": "IV0000-RHZR00001_00-RELICHUNTERSZER0-A0100-V0100.pkg",
+      "size_bytes": 71696384,
+      "sha256": null,
+      "source_kind": "official",
+      "content_id": null,
+      "header_verification": null,
+      "verification_status": "public_author_release_metadata_only_header_probe_interrupted",
+      "install_compatible": null,
+      "firmware": "13.52: testar no console",
+      "portuguese_confirmed": false,
+      "add_decision": "do_not_publish_as_verified_before_pkg_header_and_sfo_check"
+    },
+    {
+      "name": "Sound of Nature",
+      "platform": "PS4",
+      "package_kind": "theme",
+      "category": "Temas",
+      "repository": "F1R3xS1NN3R/sound-of-nature",
+      "release_url": "https://github.com/F1R3xS1NN3R/sound-of-nature/releases/tag/ps4",
+      "version": "ps4",
+      "url": "https://github.com/F1R3xS1NN3R/sound-of-nature/releases/download/ps4/UP0001-CUSA63336_00-PSTCTHEME0100000-A0000-V0200.pkg",
+      "filename": "UP0001-CUSA63336_00-PSTCTHEME0100000-A0000-V0200.pkg",
+      "size_bytes": 20512768,
+      "sha256": null,
+      "source_kind": "official",
+      "content_id": null,
+      "header_verification": null,
+      "verification_status": "public_author_release_metadata_only_header_probe_interrupted",
+      "install_compatible": null,
+      "firmware": "13.52: testar no console",
+      "portuguese_confirmed": false,
+      "add_decision": "do_not_publish_as_verified_before_pkg_header_and_sfo_check"
+    }
+  ],
+  "reviewed_sources": [
+    {
+      "source": "Sandro Store Games",
+      "url": "https://loja.sandrostoregames.com/",
+      "result": "Public storefront found; no authorized public exportable games catalog. No authenticated/private access attempted."
+    },
+    {
+      "source": "Infinity store",
+      "url": "https://github.com/infinitykkj",
+      "result": "Search results predominantly PS3 and commercial retail stores; no direct exportable public PS4 catalog identified."
+    },
+    {
+      "source": "GameBaTo",
+      "url": "https://pkg-zone.com/details/GBTX00000",
+      "result": "App/catalog claims found; app already exists in free catalog. No public game export identified."
+    },
+    {
+      "source": "PKG-Zone media",
+      "url": "https://pkg-zone.com/?author=HK31",
+      "result": "Search indexed YouTube/Crunchyroll/Plex media entries; direct details fetched via web tool timed out or returned HTTP 500. No candidate header obtained."
+    },
+    {
+      "source": "Crunchyroll HK31",
+      "url": "https://ayakamods.com/threads/crunchyroll-cusa-02644-v1-34-nopsn.45880/",
+      "result": "Public author thread shows CUSA02644 v1.34; download gated behind login/Like and comments report broken links. No gated content accessed or header obtained."
+    },
+    {
+      "source": "NoPSN wiki",
+      "url": "https://consolemods.org/wiki/PS4:No-PSN_Apps",
+      "result": "Old Crunchyroll 1.27 links point to inactive Zippyshare/anonfile hosts. Service accounts/subscriptions remain separate from PSN bypass."
+    },
+    {
+      "source": "FPKGi Catalog Hub",
+      "url": "https://github.com/Dinos17/FPKGi-Catalog-Hub",
+      "result": "Public apps/updates/DLC manifests inspected. 23 apps,12 updates,7 DLC metadata rows. Apps metadata appears erroneous: many unrelated items all named Store/version01.00/size24772608. Do not trust these fields. HF provider unsupported and archive DLC not header checked; none imported."
+    },
+    {
+      "source": "Master-s PS4 Themes",
+      "url": "https://github.com/Master-s/PS4-Themes/releases",
+      "result": "Six author releases reviewed, predominantly 7z/ctmthm packages for PC/USB tools; no direct PKG release accepted."
+    },
+    {
+      "source": "PS4ThemesPKG",
+      "url": "https://github.com/ps4themespkg/ps4themespkg.github.io",
+      "result": "Website ships browser payload theme JS and artwork, no public direct PKG files in repository."
+    },
+    {
+      "source": "W-i-n-7 themes",
+      "url": "https://github.com/W-i-n-7/ps4-themes",
+      "result": "Many public ZIP theme files; no direct PKGs/releases. Not imported into native direct-PKG pipeline."
+    }
+  ],
+  "scope_note": "Search is broad but does not exhaust the Internet. No new streaming app or theme binary was proven in this round; no console execution test occurred."
+}

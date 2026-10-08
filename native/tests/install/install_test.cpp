@@ -12,10 +12,14 @@
 #include <sys/stat.h>
 
 static std::string testRoot, localDirectory, systemDirectory, copyDirectory, systemRoot;
+static std::string inboxBaseDirectory, inboxUpdateDirectory, inboxDlcDirectory;
 #define PEPPY_DOWNLOAD_DIRECTORY localDirectory.c_str()
 #define PEPPY_INSTALL_SYSTEM_DIRECTORY systemDirectory.c_str()
 #define PEPPY_INSTALL_COPY_DIRECTORY copyDirectory.c_str()
 #define PEPPY_INSTALL_ROOT_DIRECTORY systemRoot.c_str()
+#define PEPPY_INBOX_BASE_DIRECTORY inboxBaseDirectory.c_str()
+#define PEPPY_INBOX_UPDATE_DIRECTORY inboxUpdateDirectory.c_str()
+#define PEPPY_INBOX_DLC_DIRECTORY inboxDlcDirectory.c_str()
 #define PEPPY_PKG_SERVER_HEADER "tests/install/stubs/pkg_server.h"
 #include "../../install.cpp"
 
@@ -40,6 +44,9 @@ static int threadCreateCalls;
 static int registerCalls, startCalls, progressCalls, existsCalls, stopCalls, unregisterCalls;
 static int jailbreakCalls, restoreCalls, titleCalls, sdkCalls, foregroundUserCalls;
 static int storageRegisterCalls, httpRegisterCalls, serverStartCalls, serverStopCalls, sourceCloseCalls;
+static int debugRegisterCalls, expectedRegisteredKind;
+static const char* expectedRegisteredType = "PS4GD";
+static bool baseAppPresent;
 static int serverSnapshotCalls;
 static PkgServerSnapshot serverTelemetry;
 static uint64_t expectedPackageBytes = 8192, registeredPackageBytes, serverPackageBytes;
@@ -53,6 +60,7 @@ enum Event { TASK_STOP, TASK_UNREGISTER, SERVER_STOP, SOURCE_CLOSE, BGFT_TERM, A
 static std::vector<Event> events;
 static std::atomic<bool> block(false), entered(false);
 static std::string registeredPath;
+static std::string expectedSourcePath;
 static std::map<int, std::string> descriptorPaths;
 static int unavailableLstatCalls, unavailablePosixFstatCalls, nativeFstatCalls, noFollowOpens;
 static int globalNamespaceOpens;
@@ -168,7 +176,7 @@ extern "C" int32_t sceAppInstUtilAppExists(const char* title, int32_t* exists) {
     credentialsExpected(); assert(!strcmp(title, "APOL00004"));
     ++existsCalls;
     if (mode == EXISTS_FAIL || (mode == CONFIRM_FAIL && existsCalls > 1)) return RAW;
-    *exists = mode == APP_EXISTS || (nativeStarted && progressCalls >= 3) ? 1 : 0;
+    *exists = baseAppPresent || mode == APP_EXISTS || (nativeStarted && progressCalls >= 3) ? 1 : 0;
     return 0;
 }
 extern "C" bool sceAppInstUtilAppIsInInstalling(const char* id) {
@@ -182,7 +190,9 @@ extern "C" int32_t peppyBgftInit(PeppyBgftInit* init) {
 }
 extern "C" int32_t peppyBgftRegister(PeppyBgftParamEx* params, int32_t* task) {
     assert(jailbroken && params->slot == 0 && params->params.entitlementType == 5);
-    assert(params->params.packageSize == expectedPackageBytes && params->params.option == 2);
+    assert(params->params.packageSize == expectedPackageBytes &&
+           params->params.option == (expectedRegisteredKind ? 0xA : 2));
+    assert(!strcmp(params->params.packageType, expectedRegisteredType));
     registeredPackageBytes = params->params.packageSize;
     assert(!strcmp(params->params.id, "UP0001-APOL00004_00-0000000000000000"));
     assert(!strcmp(params->params.playgoScenarioId, "0"));
@@ -206,13 +216,14 @@ extern "C" int32_t peppyInstallForegroundUser(int32_t* user) {
 extern "C" int32_t peppyBgftRegisterHttp(PeppyBgftParam* params, int32_t* task) {
     assert(httpFallback() && !jailbroken && serverActive && borrowedFile);
     assert(params->userId == 99 && params->entitlementType == 5);
-    assert(params->packageSize == expectedPackageBytes && params->option == 0x10002);
+    assert(params->packageSize == expectedPackageBytes &&
+           params->option == (expectedRegisteredKind ? 0x1000A : 0x10002));
     registeredPackageBytes = params->packageSize;
     assert(!strcmp(params->id, "UP0001-APOL00004_00-0000000000000000"));
     assert(!strcmp(params->contentUrl, "http://127.0.0.1:17991/package.pkg"));
     assert(!strcmp(params->contentName, "Apollo Save Tool"));
     assert(params->iconPath && !strcmp(params->iconPath, ""));
-    assert(params->packageType && !strcmp(params->packageType, "PS4GD"));
+    assert(params->packageType && !strcmp(params->packageType, expectedRegisteredType));
     assert(params->packageSubType && !strcmp(params->packageSubType, ""));
     assert(params->playgoScenarioId && !strcmp(params->playgoScenarioId, "0"));
     registeredPath = params->contentUrl;
@@ -233,6 +244,7 @@ extern "C" int32_t peppyBgftRegisterHttp(PeppyBgftParam* params, int32_t* task) 
     return 0;
 }
 extern "C" int32_t peppyBgftRegisterDebug(PeppyBgftParam* params, int32_t* task) {
+    ++debugRegisterCalls;
     return peppyBgftRegisterHttp(params, task);
 }
 extern "C" int32_t sceBgftServiceDownloadStartTask(int32_t task) {
@@ -292,7 +304,7 @@ int32_t PkgServer::start(FILE* file, uint64_t size) {
     ++serverStartCalls;
     file_ = borrowedFile = file;
     descriptor_ = borrowedDescriptor = fileno(file);
-    assert(descriptorPaths[descriptor_] == localDirectory + "/apollo.pkg");
+    assert(descriptorPaths[descriptor_] == expectedSourcePath);
     unsigned char magic[4];
     assert(pread(descriptor_, magic, sizeof(magic), 0) == (ssize_t)sizeof(magic));
     assert(magic[0] == 0x7f && magic[1] == 'C' && magic[2] == 'N' && magic[3] == 'T');
@@ -479,6 +491,9 @@ static void reset(Mode next, bool alias = true) {
     registerCalls = startCalls = progressCalls = existsCalls = stopCalls = unregisterCalls = 0;
     jailbreakCalls = restoreCalls = titleCalls = 0;
     sdkCalls = foregroundUserCalls = storageRegisterCalls = httpRegisterCalls = 0;
+    debugRegisterCalls = expectedRegisteredKind = 0;
+    expectedRegisteredType = "PS4GD";
+    baseAppPresent = false;
     serverStartCalls = serverStopCalls = sourceCloseCalls = 0;
     serverSnapshotCalls = 0; serverTelemetry = PkgServerSnapshot();
     expectedPackageBytes = 8192; registeredPackageBytes = serverPackageBytes = 0;
@@ -497,12 +512,19 @@ static void reset(Mode next, bool alias = true) {
     char* directory = mkdtemp(rootTemplate); assert(directory);
     testRoot = directory;
     localDirectory = testRoot + "/local";
+    expectedSourcePath = localDirectory + "/apollo.pkg";
     systemRoot = testRoot + "/system";
     systemDirectory = systemRoot + "/downloads";
     copyDirectory = systemRoot + "/install";
+    inboxBaseDirectory = testRoot + "/inbox-base";
+    inboxUpdateDirectory = testRoot + "/inbox-update";
+    inboxDlcDirectory = testRoot + "/inbox-dlc";
     assert(mkdir(localDirectory.c_str(), 0755) == 0);
     assert(mkdir(systemRoot.c_str(), 0755) == 0);
     assert(mkdir(systemDirectory.c_str(), 0755) == 0);
+    assert(mkdir(inboxBaseDirectory.c_str(), 0755) == 0);
+    assert(mkdir(inboxUpdateDirectory.c_str(), 0755) == 0);
+    assert(mkdir(inboxDlcDirectory.c_str(), 0755) == 0);
     unsigned char header[8192] = {};
     header[0] = 0x7f; header[1] = 'C'; header[2] = 'N'; header[3] = 'T';
     header[0x77] = 0x1A; // PKG_CONTENT_TYPE_GD, big-endian.
@@ -839,6 +861,139 @@ static void largePackageTests() {
         noHttpTelemetry(value);
     }
 }
+static void typedHeader(const std::string& path, uint32_t type, uint32_t flags,
+                        uint64_t declaredSize = 8192, uint32_t iroTag = 0) {
+    FILE* file = fopen(path.c_str(), "r+b"); assert(file);
+    unsigned char bytes[8];
+    for (int i = 0; i < 4; ++i) bytes[i] = (unsigned char)(type >> (24 - 8 * i));
+    for (int i = 0; i < 4; ++i) bytes[4 + i] = (unsigned char)(flags >> (24 - 8 * i));
+    assert(fseek(file, 0x74, SEEK_SET) == 0 && fwrite(bytes, 1, 8, file) == 8);
+    for (int i = 0; i < 4; ++i) bytes[i] = (unsigned char)(iroTag >> (24 - 8 * i));
+    assert(fseek(file, 0x98, SEEK_SET) == 0 && fwrite(bytes, 1, 4, file) == 4);
+    for (int i = 0; i < 8; ++i) bytes[i] = (unsigned char)(declaredSize >> (56 - 8 * i));
+    assert(fseek(file, 0x430, SEEK_SET) == 0 && fwrite(bytes, 1, 8, file) == 8);
+    assert(fclose(file) == 0);
+}
+static void typedInstallTests() {
+    struct Case { int kind; uint32_t type, flags; const char* registrationType; };
+    const Case cases[] = {
+        {0, 0x1A, 0x0A000000, "PS4GD"},
+        {1, 0x1A, 0x00100000, "PS4GD"},
+        {1, 0x1A, 0x00200000, "PS4GD"},
+        {1, 0x1E, 0, "PS4DP"},
+        {2, 0x1B, 0, "PS4AC"},
+        {2, 0x1C, 0, "PS4AL"}
+    };
+    for (bool http : {false, true}) for (const Case& test : cases) {
+        if (http) prepareHttp(NORMAL); else reset(NORMAL);
+        expectedRegisteredKind = test.kind;
+        expectedRegisteredType = test.registrationType;
+        baseAppPresent = test.kind != 0;
+        typedHeader(localDirectory + "/apollo.pkg", test.type, test.flags);
+        assert(startTypedInstall(spec(), test.kind));
+        InstallSnapshot value = waitDone();
+        assert(value.state == INSTALL_DONE && value.percent == 100 && registerCalls == 1);
+        assert(value.mode == (http ? INSTALL_MODE_HTTP_LOCAL : INSTALL_MODE_STORAGE));
+        assert(debugRegisterCalls == (http && test.kind == 1 ? 1 : 0));
+        assert(access((localDirectory + "/apollo.pkg").c_str(), F_OK) == 0);
+    }
+    // Kind mismatches are rejected from the held header, before even probing
+    // the SDK or opening any installation service. No base can become a patch.
+    for (const Case& test : cases) for (int claimed = 0; claimed <= 2; ++claimed) {
+        if (claimed == test.kind) continue;
+        reset(NORMAL);
+        typedHeader(localDirectory + "/apollo.pkg", test.type, test.flags);
+        assert(startTypedInstall(spec(), claimed));
+        InstallSnapshot value = waitDone();
+        assert(value.state == INSTALL_FAILED && value.errorCode == INSTALL_ERROR_PACKAGE);
+        assert(value.stage == INSTALL_STAGE_PACKAGE && value.nativeCode == EINVAL);
+        assert(!sdkCalls && !jailbreakCalls && !modules && !registerCalls && !serverStartCalls);
+        assert(access((localDirectory + "/apollo.pkg").c_str(), F_OK) == 0);
+    }
+    for (int badKind : {-1, 3, 2147483647}) {
+        reset(NORMAL);
+        assert(!startTypedInstall(spec(), badKind));
+        assert(installSnapshot().errorCode == INSTALL_ERROR_SPEC && !threadCreateCalls && !sdkCalls);
+    }
+    for (const Case& test : cases) if (test.kind != 0) {
+        prepareHttp(NORMAL);
+        typedHeader(localDirectory + "/apollo.pkg", test.type, test.flags);
+        assert(startTypedInstall(spec(), test.kind));
+        InstallSnapshot value = waitDone();
+        assert(value.errorCode == INSTALL_ERROR_BASE_REQUIRED && value.stage == INSTALL_STAGE_EXISTS);
+        assert(!registerCalls && !bgftInitCalls && !serverStartCalls);
+    }
+    reset(NORMAL);
+    typedHeader(localDirectory + "/apollo.pkg", 0x1A, 0, 8191);
+    assert(startTypedInstall(spec(), 0));
+    InstallSnapshot value = waitDone();
+    assert(value.errorCode == INSTALL_ERROR_PACKAGE && !sdkCalls);
+    reset(NORMAL);
+    typedHeader(localDirectory + "/apollo.pkg", 0x1A, 0);
+    FILE* file = fopen((localDirectory + "/apollo.pkg").c_str(), "r+b"); assert(file);
+    assert(fseek(file, 0x40, SEEK_SET) == 0 && fputc('u', file) == 'u' && fclose(file) == 0);
+    assert(startTypedInstall(spec(), 0)); value = waitDone();
+    assert(value.errorCode == INSTALL_ERROR_PACKAGE && !sdkCalls);
+    reset(BAD_TITLE);
+    typedHeader(localDirectory + "/apollo.pkg", 0x1A, 0);
+    assert(startTypedInstall(spec(), 0)); value = waitDone();
+    assert(value.errorCode == INSTALL_ERROR_PACKAGE && value.stage == INSTALL_STAGE_TITLE);
+    assert(titleCalls == 1 && restoreCalls == 1 && !registerCalls);
+    // An inbox folder is an asserted kind, never a substitute for reading the
+    // PKG header. Exercise the real source directory rather than the cache.
+    for (bool mismatch : {false, true}) {
+        prepareHttp(NORMAL);
+        const std::string path = inboxUpdateDirectory + "/apollo.pkg";
+        expectedSourcePath = path;
+        assert(link((localDirectory + "/apollo.pkg").c_str(), path.c_str()) == 0);
+        typedHeader(path, 0x1A, mismatch ? 0 : 0x00100000);
+        baseAppPresent = true;
+        expectedRegisteredKind = 1;
+        assert(startInboxInstall(path.c_str(), "Apollo Save Tool", 8192, 1));
+        value = waitDone();
+        if (mismatch) {
+            assert(value.errorCode == INSTALL_ERROR_PACKAGE && !sdkCalls && !registerCalls);
+        } else {
+            assert(value.state == INSTALL_DONE && debugRegisterCalls == 1 && !storageRegisterCalls);
+        }
+        assert(access(path.c_str(), F_OK) == 0);
+    }
+}
+static void themeInstallTests() {
+    for (bool http : {false, true}) for (uint32_t tag : {1U, 2U}) {
+        if (http) prepareHttp(NORMAL); else reset(NORMAL);
+        expectedRegisteredKind = 2;
+        expectedRegisteredType = "PS4AC";
+        assert(!baseAppPresent);
+        typedHeader(localDirectory + "/apollo.pkg", 0x1B, 0, 8192, tag);
+        assert(startTypedInstall(spec(), 2));
+        InstallSnapshot value = waitDone();
+        assert(value.state == INSTALL_DONE && value.percent == 100 && registerCalls == 1);
+        assert(value.mode == (http ? INSTALL_MODE_HTTP_LOCAL : INSTALL_MODE_STORAGE));
+        assert(!debugRegisterCalls && existsCalls >= 2);
+        assert(access((localDirectory + "/apollo.pkg").c_str(), F_OK) == 0);
+    }
+    struct Case { uint32_t type, flags, tag; int kind; };
+    const Case ordinary[] = {
+        {0x1B, 0, 0, 2}, {0x1B, 0, 3, 2}, {0x1B, 0, 0xffffffffU, 2},
+        {0x1C, 0, 1, 2}, {0x1C, 0, 2, 2},
+        {0x1A, 0x00100000, 2, 1}, {0x1E, 0, 2, 1},
+    };
+    for (bool http : {false, true}) for (const Case& test : ordinary) {
+        if (http) prepareHttp(NORMAL); else reset(NORMAL);
+        typedHeader(localDirectory + "/apollo.pkg", test.type, test.flags, 8192, test.tag);
+        assert(startTypedInstall(spec(), test.kind));
+        InstallSnapshot value = waitDone();
+        assert(value.errorCode == INSTALL_ERROR_BASE_REQUIRED && value.stage == INSTALL_STAGE_EXISTS);
+        assert(!registerCalls && !bgftInitCalls && !serverStartCalls);
+    }
+    // A caller cannot label an ordinary DLC as base to skip its dependency.
+    reset(NORMAL);
+    typedHeader(localDirectory + "/apollo.pkg", 0x1B, 0, 8192, 0);
+    assert(startTypedInstall(spec(), 0));
+    InstallSnapshot value = waitDone();
+    assert(value.errorCode == INSTALL_ERROR_PACKAGE && !sdkCalls && !registerCalls);
+}
 int main() {
     struct stat unavailable;
     assert(lstat("/tmp", &unavailable) == -1 && errno == ENOSYS);
@@ -1012,6 +1167,8 @@ int main() {
     httpFallbackTests();
     httpTelemetryTests();
     largePackageTests();
+    typedInstallTests();
+    themeInstallTests();
     assert(unavailableLstatCalls == 0 && unavailablePosixFstatCalls == 0);
     puts("All native installer ABI, SDK/storage and HTTP fallback/telemetry, lifetime, progress, preservation, errors and cancellation tests passed.");
 }

@@ -1,22 +1,63 @@
-# PS4 Homebrew Store
+# Peppy Store
 
-Loja web estática para organizar downloads de **homebrew e arquivos autorizados**.
+Loja nativa de PKGs para PS4 homebrew, com interface em português, visual preto e azul, arte Peppy, controle DualShock 4 e música FIGHT → ACENDAOFAROL. O aplicativo usa OpenOrbis e o instalador do console; seus downloads não usam servidores da PlayStation.
 
-## Recursos
-- Catálogo pesquisável
-- Filtro PKG / ELF / BIN
-- Download direto por URL
-- Adição local de URL pelo navegador
-- Catálogo público em `apps.json`
-- HTML/CSS/JS puro
+- [Peppy Assets Updater](https://peppy-assets-updater.quick-chime-0602.chatgpt.site): página de atualizações e acesso à central.
+- [Aplicativo nativo: instalação, controles, build e limites](native/README.md).
+- [Peppy Hub: API, contas, publicação e implantação](services/peppy-hub/README.md).
 
-## Adicionar um item para todos
-Edite `apps.json` e adicione um objeto com `name`, `type`, `description` e `url`.
+## Catálogos e funções
 
-O botão **Adicionar URL** salva somente no `localStorage` daquele navegador. Uma página estática não consegue enviar um PKG da internet para este repositório sem um backend ou autenticação.
+O catálogo gratuito incorporado mantém **860 itens**: 805 jogos nativos de PS4, 14 conversões de PS1/PS2 e 41 aplicativos, emuladores e motores de jogos. Esses itens continuam gratuitos. Novas entradas da central usam o acesso premium; a quantidade disponível depende do catálogo publicado pelo administrador. Consulte as [fontes revisadas](native/sources-review.md), o [relatório do catálogo gratuito](native/catalog-review.json) e a [revisão das novas entradas premium](native/premium-catalog-review.json). O [catálogo inicial da central](services/peppy-hub/seed-catalog.json) reúne os pacotes revisados para publicação pelo administrador.
 
-## Uso responsável
-Este projeto não inclui jogos comerciais, conteúdo pirateado, exploits ou ferramentas para contornar proteções do console. Use somente arquivos que você tenha direito de usar e distribuir.
+A loja oferece pesquisa por nome e Content ID/CUSA, categorias para bases, atualizações, DLCs e temas, detalhes dos pacotes, progresso, velocidade medida e instalação após o download. Pacotes completos ficam em `/data/peppy-store/downloads/` e podem ser reinstalados após uma falha de instalação. O menu **Options → Serviços** reúne links pessoais, login premium, sincronização, LivePix, atualizações da loja e os PKGs recebidos por FTP.
 
-## Publicar
-Ative GitHub Pages nas configurações do repositório usando a branch `main` e a pasta raiz.
+O premium libera o catálogo remoto publicado, incluindo entradas de mídia e temas quando disponíveis. A aba **+18 premium** exige acesso premium e confirmação de idade para entradas marcadas pelo administrador. As abas não indicam que todos os streamings, temas ou jogos solicitados já estejam disponíveis; o premium da Peppy também não substitui assinaturas de serviços de streaming. A arte Peppy aparece na interface, sem modificar os PKGs ou os créditos dos autores.
+
+## Seus links de PKG
+
+A importação de links pessoais funciona tanto no acesso normal quanto no premium. Use o teclado do controle em **Serviços → Importar link PKG**, ou coloque uma lista de URLs em `/data/peppy-store/urls.txt` e importe o arquivo pelo menu. A biblioteca pessoal aceita até **1.024 entradas**, permanece no console e separa os pacotes em **Base do usuário**, **Update do usuário** e **DLC do usuário**.
+
+O importador lê metadados por HTTP Range e fixa tamanho, identidade e tipo do pacote antes do download completo. Nome e versão dependem dos metadados disponíveis. Ele aceita PKGs diretos dos provedores e caminhos revisados no aplicativo; páginas de sites, RARs, links encurtados e domínios arbitrários exigem outro fluxo. Um cabeçalho válido ou uma classificação de origem não comprova licença, idioma, assinatura ou funcionamento no firmware 13.52. Veja a [revisão do importador](native/user-catalog-review.md).
+
+## Premium, administração e LivePix
+
+As contas são criadas pelo administrador na central. Senhas ficam como hashes no banco privado do serviço; o PKG não contém listas de usuários ou senhas. O aplicativo mantém a sessão em memória e o servidor confere função e validade do acesso. A central sincroniza após o login e, quando a loja está ociosa, a cada cinco minutos. Publicações recebidas não remapeiam pacotes durante um download ou uma instalação.
+
+| Opção | Valor |
+| --- | --- |
+| Doação | A partir de R$ 1 |
+| Premium por 15 dias | R$ 10 |
+| Premium por um mês | R$ 20 |
+| Premium por dois meses | R$ 30 |
+
+Os planos usam o valor exato; os meses seguem o calendário. Pague em **[livepix.gg/peppystore](https://livepix.gg/peppystore)** e envie o comprovante no Discord para **djdarknes.com_66953**. O administrador confere o pagamento e libera ou renova o acesso manualmente; a loja não confirma pagamentos automaticamente.
+
+O atalho **R2 + R3 + Options**, na tela de login premium, revela o login de administrador. Ele não concede permissão: criação de contas e publicação de catálogo exigem uma sessão administrativa validada pelo servidor.
+
+## Downloads e atualizações
+
+As transferências usam buffers limitados, preferindo 1 MiB e recuando para 256 KiB se faltar memória. PKGs grandes de fontes aprovadas podem usar duas conexões quando o servidor fornece intervalos e um ETag forte; caso contrário, a loja usa a transferência comum. Tamanho, tipo, Content ID e SHA-256, quando informado, continuam sendo conferidos. A velocidade depende do servidor e da conexão do PS4; os testes não medem o desempenho real do console. Consulte o [relatório de desempenho](native/download-performance-review.json).
+
+O Peppy Assets Updater apresenta as versões publicadas da loja. Uma atualização da Peppy é um **PKG**, não um payload: baixar pelo navegador não instala o aplicativo. Feche a loja e use o instalador do console para aplicar a atualização. Compatibilidade no firmware 13.52 precisa de teste no PS4.
+
+## Compilar e testar
+
+Para o aplicativo, configure `OO_PS4_TOOLCHAIN` com o **OpenOrbis v0.5.4** e instale as dependências descritas no [guia nativo](native/README.md). A build prepara arte, fonte, catálogo e áudio antes de empacotar:
+
+```sh
+make -C native
+```
+
+Para testar e compilar a central, use **Node.js 24 ou posterior**; ela não exige instalação de dependências npm:
+
+```sh
+npm --prefix services/peppy-hub test
+npm --prefix services/peppy-hub run build
+```
+
+O [workflow da build nativa](.github/workflows/build-native.yml) executa os testes de downloads, enquadramento HTTP, instalação, servidor local, música, importação, autenticação, busca e navegação pelo controle, além da validação do PKG. Os testes de host e de metadados complementam a conferência no console; não a substituem.
+
+## Página web anterior
+
+`index.html`, `app.js`, `style.css` e `apps.json` preservam a primeira loja web estática. Ela pode ser publicada pelo GitHub Pages a partir da raiz e mantém seu próprio catálogo. Editar `apps.json` altera essa página; o botão **Adicionar URL** salva apenas no `localStorage` daquele navegador. Essa versão estática não administra contas premium nem publica o catálogo da central.

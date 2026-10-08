@@ -20,15 +20,17 @@
     }
   ],
   "catalog_summary": {
-    "total_entries": 845,
+    "total_entries": 860,
     "native_ps4_games": 805,
     "ps1_ps2_conversions": 14,
-    "apps_and_engines": 26,
+    "apps_and_engines": 41,
     "portuguese_conversions": 7,
-    "native_ps4_portuguese_confirmed": 0
+    "native_ps4_portuguese_confirmed": 0,
+    "homebrew_games_and_ports": 10
   },
   "approved_archive_collections": 27,
   "approved_archive_cdn_hosts": 57,
   "language_selection": "Portuguese preferred for equivalent available releases. Native PS4 collection is English; seven Portuguese entries are explicitly PS1/PS2 conversions.",
-  "integrity": "Runtime checks exact expected size, Content ID and base flags; SHA256 only when a reviewed expected digest is available."
+  "integrity": "Runtime checks exact expected size, Content ID and base flags; SHA256 only when a reviewed expected digest is available.",
+  "additional_review": "premium-catalog-review.json"
 }

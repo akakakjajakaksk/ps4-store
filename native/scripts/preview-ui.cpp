@@ -6,6 +6,10 @@
 #include "../downloads.h"
 #include "../install.h"
 #include "../music.h"
+#include "../hub_client.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 static DownloadSnapshot previewDownload = {};
 static InstallSnapshot previewInstall = {};
 static MusicSnapshot previewMusic = {MUSIC_PLAYING, 0, 30, false, 0};
@@ -13,8 +17,10 @@ static int downloadCalls = 0, installCalls = 0, cancelInstallCalls = 0;
 static bool rejectDownload = false, rejectInstall = false, rejectInstallBusy = false;
 static InstallSpec lastInstall = {};
 static const char* lastDownloadContentId = 0;
+static int lastDownloadKind = 0, lastInstallKind = 0;
 DownloadSnapshot downloadSnapshot() { return previewDownload; }
-bool startDownload(const DownloadSpec& spec, const char* expectedContentId) {
+bool startDownload(const DownloadSpec& spec, const char* expectedContentId, int expectedKind) {
+    lastDownloadKind = expectedKind;
     ++downloadCalls;
     lastDownloadContentId = expectedContentId;
     previewDownload = {};
@@ -44,6 +50,7 @@ bool startInstall(const InstallSpec& spec) {
     if (rejectInstall) previewInstall.errorCode = INSTALL_ERROR_THREAD;
     return !rejectInstall;
 }
+bool startTypedInstall(const InstallSpec& spec, int kind) { lastInstallKind = kind; return startInstall(spec); }
 void cancelInstall() { ++cancelInstallCalls; }
 const char* installStageName(int stage) {
     switch (stage) {
@@ -68,6 +75,51 @@ void musicShutdown() { musicStop(); }
 const char* musicTrackName(int track) { return track == 1 ? "ACENDAOFAROL" : "FIGHT"; }
 static uint64_t previewTimeUs = 0;
 static uint64_t previewNowUs() { return previewTimeUs; }
+static HubSession previewHubSession = {};
+static HubSnapshot previewHub = {};
+static HubResult previewHubResult = {};
+static bool previewHubReady = false;
+static int previewHubCalls = 0;
+static char previewHubOrigin[256] = {};
+static char previewImportedUrls[8192] = {};
+static char previewLoginUser[65] = {}, previewLoginPassword[129] = {};
+static int previewCreatedPlan = 0;
+static char previewPublishedJson[16384] = {};
+static bool previewStartHub(int operation) {
+    if (previewHub.state == HUB_RUNNING || previewHubReady) return false;
+    previewHub = {}; previewHub.state = HUB_RUNNING; previewHub.operation = operation; ++previewHubCalls; return true;
+}
+bool setHubOrigin(const char* origin) { snprintf(previewHubOrigin, sizeof(previewHubOrigin), "%s", origin); previewHubSession = {}; return true; }
+bool hubConfigured() { return previewHubOrigin[0]; }
+bool hubOrigin(char* output, size_t cap) { if (!output || !cap) return false; snprintf(output, cap, "%s", previewHubOrigin); return hubConfigured(); }
+bool startHubLogin(const char* user, const char* password) {
+    if (!previewStartHub(HUB_LOGIN)) return false;
+    snprintf(previewLoginUser, sizeof(previewLoginUser), "%s", user);
+    snprintf(previewLoginPassword, sizeof(previewLoginPassword), "%s", password); return true;
+}
+bool startHubLogout() { if (!previewStartHub(HUB_LOGOUT)) return false; previewHubSession = {}; return true; }
+bool startHubSync() { return previewStartHub(HUB_SYNC); }
+bool startHubImportUrls(const char* urls, size_t bytes) {
+    if (!bytes || bytes >= sizeof(previewImportedUrls) || !previewStartHub(HUB_IMPORT_URLS)) return false;
+    memcpy(previewImportedUrls, urls, bytes); previewImportedUrls[bytes] = 0; return true;
+}
+bool startHubAdminCreateUser(const char*, const char*, int days) { previewCreatedPlan = days; return previewHubSession.admin && previewStartHub(HUB_ADMIN_CREATE_USER); }
+bool startHubAdminPublish(const char* json, size_t bytes) {
+    if (!previewHubSession.admin || bytes >= sizeof(previewPublishedJson) || !previewStartHub(HUB_ADMIN_PUBLISH)) return false;
+    memcpy(previewPublishedJson, json, bytes); previewPublishedJson[bytes] = 0; return true;
+}
+void cancelHubOperation() { previewHub.state = HUB_CANCELLED; }
+HubSnapshot hubSnapshot() { return previewHub; }
+HubSession hubSession() { return previewHubSession; }
+bool consumeHubResult(HubResult* out) {
+    if (!previewHubReady) return false;
+    *out = previewHubResult; previewHubResult = {}; previewHubReady = false; previewHub = {}; return true;
+}
+void freeHubResult(HubResult* result) { delete result->catalog; *result = {}; }
+const char* hubErrorMessage(int) { return "Falha ao consultar o serviço"; }
+bool hubNativePackageUrl(const char* url) { return userCatalogPublicHttpsUrl(url); }
+bool hubUserCatalogRangeReader(void*, const char*, uint64_t, size_t, unsigned char*, UserCatalogRangeInfo*) { return false; }
+
 #include "../boot_test.cpp"
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,6 +127,18 @@ static uint64_t previewNowUs() { return previewTimeUs; }
 
 static void resetController() {
     activeCategory = 0;
+    storeLocal.clear();
+    storeClearRemote();
+    if (storeHasPending) freeHubResult(&storePending);
+    storePending = {}; storeHasPending = false;
+    if (previewHubReady) freeHubResult(&previewHubResult);
+    previewHubReady = false; previewHubResult = {}; previewHub = {}; previewHubSession = {};
+    previewHubCalls = 0; storePanel = STORE_PANEL_NONE; storeMenuSelection = 0;
+    storeAdminLogin = storeAdminChord = storeAdultConfirmed = storeFtpRequested = false;
+    storeHadSession = storeHadAdmin = false;
+    storeKeyboard = StoreKeyboard(); storeNotice[0] = 0;
+    storeLoginUser[0] = storeLoginPassword[0] = storeAdminUser[0] = storeAdminPassword[0] = 0;
+    lastDownloadKind = lastInstallKind = 0;
     catalogSearch = CatalogSearchState();
     downloadingApp = installingApp = -1;
     autoInstallPending = installCancelRequested = false;
@@ -87,6 +151,7 @@ static void resetController() {
     rejectDownload = rejectInstall = rejectInstallBusy = false;
     lastDownloadContentId = 0;
     previewTimeUs = 0;
+    storeNextSyncUs = 0;
     downloadMeter.reset();
 }
 
@@ -95,9 +160,149 @@ static bool expect(bool condition, const char* message) {
     return condition;
 }
 
+static UserCatalogEntry serviceFixture(int serial, int kind, bool theme = false, bool adult = false, int category = 0) {
+    UserCatalogEntry e = {};
+    snprintf(e.contentId, sizeof(e.contentId), "UP0000-CUSA%05d_00-PEPPYUITEST00000", serial);
+    snprintf(e.name, sizeof(e.name), "Peppy fixture %d", serial);
+    snprintf(e.url, sizeof(e.url), "https://github.com/skidgfx/PS4-2048/releases/download/v1.0/fixture-%d-%d.pkg", serial, kind);
+    e.kind = kind; e.contentType = kind == USER_PACKAGE_DLC ? (theme ? 0x1B : 0x1C) : kind == USER_PACKAGE_UPDATE ? 0x1E : 0x1A;
+    e.contentFlags = 0x0A000000; e.sizeBytes = 4096; e.titleKnown = true;
+    e.isTheme = theme; e.iroTag = theme ? 1 : 0; e.adult = adult; e.displayCategory = category;
+    bool okay = userCatalogPrepareEntry(&e);
+    if (!okay) fprintf(stderr, "Service fixture metadata failed\n");
+    return e;
+}
+static bool verifyServicesController() {
+    resetController(); int selected = 0; bool details = false;
+    for (int first = 0; first < CATEGORY_COUNT; first += 6) {
+        int right = 420;
+        for (int i = first; i < CATEGORY_COUNT && i < first + 6; ++i) right += textWidth(CATEGORY_NAMES[i], FONT_BODY) + 26;
+        if (!expect(right - 26 < 1650, "paginated category tabs fit beside the header indicator")) return false;
+    }
+    if (!expect(categoryCount() == UI_APP_COUNT, "all compiled free entries remain available without a session")) return false;
+    handleCatalogController(CATALOG_OPTIONS, selected, details);
+    if (!expect(storePanel == STORE_PANEL_SERVICES && !catalogSearch.open, "Options opens services and preserves catalog search")) return false;
+    const uint32_t chord = CATALOG_R2 | CATALOG_R3 | CATALOG_OPTIONS;
+    handleCatalogController(CATALOG_OPTIONS, selected, details, chord);
+    if (!expect(storePanel == STORE_PANEL_SERVICES && !storeAdminLogin, "the admin chord is unavailable outside premium login")) return false;
+    storeMenuSelection = 0; handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storePanel == STORE_PANEL_TEXT && storeKeyboard.target == STORE_TEXT_URLS, "normal users can import direct PKG links")) return false;
+    const char* needed = "abcABC012:/?%=&_-.";
+    for (const char* p = needed; *p; ++p) if (!expect(strchr(storeKeyboardKeys(), *p), "URL keyboard contains every required ASCII key")) return false;
+    snprintf(storeKeyboard.draft, sizeof(storeKeyboard.draft), "https://github.com/one.pkg");
+    handleCatalogController(CATALOG_L1, selected, details);
+    if (!expect(strchr(storeKeyboard.draft, '\n'), "URL keyboard supports a newline-separated list")) return false;
+    handleCatalogController(CATALOG_OPTIONS, selected, details);
+    if (!expect(previewHub.operation == HUB_IMPORT_URLS && !strcmp(previewImportedUrls, "https://github.com/one.pkg\n"), "URL import queues a worker instead of blocking the UI")) return false;
+    previewHub = {}; storeOpenPanel(STORE_PANEL_PREMIUM);
+    handleCatalogController(CATALOG_R2, selected, details, CATALOG_R2);
+    handleCatalogController(CATALOG_R3, selected, details, CATALOG_R2 | CATALOG_R3);
+    handleCatalogController(CATALOG_OPTIONS, selected, details, chord);
+    if (!expect(storeAdminLogin && storePanel == STORE_PANEL_PREMIUM && !previewHubSession.admin,
+                "held R2/R3 plus a later Options edge reveals admin login without granting access")) return false;
+    storeMenuSelection = 1; handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storeKeyboard.masked, "password editor requests masked rendering")) return false;
+    snprintf(storeKeyboard.draft, sizeof(storeKeyboard.draft), "fixture-secret");
+    handleCatalogController(CATALOG_OPTIONS, selected, details);
+    if (!expect(!storeKeyboard.draft[0] && !strcmp(storeLoginPassword, "fixture-secret"), "accepted password leaves no editor draft")) return false;
+    snprintf(storeLoginUser, sizeof(storeLoginUser), "fixture-user");
+    storeMenuSelection = 2; handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(!storeLoginPassword[0] && !strcmp(previewLoginPassword, "fixture-secret") && !previewHubSession.authenticated,
+                "login copies the password to its worker, wipes the UI field and waits for server authentication")) return false;
+    previewHubResult = {}; previewHubResult.operation = HUB_LOGIN; previewHubResult.errorCode = HUB_ERROR_AUTH; previewHubReady = true;
+    pollStoreExtensions();
+    if (!expect(!previewHubSession.authenticated && storeNotice[0], "failed authentication displays an error and grants no session")) return false;
+    storeOpenPanel(STORE_PANEL_NONE); storeAdminLogin = false;
+    for (int kind = 0; kind < 3; ++kind) if (!expect(storeLocal.add(serviceFixture(99990, kind)) == 0, "personal base/update/DLC metadata accepted")) return false;
+    storeRebuildViews();
+    for (int kind = 0; kind < 3; ++kind) {
+        activeCategory = 8 + kind;
+        if (!expect(categoryCount() == 1 && appIndex(0) == STORE_LOCAL_FIRST + kind, "each personal package kind has its own category")) return false;
+    }
+    if (!expect(activateApp(STORE_LOCAL_FIRST + 1) && lastDownloadKind == USER_PACKAGE_UPDATE,
+                "an imported update passes its pinned kind to the downloader")) return false;
+    previewDownload.state = DONE; previewDownload.received = previewDownload.total = storeApp(STORE_LOCAL_FIRST + 1).sizeBytes;
+    pollAutoInstall();
+    if (!expect(lastInstallKind == USER_PACKAGE_UPDATE && previewInstall.state == INSTALL_RUNNING,
+                "a completed imported update starts typed installation")) return false;
+    previewInstall.state = INSTALL_DONE; pollAutoInstall();
+    previewHubSession.authenticated = previewHubSession.admin = true;
+    storeAdminChord = false; storeOpenPanel(STORE_PANEL_PREMIUM);
+    handleCatalogController(CATALOG_OPTIONS, selected, details, chord);
+    if (!expect(storePanel == STORE_PANEL_ADMIN, "the hidden panel opens only after server-provided admin authorization")) return false;
+    storeMenuSelection = 2; storeAdminPlan = 15;
+    handleCatalogController(CATALOG_RIGHT, selected, details);
+    if (!expect(storeAdminPlan == 30, "administrator can select the one-month premium plan")) return false;
+    snprintf(storeAdminUser, sizeof(storeAdminUser), "new-fixture-user");
+    snprintf(storeAdminPassword, sizeof(storeAdminPassword), "new-fixture-secret");
+    storeMenuSelection = 3; handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(previewHub.operation == HUB_ADMIN_CREATE_USER && previewCreatedPlan == 30 && !storeAdminPassword[0],
+                "creating a premium account queues the selected plan and wipes its password field")) return false;
+    previewHub = {}; storeMenuSelection = 4; handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(previewHub.operation == HUB_ADMIN_PUBLISH && strstr(previewPublishedJson, "\"kind\":\"update\"") &&
+                strstr(previewPublishedJson, "\"kind\":\"dlc\"") && strstr(previewPublishedJson, "\"content_id\":") &&
+                strstr(previewPublishedJson, "\"display_category\":") && !strstr(previewPublishedJson, "new-fixture-secret"),
+                "publication contains pinned package metadata and no premium credentials")) return false;
+    previewHub = {}; previewHubSession = {}; storeOpenPanel(STORE_PANEL_NONE);
+    storeRemote = new UserCatalog;
+    storeRemote->add(serviceFixture(99991, 0, false, false, 4));
+    storeRemote->add(serviceFixture(99992, 2, true));
+    storeRemote->add(serviceFixture(99993, 0, false, true));
+    storeRebuildViews(); activeCategory = 0;
+    if (!expect(categoryCount() == UI_APP_COUNT + 3 && !activateApp(STORE_REMOTE_FIRST), "remote premium metadata is hidden and cannot be activated without entitlement")) return false;
+    previewHubSession.authenticated = previewHubSession.premium = true;
+    if (!expect(categoryCount() == UI_APP_COUNT + 5, "entitled users see remote media/themes while adult entries remain gated")) return false;
+    activeCategory = 7;
+    if (!expect(categoryCount() == 1 && appIndex(0) == STORE_REMOTE_FIRST + 1, "theme metadata appears in the theme menu")) return false;
+    activeCategory = 12; selected = 0;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storePanel == STORE_PANEL_ADULT && !storeAdultConfirmed, "adult category requires an explicit age confirmation")) return false;
+    handleCatalogController(CATALOG_CROSS, selected, details);
+    if (!expect(storeAdultConfirmed && categoryCount() == 1, "confirmation reveals only labelled adult entries")) return false;
+    activeCategory = 0;
+    if (!expect(activateApp(STORE_REMOTE_FIRST), "entitled remote download starts")) return false;
+    const char* stableName = storeApp(STORE_REMOTE_FIRST).name;
+    UserCatalog* replacement = new UserCatalog; replacement->add(serviceFixture(99994, 0));
+    previewHubResult = {}; previewHubResult.operation = HUB_SYNC; previewHubResult.catalog = replacement;
+    previewHubResult.catalogVersion = 9; previewHubReady = true;
+    pollStoreExtensions();
+    if (!expect(storeHasPending && storeApp(STORE_REMOTE_FIRST).name == stableName && downloadingApp == STORE_REMOTE_FIRST,
+                "catalog refresh defers replacement while a download owns runtime indices")) return false;
+    previewDownload.state = DONE; previewDownload.received = previewDownload.total = storeApp(STORE_REMOTE_FIRST).sizeBytes;
+    pollAutoInstall(); pollStoreExtensions();
+    if (!expect(storeHasPending && storeApp(STORE_REMOTE_FIRST).name == stableName,
+                "refresh remains deferred through the automatic installation handoff")) return false;
+    previewInstall.state = INSTALL_DONE; pollAutoInstall(); pollStoreExtensions();
+    if (!expect(!storeHasPending && storeRemote == replacement && storeCatalogVersion == 9 && downloadingApp == -1,
+                "idle refresh replaces the remote catalog and clears old operation associations")) return false;
+    previewHub = {}; startHubLogout();
+    if (!expect(!storeAppAllowed(STORE_REMOTE_FIRST) && categoryCount() == UI_APP_COUNT + 3,
+                "logout immediately hides premium entries but retains free and personal packages")) return false;
+    pollStoreExtensions();
+    if (!expect(!storeRemote && storeLocal.count() == 3, "logout discards only the RAM remote catalog")) return false;
+    if (!expect(!strcmp(STORE_LIVEPIX, "https://livepix.gg/peppystore"), "LivePix link is exact")) return false;
+    resetController(); configureHubBaseUrl(PEPPY_HUB_URL);
+    previewHubSession.authenticated = previewHubSession.premium = true;
+    pollStoreExtensions(); previewTimeUs = 300000000ULL;
+    storeOpenPanel(STORE_PANEL_PREMIUM); pollStoreExtensions();
+    if (!expect(!previewHubCalls, "periodic synchronization waits while credentials are edited")) return false;
+    storeOpenPanel(STORE_PANEL_NONE); previewDownload.state = RUNNING; pollStoreExtensions();
+    if (!expect(!previewHubCalls, "periodic synchronization waits for active downloads")) return false;
+    previewDownload.state = DONE; previewInstall.state = INSTALL_RUNNING; pollStoreExtensions();
+    if (!expect(!previewHubCalls, "periodic synchronization waits for active installation")) return false;
+    previewInstall.state = INSTALL_DONE; catalogSearch.begin(); pollStoreExtensions();
+    if (!expect(!previewHubCalls, "periodic synchronization does not interrupt search editing")) return false;
+    catalogSearch.input(SEARCH_CANCEL); pollStoreExtensions();
+    if (!expect(previewHub.operation == HUB_SYNC && previewHub.state == HUB_RUNNING && storeNextSyncUs == 600000000ULL,
+                "idle premium clients schedule asynchronous catalog refresh every five minutes")) return false;
+    resetController();
+    puts("Checked services, ASCII URL/password editor, held admin chord, server-auth gating, personal package kinds, themes, age confirmation and stable async catalog replacement.");
+    return true;
+}
+
 static void completeDownload(int index) {
     previewDownload.state = DONE;
-    previewDownload.received = previewDownload.total = UI_APPS[index].sizeBytes;
+    previewDownload.received = previewDownload.total = storeApp(index).sizeBytes;
 }
 
 static void samplePreviewDownload(uint64_t now, uint64_t received) {
@@ -116,10 +321,10 @@ static bool verifySearchController() {
     handleCatalogController(CATALOG_RIGHT, selected, details);
     if (!expect(selected == 0, "library navigation wraps the filtered selection")) return false;
     handleCatalogController(CATALOG_L1, selected, details);
-    if (!expect(activeCategory == 6 && selected == 0,
-                "category navigation reaches the separate DLC tab")) return false;
+    if (!expect(activeCategory == CATEGORY_COUNT - 1 && selected == 0,
+                "category navigation reaches the last extension tab")) return false;
     handleCatalogController(CATALOG_R1, selected, details);
-    if (!expect(activeCategory == 0, "all seven categories wrap back to Todos")) return false;
+    if (!expect(activeCategory == 0, "all categories wrap back to Todos")) return false;
 
     activateApp(0);
     handleCatalogController(CATALOG_R3 | CATALOG_CROSS | CATALOG_SQUARE, selected, details);
@@ -179,7 +384,7 @@ static bool verifySearchController() {
     handleCatalogController(CATALOG_OPTIONS, selected, details);
     if (!expect(categoryCount() == UI_APP_COUNT && selected == 0,
                 "applying an empty query restores the full category")) return false;
-    for (int category = 5; category < CATEGORY_COUNT; ++category) {
+    for (int category = 5; category <= 10; ++category) {
         activeCategory = category;
         selected = 0;
         handleCatalogController(CATALOG_CROSS, selected, details);
@@ -449,7 +654,28 @@ static bool previewSearchStates(const char* prefix) {
     return okay;
 }
 
+static bool renderServiceStates(const char* prefix) {
+    uint32_t* allocation = static_cast<uint32_t*>(malloc(((size_t)W * H + 2) * sizeof(uint32_t)));
+    if (!allocation) return false;
+    const uint32_t guard = 0xFEED4A31;
+    allocation[0] = allocation[(size_t)W * H + 1] = guard;
+    uint32_t* frame = allocation + 1;
+    resetController(); bool okay = true;
+    const int panels[] = {STORE_PANEL_SERVICES, STORE_PANEL_PREMIUM, STORE_PANEL_DONATE, STORE_PANEL_UPDATER, STORE_PANEL_TEXT, STORE_PANEL_ADMIN};
+    const char* names[] = {"services", "premium-login", "livepix-plans", "assets-updater", "url-keyboard", "admin"};
+    for (int i = 0; i < 6; ++i) {
+        storeOpenPanel(panels[i]);
+        if (panels[i] == STORE_PANEL_TEXT) { storeBeginText(STORE_TEXT_URLS, STORE_PANEL_SERVICES); storeKeyboard.key = int(strlen(storeKeyboardKeys())) - 1; }
+        drawStorePanel(frame); okay = saveState(prefix, names[i], frame) && okay;
+    }
+    okay = okay && allocation[0] == guard && allocation[(size_t)W * H + 1] == guard;
+    free(allocation); resetController();
+    return okay;
+}
+
 int main(int argc, char** argv) {
+    if (argc == 2 && strcmp(argv[1], "--check-services") == 0) return verifyServicesController() ? 0 : 1;
+    if (argc == 3 && strcmp(argv[1], "--preview-services") == 0) return renderServiceStates(argv[2]) ? 0 : 1;
     if (argc == 2 && strcmp(argv[1], "--check-controller") == 0) return verifyController() ? 0 : 1;
     if (argc == 2 && strcmp(argv[1], "--check-search") == 0) return verifySearchController() ? 0 : 1;
     if (argc == 3 && strcmp(argv[1], "--preview-download-meter") == 0)

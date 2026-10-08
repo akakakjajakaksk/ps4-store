@@ -2,6 +2,7 @@
 #define PEPPY_PARALLEL_DOWNLOAD_H
 
 #include "downloads.h"
+#include "download_buffers.h"
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -33,7 +34,6 @@ static_assert(sizeof(PeppyParallelFileInfo) == 120 && offsetof(PeppyParallelFile
 extern "C" int32_t peppyParallelFstat(int32_t, PeppyParallelFileInfo*) __asm__("sceKernelFstat");
 
 namespace peppyParallelDownload {
-const size_t BUFFER_BYTES = 256 * 1024;
 struct Failure {
     int category, where;
     int32_t native, network, ssl;
@@ -62,12 +62,11 @@ struct Outcome {
 namespace detail {
 struct State {
     const Plan* plan;
-    unsigned char* buffers[2];
+    peppyDownloadBuffers::Buffers buffers;
     Failure failures[3];
     uint64_t done[2];
     int stop, winner, alive;
-    explicit State(const Plan& p) : plan(&p), buffers{0,0}, done{0,0}, stop(0), winner(-1), alive(0) {}
-    ~State() { free(buffers[1]); free(buffers[0]); }
+    explicit State(const Plan& p) : plan(&p), buffers(), done{0,0}, stop(0), winner(-1), alive(0) {}
 };
 inline bool stopped(State& s) {
     return __atomic_load_n(&s.stop, __ATOMIC_ACQUIRE) || s.plan->cancelled(s.plan->context);
@@ -85,10 +84,10 @@ inline Failure simpleFailure(int category, int where, int32_t native) {
 }
 inline void runLane(State& s, int index) {
     const Lane& lane = s.plan->lanes[index];
-    unsigned char* buffer = s.buffers[index];
+    unsigned char* buffer = index ? s.buffers.second : s.buffers.first;
     while (!stopped(s) && s.done[index] < lane.length) {
         uint64_t remaining = lane.length - s.done[index];
-        size_t block = remaining < BUFFER_BYTES ? static_cast<size_t>(remaining) : BUFFER_BYTES;
+        size_t block = remaining < s.buffers.capacity ? static_cast<size_t>(remaining) : s.buffers.capacity;
         size_t filled = 0;
         // libSceHttp can return short fragments. Coalesce them before disk I/O
         // so parallel readers retain the sequential path's bounded buffering.
@@ -137,9 +136,7 @@ inline void* secondLane(void* value) {
 inline Outcome run(const Plan& plan) {
     Outcome out;
     detail::State state(plan);
-    state.buffers[0] = static_cast<unsigned char*>(malloc(BUFFER_BYTES));
-    if (state.buffers[0]) state.buffers[1] = static_cast<unsigned char*>(malloc(BUFFER_BYTES));
-    if (!state.buffers[0] || !state.buffers[1]) {
+    if (!state.buffers.ready()) {
         out.failure = detail::simpleFailure(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, ENOMEM);
         return out;
     }

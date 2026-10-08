@@ -4,6 +4,7 @@
 #include "archive_sources.h"
 #include "http_range.h"
 #include "parallel_download.h"
+#include "user_pkg_header.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -47,7 +48,6 @@ namespace {
 const size_t URL_CAP = 4096;
 const size_t NAME_CAP = 96;
 const size_t RESPONSE_HEADER_CAP = 64 * 1024;
-const size_t READ_BUFFER_BYTES = 256 * 1024, STDIO_BUFFER_BYTES = 256 * 1024;
 const size_t PACKAGE_HEADER_BYTES = 0x438, CONTENT_ID_BYTES = 36;
 const uint32_t TLS_CHECKS = 0x01 | 0x04 | 0x08 | 0x10 | 0x20 | 0x80;
 const int MAX_REDIRECTS = 5;
@@ -61,6 +61,7 @@ int g_networkState = -1;
 char g_url[URL_CAP], g_filename[NAME_CAP], g_digest[65];
 char g_contentId[CONTENT_ID_BYTES + 1];
 uint64_t g_expected = 0;
+int g_expectedKind = USER_PACKAGE_BASE;
 // Only the worker owns its diagnostic file; URLs and redirect tokens are never
 // written. Atomically published numeric diagnostics remain usable if logging fails.
 FILE* g_log = 0;
@@ -148,21 +149,8 @@ bool canonicalContentId(const char* value) {
     }
     return true;
 }
-uint64_t bigEndian(const uint8_t* bytes, size_t count) {
-    uint64_t value = 0;
-    for (size_t i = 0; i < count; ++i) value = (value << 8) | bytes[i];
-    return value;
-}
-bool matchingBaseHeader(const uint8_t* header, uint64_t required) {
-    // PKG header offsets are documented in Maxton/LibOrbisPkg. Pin the
-    // requested identity and conservative base-package flags before publishing.
-    uint64_t flags = bigEndian(header + 0x78, 4);
-    const uint8_t magic[] = { 0x7f, 0x43, 0x4e, 0x54 };
-    return !memcmp(header, magic, sizeof(magic)) &&
-        !memcmp(header + 0x40, g_contentId, CONTENT_ID_BYTES) &&
-        bigEndian(header + 0x74, 4) == 0x1a &&
-        (flags == 0x0a000000 || flags == 0x0e000000) &&
-        bigEndian(header + 0x430, 8) == required;
+bool matchingExpectedHeader(const uint8_t* header, uint64_t required) {
+    return userPackageHeaderMatches(header, PACKAGE_HEADER_BYTES, required, g_contentId, g_expectedKind);
 }
 
 // Exact hosts prevent credentials, ports, scheme downgrades and host suffix
@@ -635,7 +623,7 @@ ParallelAttempt tryParallel(HttpHandles& primary, const char* url, uint64_t requ
         received += static_cast<size_t>(rc);
     }
     if (cancelled()) return PARALLEL_FINISHED;
-    if (!matchingBaseHeader(packageHeader, required)) {
+    if (!matchingExpectedHeader(packageHeader, required)) {
         result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0); return PARALLEL_FINISHED;
     }
     primary.closeRequest(true);
@@ -699,16 +687,17 @@ ParallelAttempt tryParallel(HttpHandles& primary, const char* url, uint64_t requ
             }
             interruptions = 0; offset += static_cast<size_t>(bytes);
         }
-        if (!result && !cancelled() && !matchingBaseHeader(packageHeader, required))
+        if (!result && !cancelled() && !matchingExpectedHeader(packageHeader, required))
             result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0);
     }
     if (!result && !cancelled() && g_digest[0]) {
         stage(DOWNLOAD_STAGE_HASH);
-        uint8_t* buffer = static_cast<uint8_t*>(malloc(READ_BUFFER_BYTES));
-        if (!buffer) result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_HASH, ENOMEM);
+        peppyDownloadBuffers::Buffers buffers(false);
+        uint8_t* buffer = buffers.first;
+        if (!buffers.ready()) result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_HASH, ENOMEM);
         Sha256 hash; uint64_t offset = 0; unsigned interruptions = 0;
         while (buffer && !result && !cancelled() && offset < required) {
-            size_t count = required - offset < READ_BUFFER_BYTES ? static_cast<size_t>(required - offset) : READ_BUFFER_BYTES;
+            size_t count = required - offset < buffers.capacity ? static_cast<size_t>(required - offset) : buffers.capacity;
             int64_t bytes = peppyParallelPread(fd, buffer, count, static_cast<int64_t>(offset));
             if (static_cast<uint32_t>(bytes) == 0x80020004U && interruptions++ < 8) continue;
             if (bytes <= 0 || static_cast<uint64_t>(bytes) > count) {
@@ -723,7 +712,6 @@ ParallelAttempt tryParallel(HttpHandles& primary, const char* url, uint64_t requ
                 if (digest[i] != static_cast<uint8_t>((hex(g_digest[2*i]) << 4) | hex(g_digest[2*i+1])))
                     result = fail(DOWNLOAD_ERROR_HASH, DOWNLOAD_STAGE_HASH, 0);
         }
-        free(buffer);
     }
     if (!result && !cancelled() && fsync(fd) != 0)
         result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_FLUSH, errno);
@@ -872,7 +860,7 @@ openResponse:
     __atomic_store_n(&g_total, required, __ATOMIC_RELEASE);
     if (cancelled()) return 0;
     if (!parallelAttempted && knownLength && required >= 32ULL * 1024 * 1024 &&
-        g_contentId[0] && archiveUrl(current)) {
+        g_contentId[0] && (archiveUrl(current) || githubUrl(current) || mediafireCdn(current))) {
         parallelAttempted = true;
         int parallelResult = 0;
         ParallelAttempt attempt = tryParallel(handles, current, required, partPath, finalPath, parallelResult);
@@ -887,15 +875,8 @@ openResponse:
         }
     }
     stage(DOWNLOAD_STAGE_FILE_OPEN);
-    struct TransferBuffers {
-        uint8_t* read;
-        char* output;
-        TransferBuffers() : read(static_cast<uint8_t*>(malloc(READ_BUFFER_BYTES))), output(0) {
-            if (read) output = static_cast<char*>(malloc(STDIO_BUFFER_BYTES));
-        }
-        ~TransferBuffers() { free(output); free(read); }
-    } buffers;
-    if (!buffers.read || !buffers.output)
+    peppyDownloadBuffers::Buffers buffers;
+    if (!buffers.ready())
         return fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, ENOMEM);
     FILE* file = fopen(partPath, "wb");
     if (!file) { int code = errno; removePartial(partPath); return fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, code); }
@@ -903,10 +884,10 @@ openResponse:
     // OpenOrbis musl does not allocate a buffer for setvbuf(NULL, ...).
     // The supplied buffer must remain owned through both fflush and fclose.
     errno = 0;
-    if (setvbuf(file, buffers.output, _IOFBF, STDIO_BUFFER_BYTES) != 0)
+    if (setvbuf(file, reinterpret_cast<char*>(buffers.second), _IOFBF, buffers.capacity) != 0)
         result = fail(DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, errno ? errno : EIO);
     uint64_t received = 0;
-    uint8_t* buffer = buffers.read;
+    uint8_t* buffer = buffers.first;
     uint8_t magic[4] = {0,0,0,0};
     size_t magicCount = 0;
     uint8_t packageHeader[PACKAGE_HEADER_BYTES];
@@ -917,7 +898,7 @@ openResponse:
         // waiting for a further EOF can time out after a complete download.
         if (knownLength && received == responseLength) break;
         uint64_t remaining = required - received;
-        size_t requested = remaining < READ_BUFFER_BYTES ? static_cast<size_t>(remaining) : READ_BUFFER_BYTES;
+        size_t requested = remaining < buffers.capacity ? static_cast<size_t>(remaining) : buffers.capacity;
         // Without HTTP framing, the catalog length alone does not prove EOF.
         if (!requested) requested = 1;
         stage(DOWNLOAD_STAGE_READ);
@@ -935,7 +916,7 @@ openResponse:
             if (take > static_cast<size_t>(got)) take = static_cast<size_t>(got);
             memcpy(packageHeader + packageHeaderCount, buffer, take);
             packageHeaderCount += take;
-            if (packageHeaderCount == PACKAGE_HEADER_BYTES && !matchingBaseHeader(packageHeader, required)) {
+            if (packageHeaderCount == PACKAGE_HEADER_BYTES && !matchingExpectedHeader(packageHeader, required)) {
                 result = fail(DOWNLOAD_ERROR_PACKAGE, DOWNLOAD_STAGE_PACKAGE, 0); break;
             }
         }
@@ -994,7 +975,7 @@ void* downloadWorker(void*) {
 }
 } // namespace
 
-bool startDownload(const DownloadSpec& spec, const char* expectedContentId) {
+bool startDownload(const DownloadSpec& spec, const char* expectedContentId, int expectedKind) {
     int expected = 0;
     if (!__atomic_compare_exchange_n(&g_busy, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
         return false;
@@ -1017,6 +998,8 @@ bool startDownload(const DownloadSpec& spec, const char* expectedContentId) {
         for (int i = 0; i < 64; ++i) if (hex(spec.sha256[i]) < 0) digestOkay = false;
     }
     if (!safeUrl(spec.url) || !safeFilename(spec.filename) || !digestOkay ||
+        expectedKind < USER_PACKAGE_BASE || expectedKind > USER_PACKAGE_DLC ||
+        (expectedKind != USER_PACKAGE_BASE && !verifyContentId) ||
         (spec.expectedBytes && spec.expectedBytes < 4) || spec.expectedBytes > PEPPY_MAX_PACKAGE_BYTES ||
         (verifyContentId && (!canonicalContentId(expectedContentId) || spec.expectedBytes < PACKAGE_HEADER_BYTES))) {
         __atomic_store_n(&g_error, DOWNLOAD_ERROR_SPEC, __ATOMIC_RELEASE);
@@ -1031,6 +1014,7 @@ bool startDownload(const DownloadSpec& spec, const char* expectedContentId) {
     if (spec.sha256 && spec.sha256[0]) memcpy(g_digest, spec.sha256, 65);
     if (verifyContentId) memcpy(g_contentId, expectedContentId, CONTENT_ID_BYTES + 1);
     g_expected = spec.expectedBytes;
+    g_expectedKind = expectedKind;
     __atomic_store_n(&g_state, RUNNING, __ATOMIC_RELEASE);
 
     OrbisPthreadAttr attr;

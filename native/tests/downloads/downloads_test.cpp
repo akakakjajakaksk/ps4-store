@@ -48,13 +48,16 @@ static std::vector<SourceResponse> sourceResponses;
 static std::vector<std::string> sourceRequestUrls;
 static size_t sourceCursor, sourceBytes, sourceReadCalls, packageReadCalls;
 static int templateCreates, tlsEnables;
-static const size_t BUFFER_TEST_BYTES = 256 * 1024;
-static int packageMallocFailure, setvbufFailureErrno;
+static const size_t BUFFER_TEST_BYTES = 1024 * 1024;
+static const size_t FALLBACK_TEST_BYTES = 256 * 1024;
+static unsigned packageMallocFailureMask;
+static int setvbufFailureErrno;
 static bool setvbufFailure;
 static size_t packageMallocCalls, packageSetvbufCalls, packageBufferLifetimeChecks;
 static size_t packageDataReads, packageMaxReadRequest, packageMaxReadBytes;
 static FILE* trackedPackageFile;
 static unsigned char* trackedStdioBuffer;
+static size_t trackedStdioBytes;
 struct JoinableThreadMock { std::thread* thread; void* result; JoinableThreadMock():thread(0),result(0){} };
 static std::vector<JoinableThreadMock*> joinableThreads;
 static SourceResponse& sourceResponse() {
@@ -69,20 +72,20 @@ extern "C" int __real_fclose(FILE*);
 extern "C" void* __real_malloc(size_t);
 extern "C" int __real_setvbuf(FILE*,char*,int,size_t);
 extern "C" void* __wrap_malloc(size_t bytes){
-    if(bytes==BUFFER_TEST_BYTES&&downloadSnapshot().stage==DOWNLOAD_STAGE_FILE_OPEN){
+    if((bytes==BUFFER_TEST_BYTES||bytes==FALLBACK_TEST_BYTES)&&downloadSnapshot().stage==DOWNLOAD_STAGE_FILE_OPEN){
         ++packageMallocCalls;
-        if(packageMallocFailure&&(int)packageMallocCalls==packageMallocFailure){errno=ENOMEM;return 0;}
+        if(packageMallocFailureMask&(1U<<(packageMallocCalls-1))){errno=ENOMEM;return 0;}
     }
     return __real_malloc(bytes);
 }
 extern "C" int __wrap_setvbuf(FILE* file,char* buffer,int buffering,size_t bytes){
     if(file==g_log)return __real_setvbuf(file,buffer,buffering,bytes);
-    assert(file&&buffer&&buffering==_IOFBF&&bytes==BUFFER_TEST_BYTES);
+    assert(file&&buffer&&buffering==_IOFBF&&(bytes==BUFFER_TEST_BYTES||bytes==FALLBACK_TEST_BYTES));
     assert(!trackedPackageFile);
     ++packageSetvbufCalls;trackedPackageFile=file;
-    trackedStdioBuffer=(unsigned char*)buffer;
+    trackedStdioBuffer=(unsigned char*)buffer;trackedStdioBytes=bytes;
     // Initialize the boundary even for short transfers and a failed setvbuf.
-    trackedStdioBuffer[BUFFER_TEST_BYTES-1]=0xa5;
+    trackedStdioBuffer[trackedStdioBytes-1]=0xa5;
     if(setvbufFailure){errno=setvbufFailureErrno;return -1;}
     return __real_setvbuf(file,buffer,buffering,bytes);
 }
@@ -93,11 +96,11 @@ extern "C" int __wrap_fclose(FILE* f){
     if(tracked){
         assert(trackedStdioBuffer);
         // ASan checks that the caller-owned buffer still lives at fclose.
-        volatile unsigned char last=trackedStdioBuffer[BUFFER_TEST_BYTES-1];(void)last;
+        volatile unsigned char last=trackedStdioBuffer[trackedStdioBytes-1];(void)last;
         ++packageBufferLifetimeChecks;
     }
     int rc=__real_fclose(f);
-    if(tracked){trackedPackageFile=0;trackedStdioBuffer=0;}
+    if(tracked){trackedPackageFile=0;trackedStdioBuffer=0;trackedStdioBytes=0;}
     if(mode==13){errno=ENOSPC;return EOF;}return rc;
 }
 extern "C" int32_t sceKernelUsleep(uint32_t n){std::this_thread::sleep_for(std::chrono::microseconds(n==100000?100:n));return 0;}
@@ -193,7 +196,7 @@ extern "C" int32_t sceHttpTerm(int32_t){++closedHttp;return 0;}
 
 std::string hashText(const std::string& input){Sha256 s;for(size_t i=0;i<input.size();i+=7)s.update((const uint8_t*)input.data()+i,input.size()-i>7?7:input.size()-i);uint8_t digest[32];s.finish(digest);char buf[65];for(int i=0;i<32;++i)sprintf(buf+2*i,"%02x",digest[i]);return buf;}
 DownloadSnapshot finished(){for(int i=0;i<5000;++i){if(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE))return downloadSnapshot();sceKernelUsleep(1000);}assert(false);return downloadSnapshot();}
-void reset(int nextMode){assert(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));assert(!trackedPackageFile&&!trackedStdioBuffer);mode=nextMode;cursor=0;requests=0;moduleLoads=moduleProbes=stateQueries=0;advertisedLength=0;contentLengthCalls=0;netError=0;aborted=false;blocked=false;releaseRead=false;secure=false;manual=false;closedRequests=closedConnections=closedTemplates=closedHttp=closedSsl=closedPools=0;payload={0x7f,0x43,0x4e,0x54,'a','b','c','d'};sourceResponses.clear();sourceRequestUrls.clear();sourceCursor=sourceBytes=sourceReadCalls=packageReadCalls=0;templateCreates=tlsEnables=0;packageMallocFailure=setvbufFailureErrno=0;setvbufFailure=false;packageMallocCalls=packageSetvbufCalls=packageBufferLifetimeChecks=0;packageDataReads=packageMaxReadRequest=packageMaxReadBytes=0;unlink(outputPath().c_str());unlink(outputPath(true).c_str());}
+void reset(int nextMode){assert(!__atomic_load_n(&g_busy,__ATOMIC_ACQUIRE));assert(!trackedPackageFile&&!trackedStdioBuffer);mode=nextMode;cursor=0;requests=0;moduleLoads=moduleProbes=stateQueries=0;advertisedLength=0;contentLengthCalls=0;netError=0;aborted=false;blocked=false;releaseRead=false;secure=false;manual=false;closedRequests=closedConnections=closedTemplates=closedHttp=closedSsl=closedPools=0;payload={0x7f,0x43,0x4e,0x54,'a','b','c','d'};sourceResponses.clear();sourceRequestUrls.clear();sourceCursor=sourceBytes=sourceReadCalls=packageReadCalls=0;templateCreates=tlsEnables=0;packageMallocFailureMask=0;setvbufFailureErrno=0;setvbufFailure=false;packageMallocCalls=packageSetvbufCalls=packageBufferLifetimeChecks=0;packageDataReads=packageMaxReadRequest=packageMaxReadBytes=0;unlink(outputPath().c_str());unlink(outputPath(true).c_str());}
 void cleanHandles(){assert(closedRequests==requests&&closedConnections==requests);assert(closedTemplates==1&&closedHttp==1&&closedSsl==1&&closedPools==1);assert(access(outputPath(true).c_str(),F_OK)!=0);}
 void seedPrevious(){FILE* f=fopen(outputPath().c_str(),"wb");assert(f);assert(__real_fwrite("previous",1,8,f)==8);assert(__real_fclose(f)==0);}
 void checkPrevious(){FILE* f=fopen(outputPath().c_str(),"rb");assert(f);char data[9]={0};assert(fread(data,1,8,f)==8);assert(!strcmp(data,"previous"));assert(__real_fclose(f)==0);}
@@ -630,6 +633,42 @@ void contentIdTransferTests() {
 }
 void contentIdTests() { contentIdSpecTests(); contentIdTransferTests(); }
 
+void pinnedPackageKindTests() {
+    struct Fixture { uint32_t type, flags; int kind; };
+    const Fixture fixtures[] = {
+        {0x1A, 0x0A000000U, USER_PACKAGE_BASE},
+        {0x1A, 0x62300000U, USER_PACKAGE_UPDATE},
+        {0x1E, 0x0A000000U, USER_PACKAGE_UPDATE},
+        {0x1B, 0x0A000000U, USER_PACKAGE_DLC},
+        {0x1C, 0x0A000000U, USER_PACKAGE_DLC}
+    };
+    for (const Fixture& fixture : fixtures) {
+        for (int expectedKind : {USER_PACKAGE_BASE, USER_PACKAGE_UPDATE, USER_PACKAGE_DLC}) {
+            resetContentIdFixture(false);
+            fixtureBe32(payload, 0x74, fixture.type); fixtureBe32(payload, 0x78, fixture.flags);
+            seedPrevious(); assert(startDownload(contentIdSpec(false), CID_TEST_VALUE, expectedKind));
+            DownloadSnapshot value = finished();
+            if (expectedKind == fixture.kind) {
+                assert(value.state == DONE && value.received == payload.size()); checkPackageOutput(payload);
+            } else {
+                assert(value.state == FAILED && value.errorCode == DOWNLOAD_ERROR_PACKAGE);
+                assert(value.stage == DOWNLOAD_STAGE_PACKAGE); checkPrevious();
+            }
+            cleanHandles();
+        }
+    }
+    for (int invalid : {-1, 3, 2147483647}) {
+        resetContentIdFixture(false);
+        assert(!startDownload(contentIdSpec(false), CID_TEST_VALUE, invalid));
+        assert(downloadSnapshot().errorCode == DOWNLOAD_ERROR_SPEC && !requests);
+    }
+    for (int kind : {USER_PACKAGE_UPDATE, USER_PACKAGE_DLC}) {
+        resetContentIdFixture(false);
+        assert(!startDownload(contentIdSpec(false), 0, kind));
+        assert(downloadSnapshot().errorCode == DOWNLOAD_ERROR_SPEC && !requests);
+    }
+}
+
 static const char* ARCHIVE_COLLECTION = "ps4-fpkg-collection-english-h";
 static const char* ARCHIVE_TEST_CID = "UP3643-CUSA00486_00-HOTLINEMIAMIPS40";
 static const char* ARCHIVE_TEST_URL = "https://archive.org/download/ps4-fpkg-collection-english-h/Hotline%20Miami.pkg";
@@ -1057,9 +1096,10 @@ void pinnedItemzflowMirrorTests() {
 void packageBufferFailureTests() {
     DownloadSpec spec = binarySourceSpec(CID_GITHUB_URL);
     for (int allocation : { 1, 2 }) {
-        resetBinarySource(CID_GITHUB_URL, CID_TEST_VALUE); packageMallocFailure = allocation;
+        resetBinarySource(CID_GITHUB_URL, CID_TEST_VALUE);
+        packageMallocFailureMask = allocation == 1 ? 0x3U : 0xaU;
         checkBinaryFailure(spec, CID_TEST_VALUE, DOWNLOAD_ERROR_FILESYSTEM, DOWNLOAD_STAGE_FILE_OPEN, ENOMEM);
-        assert(packageMallocCalls == (size_t)allocation && !packageSetvbufCalls);
+        assert(packageMallocCalls == (allocation == 1 ? 2U : 4U) && !packageSetvbufCalls);
         assert(!packageReadCalls && !packageBufferLifetimeChecks && !trackedPackageFile && !trackedStdioBuffer);
     }
     for (int suppliedErrno : { 0, ENOMEM }) {
@@ -1073,9 +1113,9 @@ void packageBufferFailureTests() {
 }
 void packageBufferThroughputTests() {
     const size_t bytes = 1024 * 1024;
-    const size_t oldChunk = 64 * 1024;
+    const size_t oldChunk = 256 * 1024;
     const size_t baselineDataReads = (bytes + oldChunk - 1) / oldChunk;
-    assert(baselineDataReads == 16);
+    assert(baselineDataReads == 4);
     for (int integrity : { 0, 1, 2 }) {
         reset(MODE_MEDIAFIRE);
         payload = contentIdPackage(bytes);
@@ -1093,7 +1133,7 @@ void packageBufferThroughputTests() {
         seedPrevious(); assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
         assert(value.received == bytes && value.total == bytes && sourceCursor == bytes);
         assert(packageMaxReadRequest == BUFFER_TEST_BYTES && packageMaxReadBytes == BUFFER_TEST_BYTES);
-        assert(packageDataReads == 4 && packageReadCalls == 4 && packageDataReads < baselineDataReads);
+        assert(packageDataReads == 1 && packageReadCalls == 1 && packageDataReads < baselineDataReads);
         assert(packageMallocCalls == 2 && packageSetvbufCalls == 1 && packageBufferLifetimeChecks == 1);
         assert(!trackedPackageFile && !trackedStdioBuffer); cleanHandles();
         if (integrity == 2) {
@@ -1102,6 +1142,28 @@ void packageBufferThroughputTests() {
         } else {
             assert(value.state == DONE); checkPackageOutput(payload);
         }
+    }
+}
+
+void packageBufferFallbackTests() {
+    const size_t bytes = 1024 * 1024 + 7;
+    for (unsigned failedCall : { 0U, 1U }) {
+        reset(MODE_MEDIAFIRE); payload = contentIdPackage(bytes);
+        for (size_t i = CID_TEST_HEADER; i < payload.size(); ++i) payload[i] = (uint8_t)(i % 251);
+        SourceResponse response = sourcePackage(CID_GITHUB_URL); response.fragment = SIZE_MAX;
+        response.readFailureAfter = bytes; response.readRc = EOF_TIMEOUT_ERROR;
+        sourceResponses.push_back(response);
+        packageMallocFailureMask = 1U << failedCall;
+        DownloadSpec spec = binarySourceSpec(CID_GITHUB_URL, bytes);
+        std::string digest = hashText(std::string((char*)payload.data(), payload.size()));
+        spec.sha256 = digest.c_str();
+        assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
+        assert(value.state == DONE && value.received == bytes && value.total == bytes);
+        assert(packageMallocCalls == (failedCall ? 4U : 3U));
+        assert(packageMaxReadRequest == FALLBACK_TEST_BYTES && packageMaxReadBytes == FALLBACK_TEST_BYTES);
+        assert(packageDataReads == 5 && packageReadCalls == 5);
+        assert(packageSetvbufCalls == 1 && packageBufferLifetimeChecks == 1);
+        cleanHandles(); checkPackageOutput(payload);
     }
 }
 
@@ -1140,7 +1202,7 @@ void knownLengthCompletionTests() {
                        DOWNLOAD_ERROR_NETWORK, DOWNLOAD_STAGE_READ, EOF_TIMEOUT_ERROR);
     assert(downloadSnapshot().received == 3 && downloadSnapshot().networkCode == EOF_TIMEOUT_ERROR);
 
-    // Larger reads retain their 256 KiB cap and request only the final remainder.
+    // Larger reads retain their bounded cap and request only the final remainder.
     reset(MODE_MEDIAFIRE); payload = contentIdPackage(BUFFER_TEST_BYTES + 7);
     SourceResponse response = sourcePackage(CID_GITHUB_URL); response.fragment = SIZE_MAX;
     response.readFailureAfter = payload.size(); response.readRc = EOF_TIMEOUT_ERROR;
@@ -1169,10 +1231,10 @@ void unknownLengthCompletionTests() {
         }
         sourceResponses.push_back(response); DownloadSpec spec = binarySourceSpec(CID_GITHUB_URL, bytes);
         seedPrevious(); assert(startDownload(spec, CID_TEST_VALUE)); DownloadSnapshot value = finished();
-        assert(value.received == bytes && value.total == bytes && packageReadCalls == 5);
+        assert(value.received == bytes && value.total == bytes && packageReadCalls == 2);
         assert(sourceResponses[0].readRequests.back() == 1); cleanHandles();
         if (!ending) {
-            assert(value.state == DONE && packageDataReads == 4); checkPackageOutput(payload);
+            assert(value.state == DONE && packageDataReads == 1); checkPackageOutput(payload);
         } else {
             assert(value.state == FAILED && value.stage == DOWNLOAD_STAGE_READ); checkPrevious();
             if (ending == 1) assert(value.errorCode == DOWNLOAD_ERROR_LENGTH && value.nativeCode == 1);
@@ -1296,12 +1358,14 @@ int main(){
  largePackageTests(spec);
  mediafireTests();
  contentIdTests();
+ pinnedPackageKindTests();
  archiveTests();
  gamebatoTests();
  hitmanArchiveMirrorTests();
  pinnedItemzflowMirrorTests();
  packageBufferFailureTests();
  packageBufferThroughputTests();
+ packageBufferFallbackTests();
  knownLengthCompletionTests();
  unknownLengthCompletionTests();
  sourceFramingCompletionTests();

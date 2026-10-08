@@ -7,16 +7,16 @@ Interface nativa para PS4 homebrew, compilada com OpenOrbis PS4 Toolchain.
 - Tela em 1920×1080 com fundo escuro e destaques azuis.
 - Arte PEPPY no banner e no ícone do menu do PS4.
 - Fonte suave com caracteres em português, preparada durante a build.
-- Catálogo de 845 PKGs, com categorias, páginas e detalhes.
+- Catálogo gratuito de 860 PKGs, com categorias, páginas e detalhes.
 - Pesquisa por nome ou identificador, com teclado na tela operado pelo controle.
 - Downloads HTTPS de releases oficiais, MediaFire e fontes diretas revisadas, em segundo plano.
-- Duas conexões para PKGs grandes do Archive quando o servidor permite; velocidade medida e tempo estimado na tela.
+- Duas conexões para PKGs grandes de fontes aprovadas quando o servidor permite; velocidade medida e tempo estimado na tela.
 - Instalação local integrada após concluir e validar o download.
 - Playlist FIGHT → ACENDAOFAROL, com opção para silenciar e trocar a faixa.
 
 O catálogo está em `catalog.json`, com versões, fontes, tamanhos exatos e
 evidências de arquivo conferidas em 2026-10-04. São 805 jogos nativos de PS4,
-14 conversões de PS1/PS2 e 26 aplicativos, emuladores e motores de jogos.
+14 conversões de PS1/PS2 e 41 aplicativos, emuladores e motores de jogos.
 Os jogos nativos incluem Agony e 804 títulos distintos do Internet Archive;
 as conversões não entram nessa contagem. As entradas identificam a fonte e
 distinguem as conversões dos jogos nativos.
@@ -39,7 +39,7 @@ na tela; o filtro permanece até ser alterado ou apagado. As abas Atualizações
 e DLCs são separadas dos jogos e mostram um estado vazio enquanto não houver
 downloads disponíveis nessas categorias. Nenhum patch ou DLC foi apresentado
 como jogo completo para preencher essas abas. O downloader e o instalador
-atuais continuam aceitando os pacotes base conferidos do catálogo.
+também aceitam base, update e DLC importados, com tipo e identidade fixados pelos metadados do arquivo.
 
 Uma revisão adicional do SuperPSX reuniu 6.583 links de hospedadores em
 espelhos públicos, associados a 1.812 nomes. Esses registros não comprovam
@@ -47,7 +47,7 @@ um catálogo completo e atualizado do site. Os 47 links MediaFire encontrados
 anunciam 46 RARs e um patch em PKG; não há base em PKG nesse conjunto.
 Sete candidatos a PKG base no Datanodes foram consultados e retornaram 404.
 Nenhum download instalável foi importado dessa revisão, e a contagem da loja
-permanece 845. O relatório com o escopo, fontes e resultados está em
+permaneceu em 845 naquela revisão. O relatório com o escopo, fontes e resultados está em
 [superpsx-review.json](superpsx-review.json). As páginas que exigem navegador,
 arquivos compactados e pacotes separados exigem um fluxo próprio antes de
 entrarem no download direto da loja.
@@ -62,19 +62,19 @@ Uma falha permite tentar instalar novamente o arquivo já baixado.
 Download e instalação usam o mesmo limite de 256 GiB por pacote, com tamanhos
 e progresso de 64 bits. A interface mostra GB a partir de 1 GiB. O conteúdo
 continua sendo transferido em blocos pequenos; o limite não reserva essa
-quantidade de memória. A transferência comum usa um buffer de leitura de 256 KiB
-na heap e outro de 256 KiB para a gravação, fornecido explicitamente a
-`setvbuf`. Esses dois buffers somam 512 KiB fixos, além dos recursos de rede.
+quantidade de memória. A transferência comum usa um buffer de leitura de até 1 MiB
+na heap e outro de até 1 MiB para a gravação, fornecido explicitamente a
+`setvbuf`. Esses dois buffers preferem 2 MiB somados; ambos recuam para 256 KiB cada se faltar memória. Não há alegação de máximo físico do PS4.
 O SHA-256 só é calculado quando existe um hash esperado no catálogo; nesse
 caso a comparação continua obrigatória. Isso reduz trabalho sem remover as
 verificações de tamanho, identidade e tipo. Não foi medida a velocidade real
 de transferência no PS4. Os testes de pacotes grandes usam respostas simuladas
 e arquivos esparsos, sem comprovar uma transferência completa no console.
 
-PKGs do Archive com pelo menos 32 MiB, Content ID e tamanho HTTP conhecido
+PKGs de URLs finais aprovadas do Archive, GitHub e MediaFire com pelo menos 32 MiB, Content ID e tamanho HTTP conhecido
 podem usar duas conexões HTTPS. A loja divide o mesmo arquivo em dois
 intervalos contíguos e grava cada parte em sua posição, com dois buffers de
-256 KiB e contextos HTTP independentes. Antes de gravar, ambos os pedidos
+até 1 MiB por conexão (fallback 256 KiB) e contextos HTTP independentes. Antes de gravar, ambos os pedidos
 precisam responder `206`, com intervalo e tamanho exatos e o mesmo ETag forte
 do pedido inicial. `If-Range` fixa essa versão do recurso; os dois pedidos
 usam a mesma URL final, com validação TLS e sem aceitar novos redirecionamentos.
@@ -253,7 +253,7 @@ Na raiz do repositório:
 ```sh
 python3 native/scripts/generate-ui-assets.py --icon peppy-icon0-1.png --output native/ui_assets.h
 python3 native/scripts/generate-catalog.py --catalog native/catalog.json --output native/ui_catalog.h
-g++ -std=c++11 -O2 native/scripts/preview-ui.cpp -o /tmp/peppy-preview
+g++ -std=c++11 -O2 native/scripts/preview-ui.cpp native/user_catalog.cpp -o /tmp/peppy-preview
 /tmp/peppy-preview /tmp/peppy
 ```
 
@@ -287,3 +287,20 @@ e instalação por HTTP local em
 com [resposta binária e intervalos](https://github.com/cy33hc/ps4-ezremote-client/blob/master/source/server/http_server.cpp#L1046).
 
 O funcionamento no console depende de teste real no PS4/GoldHEN.
+
+
+## Premium, catálogo central e links do usuário
+
+Os 860 itens presentes antes desta mudança continuam gratuitos. Novidades do catálogo central, mídia e temas exigem sessão premium; links próprios podem ser importados nas duas modalidades. O serviço está em https://peppy-assets-updater.quick-chime-0602.chatgpt.site e o código portátil em `../services/peppy-hub/`. O catálogo remoto não é uma lista de usuários e senhas embutida no PKG.
+
+OPTIONS abre serviços, incluindo os PKGs recebidos por FTP. Importar links aceita uma URL direta ou uma lista; `urls.txt` em `/data/peppy-store/` também pode ser usado. A consulta usa menos de 100 KB de metadados por arquivo, separa **Base do usuário**, **Update do usuário** e **DLC do usuário**, e persiste até 1024 itens. Nome e versão aparecem quando disponíveis no PARAM.SFO; caso contrário são identificados como não informados. Os provedores nativos são as fontes públicas revisadas pelo downloader: páginas de blog, RAR, encurtadores e hospedadores arbitrários não são aceitos como PKG direto. Cabeçalhos não estabelecem licenciamento, idioma ou assinatura.
+
+Login e senhas ficam somente na memória do cliente; os hashes e as sessões autoritativas ficam no banco privado. O tempo do servidor e um relógio monotônico limitam a sessão. O catálogo sincroniza ao entrar e periodicamente enquanto o app está ocioso, preservando referências durante transferências. O acesso administrativo usa a combinação R2 + R3 + OPTIONS na tela premium e ainda exige conta com papel de administrador no servidor.
+
+Planos: R$ 10,00 / 15 dias; R$ 20,00 / 1 mês; R$ 30,00 / 2 meses. Meses são de calendário, não trinta dias fixos. Premium usa o valor exato do plano e aprovação manual; doações são separadas e começam em R$ 1,00. LivePix: https://livepix.gg/peppystore. Comprovantes no Discord: `djdarknes.com_66953`. Não há leitura automática de pagamentos nem liberação por um simples redirecionamento do LivePix.
+
+Temas são identificados pelo tipo e IRO tag reais. A aba 18+ exige confirmação de idade e só mostra entradas marcadas dessa forma pelo administrador. A existência das abas não promete conteúdo instalado ou streaming operacional. Premium da Peppy não inclui assinaturas de streaming. Capas da interface usam a arte PEPPY; os PKGs e créditos de seus autores não são modificados.
+
+O Peppy Assets Updater consulta as releases públicas da Peppy no GitHub para oferecer a nova build depois da publicação. Um PKG não é um payload; o navegador não instala sozinho esse arquivo. Feche a Peppy e utilize o instalador do console para a atualização.
+
+Os testes de núcleo do usuário, worker HTTP, menus, permissões e persistência rodam em CI. Testes de host e inspeção de cabeçalho não substituem testes no PS4/firmware 13.52.

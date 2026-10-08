@@ -1,5 +1,5 @@
 TITLE := Peppy Store
-VERSION := 01.00
+VERSION := 01.10
 TITLE_ID := BREW00001
 CONTENT_ID := IV0000-BREW00001_00-ORBISSTORE000001
 
@@ -10,7 +10,7 @@ TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 PROJDIR := source
 INTDIR := build
 
-CPPFILES := boot_test.cpp downloads.cpp install.cpp pkg_server.cpp goldhen_bridge.cpp music.cpp ftp_receiver.cpp
+CPPFILES := boot_test.cpp downloads.cpp install.cpp pkg_server.cpp goldhen_bridge.cpp music.cpp ftp_receiver.cpp user_catalog.cpp hub_client.cpp
 OBJS := $(CPPFILES:%.cpp=$(INTDIR)/%.o)
 MUSIC_ASSETS := assets/music/fight.wav assets/music/acendaofarol.wav
 
@@ -68,16 +68,18 @@ $(MUSIC_ASSETS): ../fight-ps4.mp3 ../acendaofarol-ps4.mp3 scripts/prepare-music.
 # Both tracks are prepared together; serialize the packaging prerequisites.
 .NOTPARALLEL: pkg.gp4
 
-$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h catalog_search.h downloads.h download_meter.h install.h music.h ftp_receiver.h
+$(INTDIR)/boot_test.o: ui_assets.h ui_catalog.h catalog_search.h downloads.h download_meter.h install.h music.h ftp_receiver.h store_extensions.h user_catalog.h user_pkg_header.h hub_client.h peppy_hub_config.h
 archive_sources.h: archive_sources.json scripts/archive_policy.py
 	python3 scripts/archive_policy.py --policy archive_sources.json --output $@
 
-$(INTDIR)/downloads.o: downloads.h package_limits.h mediafire_source.h archive_sources.h http_range.h parallel_download.h
+$(INTDIR)/downloads.o: downloads.h package_limits.h mediafire_source.h archive_sources.h http_range.h parallel_download.h download_buffers.h user_pkg_header.h
 $(INTDIR)/install.o: install.h pkg_server.h package_limits.h
 $(INTDIR)/pkg_server.o: pkg_server.h
 $(INTDIR)/music.o: music.h
 $(INTDIR)/ftp_receiver.o: ftp_receiver.h
 $(INTDIR)/goldhen_bridge.o: third_party/goldhen/GoldHEN.h
+$(INTDIR)/user_catalog.o: user_catalog.h user_pkg_header.h package_limits.h
+$(INTDIR)/hub_client.o: hub_client.h hub_json.h user_catalog.h user_pkg_header.h peppy_hub_config.h archive_sources.h mediafire_source.h http_range.h
 
 $(INTDIR)/%.o: %.cpp
 	mkdir -p $(INTDIR)

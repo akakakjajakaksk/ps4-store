@@ -65,9 +65,10 @@ struct DownloadSnapshot {
 // Completion means a downloaded file, not an installed application.
 // Start/cancel are serialized by the controller thread; the worker publishes
 // progress atomically. sha256 is optional plain 64-character hexadecimal text.
-// A nonempty expectedContentId pins an external base package's canonical
-// Content ID, header kind and declared size. Its exact expectedBytes is required.
-bool startDownload(const DownloadSpec& spec, const char* expectedContentId = 0);
+// A nonempty expectedContentId pins the canonical Content ID, package kind
+// (0 base, 1 update, 2 DLC) and declared size. Exact expectedBytes is required.
+// Update/DLC transfers require that identity pin; legacy callers default to base.
+bool startDownload(const DownloadSpec& spec, const char* expectedContentId = 0, int expectedKind = 0);
 void cancelDownload();
 DownloadSnapshot downloadSnapshot();
 const char* downloadStageName(int stage);

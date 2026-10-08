@@ -16,6 +16,7 @@
 #include "download_meter.h"
 #include "install.h"
 #include "music.h"
+#include "peppy_hub_config.h"
 #ifndef PEPPY_UI_PREVIEW
 #include "ftp_receiver.h"
 #endif
@@ -24,14 +25,25 @@ static const int W = 1920, H = 1080;
 static const uint32_t BG = 0x800B0F17, PANEL = 0x80131925;
 static const uint32_t WHITE = 0x80F4F6FA, MUTED = 0x809BA7BA;
 static const uint32_t BLUE = 0x8073B7FF, LINE = 0x80252D3C;
-static const int CATEGORY_COUNT = 7;
-static const char* CATEGORY_NAMES[CATEGORY_COUNT] = {"Todos", "Utilitários", "Emuladores", "Jogos", "Mídia", "Atualizações", "DLCs"};
-static const uint32_t CATEGORY_COLORS[CATEGORY_COUNT] = {BLUE, 0x807BDECC, 0x80B9A2F9, 0x80EBC48A, 0x8085BBFB, BLUE, BLUE};
+static const int CATEGORY_COUNT = 13;
+static const char* CATEGORY_NAMES[CATEGORY_COUNT] = {"Todos", "Utilitários", "Emuladores", "Jogos", "Mídia", "Atualizações", "DLCs", "Temas", "Base do usuário", "Update do usuário", "DLC do usuário", "Premium", "+18 premium"};
+static const uint32_t CATEGORY_COLORS[CATEGORY_COUNT] = {BLUE, 0x807BDECC, 0x80B9A2F9, 0x80EBC48A, 0x8085BBFB, BLUE, BLUE, BLUE, BLUE, BLUE, BLUE, BLUE, 0x80EBA5B4};
+enum CatalogControllerButton {
+    CATALOG_LEFT = 1U << 0, CATALOG_RIGHT = 1U << 1,
+    CATALOG_UP = 1U << 2, CATALOG_DOWN = 1U << 3,
+    CATALOG_CROSS = 1U << 4, CATALOG_CIRCLE = 1U << 5,
+    CATALOG_SQUARE = 1U << 6, CATALOG_TRIANGLE = 1U << 7,
+    CATALOG_L1 = 1U << 8, CATALOG_R1 = 1U << 9,
+    CATALOG_L3 = 1U << 10, CATALOG_R3 = 1U << 11,
+    CATALOG_OPTIONS = 1U << 12, CATALOG_R2 = 1U << 13
+};
+#include "store_extensions.h"
+
 static int activeCategory = 0, downloadingApp = -1, installingApp = -1;
 static CatalogSearchState catalogSearch;
 static bool autoInstallPending = false, installCancelRequested = false;
-static uint64_t downloadedBytes[UI_APP_COUNT] = {};
-static bool installedApps[UI_APP_COUNT] = {};
+static uint64_t downloadedBytes[STORE_CAPACITY] = {};
+static bool installedApps[STORE_CAPACITY] = {};
 static DownloadMeter downloadMeter;
 
 #ifndef PEPPY_UI_PREVIEW
@@ -63,15 +75,26 @@ static uint64_t downloadNowUs() {
 #endif
 }
 
-static bool validApp(int index) { return index >= 0 && index < UI_APP_COUNT; }
+static bool validApp(int index) { return storeAppExists(index); }
+static bool storeTransfersBusy() {
+    return downloadSnapshot().state == RUNNING || installSnapshot().state == INSTALL_RUNNING || autoInstallPending;
+}
+static bool storeUiEditing() { return storePanel != STORE_PANEL_NONE || catalogSearch.open; }
+static bool storeSearchEditing() { return catalogSearch.open; }
+static void resetRemoteOperations() {
+    memset(downloadedBytes + STORE_REMOTE_FIRST, 0, USER_CATALOG_MAX_ITEMS * sizeof(downloadedBytes[0]));
+    memset(installedApps + STORE_REMOTE_FIRST, 0, USER_CATALOG_MAX_ITEMS * sizeof(installedApps[0]));
+    if (downloadingApp >= STORE_REMOTE_FIRST) downloadingApp = -1;
+    if (installingApp >= STORE_REMOTE_FIRST) installingApp = -1;
+}
 
 static bool beginInstall(int index) {
     InstallSnapshot status = installSnapshot();
     if (!validApp(index) || !downloadedBytes[index] || status.state == INSTALL_RUNNING || status.cleanupCode)
         return false;
-    const UiApp& app = UI_APPS[index];
+    const UiApp& app = storeApp(index);
     InstallSpec spec = {app.filename, app.name, downloadedBytes[index]};
-    bool accepted = startInstall(spec);
+    bool accepted = index < UI_APP_COUNT ? startInstall(spec) : startTypedInstall(spec, storeAppKind(index));
     InstallSnapshot after = installSnapshot();
     bool newAttempt = after.generation != status.generation;
     // A busy worker may reject a start after publishing its previous DONE.
@@ -95,7 +118,7 @@ static bool pollAutoInstall() {
     }
     if (autoInstallPending && download.state == DONE && install.state != INSTALL_RUNNING) {
         autoInstallPending = false;
-        if (validApp(downloadingApp) && download.received == UI_APPS[downloadingApp].sizeBytes) {
+        if (validApp(downloadingApp) && download.received == storeApp(downloadingApp).sizeBytes) {
             downloadedBytes[downloadingApp] = download.received;
             beginInstall(downloadingApp);
         }
@@ -114,15 +137,15 @@ static bool pollAutoInstall() {
 
 static bool activateApp(int index) {
     InstallSnapshot status = installSnapshot();
-    if (!validApp(index) || downloadSnapshot().state == RUNNING ||
+    if (!validApp(index) || !storeAppAllowed(index) || downloadSnapshot().state == RUNNING ||
         status.state == INSTALL_RUNNING || status.cleanupCode || installedApps[index]) return false;
     if (downloadedBytes[index]) return beginInstall(index);
-    const UiApp& app = UI_APPS[index];
+    const UiApp& app = storeApp(index);
     DownloadSpec spec = {app.url, app.filename, app.sizeBytes, app.sha256};
     downloadingApp = index;
     autoInstallPending = true;
     uint64_t startedAt = downloadNowUs();
-    if (!startDownload(spec, app.contentId)) autoInstallPending = false;
+    if (!startDownload(spec, app.contentId, storeAppKind(index))) autoInstallPending = false;
     else {
         downloadMeter.reset();
         downloadMeter.update(true, 0, app.sizeBytes, startedAt);
@@ -140,21 +163,22 @@ static bool cancelOperation(int selectedIndex) {
     return false;
 }
 
-static bool matchesCatalogFilter(const UiApp& app) {
-    return (!activeCategory || app.category == activeCategory) &&
+static bool matchesCatalogFilter(int index) {
+    const UiApp& app = storeApp(index);
+    return storeMatchesCategory(index, activeCategory) &&
         catalogSearchMatches(app.name, app.id, app.contentId, catalogSearch.query);
 }
 
 static int categoryCount() {
     int count = 0;
-    for (int i = 0; i < UI_APP_COUNT; ++i)
-        if (matchesCatalogFilter(UI_APPS[i])) ++count;
+    for (int i = 0; i < STORE_CAPACITY; ++i)
+        if (storeAppExists(i) && matchesCatalogFilter(i)) ++count;
     return count;
 }
 
 static int appIndex(int selected) {
-    for (int i = 0; i < UI_APP_COUNT; ++i) {
-        if (matchesCatalogFilter(UI_APPS[i])) {
+    for (int i = 0; i < STORE_CAPACITY; ++i) {
+        if (storeAppExists(i) && matchesCatalogFilter(i)) {
             if (selected-- == 0) return i;
         }
     }
@@ -163,17 +187,20 @@ static int appIndex(int selected) {
 
 // Controller actions are shared by the console loop and host checks. The
 // caller supplies press edges, so holding X never fills the query repeatedly.
-enum CatalogControllerButton {
-    CATALOG_LEFT = 1U << 0, CATALOG_RIGHT = 1U << 1,
-    CATALOG_UP = 1U << 2, CATALOG_DOWN = 1U << 3,
-    CATALOG_CROSS = 1U << 4, CATALOG_CIRCLE = 1U << 5,
-    CATALOG_SQUARE = 1U << 6, CATALOG_TRIANGLE = 1U << 7,
-    CATALOG_L1 = 1U << 8, CATALOG_R1 = 1U << 9,
-    CATALOG_L3 = 1U << 10, CATALOG_R3 = 1U << 11,
-    CATALOG_OPTIONS = 1U << 12
-};
 
-static bool handleCatalogController(uint32_t pressed, int& selected, bool& details) {
+
+static bool handleCatalogController(uint32_t pressed, int& selected, bool& details, uint32_t held = 0) {
+    if (storePanel != STORE_PANEL_NONE) return storePanelController(pressed, held);
+    if (!catalogSearch.open && !details && (pressed & CATALOG_OPTIONS)) {
+        storeOpenPanel(STORE_PANEL_SERVICES); return true;
+    }
+    if (!details && activeCategory == 11 && (pressed & CATALOG_CROSS) && !(hubSession().premium || hubSession().admin)) {
+        storeAdminLogin = false; storeOpenPanel(STORE_PANEL_PREMIUM); return true;
+    }
+    if (!details && activeCategory == 12 && (pressed & CATALOG_CROSS)) {
+        if (!(hubSession().premium || hubSession().admin)) { storeAdminLogin = false; storeOpenPanel(STORE_PANEL_PREMIUM); return true; }
+        if (!storeAdultConfirmed) { storeOpenPanel(STORE_PANEL_ADULT); return true; }
+    }
     int count = categoryCount();
     if (selected < 0 || selected >= count) selected = 0;
     if (!count) details = false;
@@ -501,13 +528,15 @@ static void header(uint32_t* p) {
     text(p, 150, 45, "PEPPY", FONT_TITLE, WHITE);
     text(p, 152, 84, "S T O R E", FONT_SMALL, MUTED);
     int tabX = 420;
-    for (int i = 0; i < CATEGORY_COUNT; ++i) {
+    int firstTab = activeCategory / 6 * 6;
+    for (int i = firstTab; i < CATEGORY_COUNT && i < firstTab + 6; ++i) {
         int width = textWidth(CATEGORY_NAMES[i], FONT_BODY);
         text(p, tabX, 67, CATEGORY_NAMES[i], FONT_BODY, i == activeCategory ? WHITE : MUTED);
         if (i == activeCategory) roundRect(p, tabX, 119, width, 3, 1, BLUE);
         tabX += width + 26;
     }
-    const char* label = "PS4  /  HOMEBREW";
+    char label[64];
+    snprintf(label, sizeof(label), "L1 / R1  |  %d/%d", activeCategory / 6 + 1, (CATEGORY_COUNT + 5) / 6);
     pill(p, W - 72 - textWidth(label, FONT_SMALL) - 32, 61, label, PANEL, MUTED);
     rect(p, 72, 130, W - 144, 1, LINE);
 }
@@ -650,7 +679,7 @@ static void footer(uint32_t* p, bool details, int selectedIndex) {
         statusColor = 0x80EBA5B4;
     } else if (install.state == INSTALL_RUNNING && validApp(installingApp)) {
         snprintf(label, sizeof(label), "%s %s  |  %s  |  %d%%",
-                 installCancelRequested ? "Cancelando:" : "Instalando:", UI_APPS[installingApp].name,
+                 installCancelRequested ? "Cancelando:" : "Instalando:", storeApp(installingApp).name,
                  installStageName(install.stage), installPercent(install));
         statusColor = BLUE;
     } else if (download.state == RUNNING && validApp(downloadingApp)) {
@@ -658,16 +687,16 @@ static void footer(uint32_t* p, bool details, int selectedIndex) {
         if (meter.rateAvailable && (!download.total || download.received < download.total))
             snprintf(label, sizeof(label), "Baixando: %d%% | %.2f MB/s | %s",
                      transferPercent(download.received, download.total), meter.bytesPerSecond / 1000000.0,
-                     UI_APPS[downloadingApp].name);
-        else snprintf(label, sizeof(label), "Baixando: %s | %d%%", UI_APPS[downloadingApp].name,
+                     storeApp(downloadingApp).name);
+        else snprintf(label, sizeof(label), "Baixando: %s | %d%%", storeApp(downloadingApp).name,
                       transferPercent(download.received, download.total));
         statusColor = BLUE;
     } else if (install.state == INSTALL_FAILED && validApp(installingApp)) {
         snprintf(label, sizeof(label), "Falha ao instalar: %s  |  0x%08X",
-                 UI_APPS[installingApp].name, (unsigned)install.nativeCode);
+                 storeApp(installingApp).name, (unsigned)install.nativeCode);
         statusColor = 0x80EBA5B4;
     } else if (install.state == INSTALL_DONE && validApp(installingApp)) {
-        snprintf(label, sizeof(label), "Instalado no PS4: %s", UI_APPS[installingApp].name);
+        snprintf(label, sizeof(label), "Instalado no PS4: %s", storeApp(installingApp).name);
         statusColor = 0x807BDECC;
     } else snprintf(label, sizeof(label), "Feito para o seu PS4.");
     textElided(p, 1040, 992, label, FONT_SMALL, statusColor, 808);
@@ -690,7 +719,7 @@ static void footer(uint32_t* p, bool details, int selectedIndex) {
         text(p, 1096, 1030, "R3", FONT_SMALL, MUTED);
         text(p, 1145, 1030, "Buscar", FONT_SMALL, WHITE);
 #ifndef PEPPY_UI_PREVIEW
-        text(p, 1325, 1030, "OPTIONS  PKGs recebidos", FONT_SMALL, WHITE);
+        text(p, 1325, 1030, "OPTIONS  Serviços", FONT_SMALL, WHITE);
 #endif
     }
 }
@@ -760,7 +789,7 @@ static void drawStore(uint32_t* p, int selected, int padState) {
     for (int slot = 0; slot < 4 && first + slot < count; ++slot) {
         int index = appIndex(first + slot);
         if (index < 0) continue;
-        const UiApp& app = UI_APPS[index];
+        const UiApp& app = storeApp(index);
         uint32_t accent = CATEGORY_COLORS[app.category];
         int x = start + slot * (cw + gap);
         bool focus = selected == first + slot;
@@ -768,7 +797,8 @@ static void drawStore(uint32_t* p, int selected, int padState) {
         roundRect(p, x, y, cw, ch, 20, focus ? 0x801B283B : PANEL);
         outline(p, x, y, cw, ch, 20, focus ? 2 : 1, focus ? BLUE : LINE);
         roundRect(p, x + 26, y + 27, 104, 104, 24, mix(PANEL, accent, 22));
-        appIcon(p, x + 42, y + 43, 72, app.art, accent);
+        if (index >= UI_APP_COUNT) artwork(p, x + 42, y + 43, 72, 72, 16);
+        else appIcon(p, x + 42, y + 43, 72, app.art, accent);
         text(p, x + 152, y + 53, CATEGORY_NAMES[app.category], FONT_SMALL, accent);
         char label[80];
         sizeLabel(label, sizeof(label), app.sizeBytes);
@@ -786,6 +816,12 @@ static void drawStore(uint32_t* p, int selected, int padState) {
              (activeCategory == 6 ? "Ainda não há DLCs disponíveis." : "Nenhum item nesta categoria."));
         text(p, 72, 706, message, FONT_BODY, MUTED);
         text(p, 72, 753, "R3  Alterar busca    |    L1 / R1  Trocar categoria", FONT_SMALL, MUTED);
+        if (activeCategory >= 8 && activeCategory <= 10)
+            text(p, 72, 803, "OPTIONS  Serviços  >  Importar link PKG ou lista urls.txt", FONT_SMALL, BLUE);
+        else if (activeCategory == 11 || activeCategory == 12)
+            text(p, 72, 803, "X  Entrar / continuar    |    OPTIONS  Planos e LivePix", FONT_SMALL, BLUE);
+        else if (activeCategory == 7)
+            text(p, 72, 803, "Temas cadastrados aparecem após sincronizar o catálogo premium.", FONT_SMALL, BLUE);
     }
     footer(p, false, appIndex(selected));
 }
@@ -817,10 +853,93 @@ static void drawCatalogSearch(uint32_t* p, int selected) {
     text(p, 1530 - textWidth(limit, FONT_SMALL), 827, limit, FONT_SMALL, MUTED);
 }
 
+static void drawStorePanel(uint32_t* p) {
+    header(p);
+    roundRect(p, 72, 164, 1776, 800, 24, PANEL);
+    const char* title = storePanel == STORE_PANEL_SERVICES ? "Serviços da Peppy" :
+        storePanel == STORE_PANEL_PREMIUM ? (storeAdminLogin ? "Entrar no painel" : "Peppy Premium") :
+        storePanel == STORE_PANEL_TEXT ? (storeKeyboard.target == STORE_TEXT_URLS ? "Importar links PKG" : "Editar campo") :
+        storePanel == STORE_PANEL_DONATE ? "Apoie a Peppy Store" :
+        storePanel == STORE_PANEL_UPDATER ? "Peppy Assets Updater" :
+        storePanel == STORE_PANEL_ADMIN ? "Painel administrativo" : "Conteúdo para maiores de 18 anos";
+    text(p, 112, 198, title, FONT_HEADING, WHITE);
+    if (storePanel == STORE_PANEL_TEXT) {
+        char shown[513];
+        size_t n = strlen(storeKeyboard.draft);
+        if (storeKeyboard.masked) { size_t length = n < sizeof(shown) - 1 ? n : sizeof(shown) - 1; memset(shown, '*', length); shown[length] = 0; }
+        else snprintf(shown, sizeof(shown), "%.500s", storeKeyboard.draft + (n > 500 ? n - 500 : 0));
+        roundRect(p, 112, 284, 1696, 88, 12, BG);
+        textWrapped(p, 134, 298, shown[0] ? shown : "Digite com o controle...", FONT_SMALL, shown[0] ? WHITE : MUTED, 1650, 2);
+        for (int k = 0; k < int(strlen(storeKeyboardKeys())); ++k) {
+            int x = 116 + k % STORE_KEY_COLUMNS * 130, y = 402 + k / STORE_KEY_COLUMNS * 72;
+            bool focused = k == storeKeyboard.key;
+            roundRect(p, x, y, 118, 58, 10, focused ? 0x80243A58 : BG);
+            outline(p, x, y, 118, 58, 10, focused ? 2 : 1, focused ? BLUE : LINE);
+            char key[2] = {storeKeyboardKeys()[k], 0};
+            text(p, x + (118 - textWidth(key, FONT_BODY)) / 2, y + 11, key, FONT_BODY, focused ? WHITE : MUTED);
+        }
+        text(p, 112, 898, "Direcional  Navegar    X  Inserir    Quadrado  Apagar    Triângulo  Espaço", FONT_SMALL, MUTED);
+        text(p, 112, 932, storeKeyboard.target == STORE_TEXT_URLS ? "L1  Nova linha    OPTIONS  Importar    Círculo  Cancelar" : "OPTIONS  Salvar campo    Círculo  Cancelar", FONT_SMALL, BLUE);
+    } else if (storePanel == STORE_PANEL_DONATE) {
+        artwork(p, 1330, 238, 420, 360, 24);
+        text(p, 112, 298, "LivePix oficial da Peppy", FONT_TITLE, WHITE);
+        text(p, 112, 354, STORE_LIVEPIX, FONT_BODY, BLUE);
+        text(p, 112, 425, "Doações: a partir de R$ 1,00.", FONT_BODY, WHITE);
+        text(p, 112, 493, "Premium: envie exatamente o valor do plano.", FONT_BODY, WHITE);
+        text(p, 112, 554, "R$ 10,00  /  15 dias", FONT_TITLE, BLUE);
+        text(p, 112, 616, "R$ 20,00  /  1 mês", FONT_TITLE, BLUE);
+        text(p, 112, 678, "R$ 30,00  /  2 meses", FONT_TITLE, BLUE);
+        textWrapped(p, 112, 740, "Depois do pagamento, envie o comprovante no Discord. A liberação é manual, após conferência do administrador.", FONT_SMALL, MUTED, 1600, 2);
+        char discord[128]; snprintf(discord, sizeof(discord), "Discord: %s", STORE_DISCORD);
+        text(p, 112, 818, discord, FONT_BODY, WHITE);
+    } else if (storePanel == STORE_PANEL_UPDATER) {
+        textWrapped(p, 112, 306, "Abra este endereço no navegador para ver a atualização publicada da Peppy Store:", FONT_BODY, WHITE, 1580, 2);
+        textWrapped(p, 112, 418, storeUpdaterUrl(), FONT_BODY, BLUE, 1580, 2);
+        textWrapped(p, 112, 554, "A atualização da loja é um PKG. Baixe o arquivo publicado e instale pelo instalador do PS4. Não é um payload para o navegador.", FONT_BODY, MUTED, 1580, 3);
+        textWrapped(p, 112, 722, "Catálogo premium: use Serviços > Atualizar catálogo premium. Seus links pessoais continuam salvos neste PS4.", FONT_BODY, WHITE, 1580, 2);
+    } else if (storePanel == STORE_PANEL_ADULT) {
+        textWrapped(p, 112, 322, "Esta categoria reúne apenas os itens cadastrados com indicação de idade 18+. Confirme que você tem 18 anos ou mais para visualizar.", FONT_BODY, WHITE, 1500, 3);
+        text(p, 112, 584, "X  Tenho 18 anos ou mais", FONT_TITLE, BLUE);
+        text(p, 112, 664, "Círculo  Voltar", FONT_BODY, MUTED);
+        text(p, 112, 768, "A categoria fica vazia quando não há itens cadastrados.", FONT_BODY, MUTED);
+    } else {
+        const char* services[] = {"Importar link PKG", "Importar /data/peppy-store/urls.txt", "Entrar no Premium", "Doações e planos / LivePix", "Atualizar catálogo premium", "Peppy Assets Updater", "PKGs recebidos pelo FTP", "Sair do Premium"};
+        char user[180], password[80], plan[100];
+        bool adminPanel = storePanel == STORE_PANEL_ADMIN;
+        snprintf(user, sizeof(user), "Usuário: %s", adminPanel ? storeAdminUser : storeLoginUser);
+        snprintf(password, sizeof(password), "Senha: %s", (adminPanel ? storeAdminPassword[0] : storeLoginPassword[0]) ? "********" : "preencher");
+        snprintf(plan, sizeof(plan), "Plano: %s  |  Esquerda / Direita", storeAdminPlan == 15 ? "R$ 10 / 15 dias" : storeAdminPlan == 30 ? "R$ 20 / 1 mês" : "R$ 30 / 2 meses");
+        const char* premium[] = {user, password, "Entrar", "Ver planos / LivePix", "Sair da conta"};
+        const char* admin[] = {user, password, plan, "Criar usuário premium", "Publicar meus PKGs no catálogo premium", "Sincronizar catálogo premium"};
+        const char** labels = storePanel == STORE_PANEL_SERVICES ? services : adminPanel ? admin : premium;
+        int count = storePanel == STORE_PANEL_SERVICES ? 8 : adminPanel ? 6 : 5;
+        for (int i = 0; i < count; ++i) {
+            int y = 278 + i * 69;
+            bool focus = i == storeMenuSelection;
+            roundRect(p, 112, y, 1040, 58, 10, focus ? 0x80243A58 : BG);
+            textElided(p, 132, y + 13, labels[i], FONT_BODY, focus ? WHITE : MUTED, 990);
+        }
+        artwork(p, 1298, 275, 460, 360, 24);
+        HubSession session = hubSession();
+        char account[192]; snprintf(account, sizeof(account), session.authenticated ? "Conta: %s" : "Sem sessão premium", session.username);
+        textElided(p, 1218, 688, account, FONT_SMALL, BLUE, 530);
+        textWrapped(p, 1218, 733, storePanel == STORE_PANEL_SERVICES ? "Importe links diretos de PKG ou uma lista, um link por linha. Base, update e DLC são identificados pelo pacote." :
+            "A conta é validada pelo servidor. Seu catálogo gratuito e seus links pessoais continuam disponíveis.", FONT_SMALL, MUTED, 530, 4);
+    }
+    HubSnapshot task = hubSnapshot();
+    char status[512];
+    if (task.state == HUB_RUNNING) snprintf(status, sizeof(status), "Processando... %u / %u  |  Triângulo cancela", unsigned(task.completed), unsigned(task.requested));
+    else snprintf(status, sizeof(status), "%s", storeNotice);
+    if (storePanel != STORE_PANEL_TEXT && storePanel != STORE_PANEL_DONATE)
+        textElided(p, 112, 922, status, FONT_SMALL, BLUE, 1680);
+    text(p, 112, 998, "Direcional  Navegar    X  Selecionar    Círculo  Voltar", FONT_SMALL, WHITE);
+    text(p, 112, 1036, STORE_LIVEPIX, FONT_SMALL, BLUE);
+}
+
 static void drawDetails(uint32_t* p, int selected) {
     int index = appIndex(selected);
     if (index < 0) { drawStore(p, selected, 2); return; }
-    const UiApp& app = UI_APPS[index];
+    const UiApp& app = storeApp(index);
     uint32_t accent = CATEGORY_COLORS[app.category];
     header(p);
     text(p, 72, 169, "Biblioteca", FONT_BODY, MUTED);
@@ -829,7 +948,8 @@ static void drawDetails(uint32_t* p, int selected) {
     gradient(p, 72, 246, 552, 626, 28, mix(PANEL, accent, 28), PANEL);
     outline(p, 72, 246, 552, 626, 28, 1, LINE);
     roundRect(p, 232, 359, 232, 232, 46, mix(PANEL, accent, 20));
-    appIcon(p, 260, 387, 176, app.art, accent);
+    if (index >= UI_APP_COUNT) artwork(p, 260, 387, 176, 176, 24);
+    else appIcon(p, 260, 387, 176, app.art, accent);
     int nameWidth = textWidth(app.name, FONT_TITLE);
     textElided(p, nameWidth < 500 ? 348 - nameWidth / 2 : 98, 659, app.name, FONT_TITLE, WHITE, 500);
     int categoryWidth = textWidth(CATEGORY_NAMES[app.category], FONT_SMALL) + 32;
@@ -887,7 +1007,7 @@ static void drawDetails(uint32_t* p, int selected) {
         if (myInstall)
             snprintf(info, sizeof(info), "%s  |  %d%%", installStageName(install.stage), installPercent(install));
         else snprintf(info, sizeof(info), "Aguarde a instalação de %s.",
-                      validApp(installingApp) ? UI_APPS[installingApp].name : "outro app");
+                      validApp(installingApp) ? storeApp(installingApp).name : "outro app");
     } else if (installedApps[index] || (myInstall && install.state == INSTALL_DONE)) {
         snprintf(info, sizeof(info), "Instalação concluída. O app está disponível no menu do PS4.");
     } else if (myInstall && install.state == INSTALL_FAILED) {
@@ -1152,6 +1272,13 @@ int main(void){
  musicStart(userId);
  ftpReceiverStart();
  refreshFtpInbox();
+ configureHubBaseUrl(PEPPY_HUB_URL);
+ if(mkdir("/data/peppy-store",0700)!=0 && errno!=EEXIST)
+  snprintf(storeNotice,sizeof(storeNotice),"Não foi possível preparar o armazenamento da biblioteca pessoal.");
+ int localLoad=storeLocal.load();
+ if(localLoad && localLoad!=USER_CATALOG_ERROR_NOT_FOUND)
+  snprintf(storeNotice,sizeof(storeNotice),"%s",userCatalogErrorMessage(localLoad));
+ storeRebuildViews();
  uint32_t ftpReceivedSeen=ftpReceiverSnapshot().filesReceived;
  int32_t padModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
  int32_t padInit=(padModule>=0)?scePadInit():padModule;
@@ -1162,11 +1289,15 @@ int main(void){
  DownloadSnapshot previousProgress=downloadSnapshot();
  InstallSnapshot previousInstall=installSnapshot();
  MusicSnapshot previousMusic=musicSnapshot();
+ HubSnapshot previousHub=hubSnapshot();
+ uint32_t previousStoreView=storeViewRevision;
  drawStore(fb[front],selected,2);
  sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);
 
  for(;;){
   bool changed=pollAutoInstall();
+  changed=pollStoreExtensions() || changed;
+  if(previousStoreView!=storeViewRevision){previousStoreView=storeViewRevision;selected=0;details=false;changed=true;}
   OrbisPadData pd;
   if(pad>=0 && scePadReadState(pad,&pd)>=0){
    static bool readShown=false;
@@ -1186,14 +1317,16 @@ int main(void){
    if(edge&ORBIS_PAD_BUTTON_L3) pressed|=CATALOG_L3;
    if(edge&ORBIS_PAD_BUTTON_R3) pressed|=CATALOG_R3;
    if(edge&ORBIS_PAD_BUTTON_OPTIONS) pressed|=CATALOG_OPTIONS;
+   if(edge&ORBIS_PAD_BUTTON_R2) pressed|=CATALOG_R2;
+   uint32_t held=0;
+   if(now&ORBIS_PAD_BUTTON_R2) held|=CATALOG_R2;
+   if(now&ORBIS_PAD_BUTTON_R3) held|=CATALOG_R3;
+   if(now&ORBIS_PAD_BUTTON_OPTIONS) held|=CATALOG_OPTIONS;
    if(ftpInboxOpen) {
     changed=handleFtpInboxController(pressed) || changed;
-   } else if(!catalogSearch.open && !details && (pressed&CATALOG_OPTIONS)) {
-    refreshFtpInbox();
-    ftpInboxOpen=true;
-    changed=true;
    } else {
-    changed=handleCatalogController(pressed,selected,details) || changed;
+    changed=handleCatalogController(pressed,selected,details,held) || changed;
+    if(storeFtpRequested) { storeFtpRequested=false; refreshFtpInbox(); ftpInboxOpen=true; changed=true; }
    }
    prev=now;
   }
@@ -1219,6 +1352,9 @@ int main(void){
    if(music.state!=previousMusic.state || music.track!=previousMusic.track || music.volume!=previousMusic.volume ||
       music.muted!=previousMusic.muted || music.errorCode!=previousMusic.errorCode) changed=true;
    previousMusic=music;
+   HubSnapshot hub=hubSnapshot();
+   if(hub.state!=previousHub.state || hub.completed!=previousHub.completed || hub.errorCode!=previousHub.errorCode) changed=true;
+   previousHub=hub;
    FtpReceiverSnapshot ftp=ftpReceiverSnapshot();
    if(ftp.filesReceived!=ftpReceivedSeen){
     ftpReceivedSeen=ftp.filesReceived;
@@ -1228,7 +1364,8 @@ int main(void){
   }
   if(changed){
    front=1-front;
-   if(ftpInboxOpen) drawFtpInbox(fb[front]);
+   if(storePanel!=STORE_PANEL_NONE) drawStorePanel(fb[front]);
+   else if(ftpInboxOpen) drawFtpInbox(fb[front]);
    else if(catalogSearch.open) drawCatalogSearch(fb[front],selected);
    else if(details) drawDetails(fb[front],selected); else drawStore(fb[front],selected,2);
    sceVideoOutSubmitFlip(video,front,ORBIS_VIDEO_OUT_FLIP_VSYNC,frame++);

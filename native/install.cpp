@@ -116,9 +116,15 @@ extern "C" int32_t peppyInstallRestore(PeppyJailbreakBackup*) __asm__("sys_sdk_u
 #ifndef PEPPY_INSTALL_ROOT_DIRECTORY
 #define PEPPY_INSTALL_ROOT_DIRECTORY "/user/data/peppy-store"
 #endif
+#ifndef PEPPY_INBOX_BASE_DIRECTORY
 #define PEPPY_INBOX_BASE_DIRECTORY "/data/peppy-store/inbox/base"
+#endif
+#ifndef PEPPY_INBOX_UPDATE_DIRECTORY
 #define PEPPY_INBOX_UPDATE_DIRECTORY "/data/peppy-store/inbox/update"
+#endif
+#ifndef PEPPY_INBOX_DLC_DIRECTORY
 #define PEPPY_INBOX_DLC_DIRECTORY "/data/peppy-store/inbox/dlc"
+#endif
 #ifndef PEPPY_TITLE_ID
 #define PEPPY_TITLE_ID "BREW00001"
 #endif
@@ -146,6 +152,7 @@ uint64_t g_installHttpBytes = 0;
 char g_installFilename[NAME_CAP], g_installName[TITLE_CAP];
 char g_installSourcePath[PATH_CAP];
 int g_installInboxKind = -1;
+int g_installExpectedKind = -1;
 uint64_t g_installExpected = 0;
 FILE* g_installLog = 0;
 
@@ -180,10 +187,24 @@ uint32_t readBe32(const unsigned char* p) {
     return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
            (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
+bool canonicalContentId(const char* value) {
+    if (lengthBounded(value, CONTENT_ID_BYTES + 1) != CONTENT_ID_BYTES) return false;
+    for (size_t i = 0; i < CONTENT_ID_BYTES; ++i) {
+        char c = value[i];
+        if (i == 6 || i == 19) { if (c != '-') return false; }
+        else if (i == 16) { if (c != '_') return false; }
+        else if (i < 2 || (i >= 7 && i < 11)) { if (c < 'A' || c > 'Z') return false; }
+        else if ((i >= 2 && i < 6) || (i >= 11 && i < 16) || (i >= 17 && i < 19)) {
+            if (c < '0' || c > '9') return false;
+        } else if (!(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9')) return false;
+    }
+    return true;
+}
 int classifyPackage(const unsigned char* header, const char*& packageType, bool& patch) {
     const uint32_t contentType = readBe32(header + 0x74);
     const uint32_t flags = readBe32(header + 0x78);
     const uint32_t FIRST_PATCH = 0x00100000;
+    const uint32_t PATCHGO = 0x00200000;
     const uint32_t SUBSEQUENT_PATCH = 0x40000000;
     const uint32_t DELTA_PATCH = 0x41000000;
     const uint32_t CUMULATIVE_PATCH = 0x60000000;
@@ -197,6 +218,7 @@ int classifyPackage(const unsigned char* header, const char*& packageType, bool&
 
     patch = contentType == 0x1E ||
             (flags & FIRST_PATCH) ||
+            (flags & PATCHGO) ||
             (flags & SUBSEQUENT_PATCH) ||
             (flags & DELTA_PATCH) ||
             (flags & CUMULATIVE_PATCH);
@@ -490,9 +512,27 @@ int runInstall() {
     int packageKind = classifyPackage(header, packageType, patchPackage);
     if (packageKind < 0 || !packageType)
         return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
+    // LibOrbisPkg 643477263b2644e0803e0f58b8726ea4e3f3b7d4,
+    // PKG/Enums.cs and PKG/PkgReader.cs identify AC content with an
+    // IRO tag at 0x98: 1 SHAREfactory theme, 2 system-software theme. A theme
+    // owns its own content title; it is not a game's ordinary add-on. Never
+    // infer this exception from a filename, caller kind, or unknown IRO tag.
+    const uint32_t iroTag = readBe32(header + 0x98);
+    const bool themePackage = packageKind == 2 &&
+        readBe32(header + 0x74) == 0x1B &&
+        !(readBe32(header + 0x78) & 0x61300000U) &&
+        (iroTag == 1 || iroTag == 2);
+    if (g_installExpectedKind >= 0 && packageKind != g_installExpectedKind)
+        return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
     char contentId[CONTENT_ID_BYTES + 1];
     memcpy(contentId, header + CONTENT_ID_OFFSET, CONTENT_ID_BYTES);
     contentId[CONTENT_ID_BYTES] = 0;
+    if (g_installExpectedKind >= 0) {
+        uint64_t declaredSize = (uint64_t(readBe32(header + 0x430)) << 32) |
+                                readBe32(header + 0x434);
+        if (!canonicalContentId(contentId) || declaredSize != g_installExpected)
+            return fail(INSTALL_ERROR_PACKAGE, INSTALL_STAGE_PACKAGE, EINVAL);
+    }
     for (size_t i = 0; i < CONTENT_ID_BYTES; ++i) {
         char c = contentId[i];
         if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
@@ -562,7 +602,7 @@ int runInstall() {
     if (rc) return fail(INSTALL_ERROR_SERVICE, INSTALL_STAGE_EXISTS, rc);
     if (packageKind == 0 && exists)
         return fail(INSTALL_ERROR_ALREADY_INSTALLED, INSTALL_STAGE_EXISTS, 0);
-    if (packageKind != 0 && !exists)
+    if (packageKind != 0 && !themePackage && !exists)
         return fail(INSTALL_ERROR_BASE_REQUIRED, INSTALL_STAGE_EXISTS, 0);
     if (cancelled()) return 0;
     int32_t userId = 0;
@@ -722,7 +762,8 @@ void* installWorker(void*) {
 }
 
 static bool startInstallInternal(const InstallSpec& spec,
-                                 const char* sourcePath, int inboxKind) {
+                                 const char* sourcePath, int inboxKind,
+                                 int expectedKind) {
     // Failed native stop/term/restore may leave an owned task or service alive.
     // Do not overwrite its backing copy or reinitialize it in this process.
     if (__atomic_load_n(&g_installUnsafe, __ATOMIC_ACQUIRE)) return false;
@@ -752,6 +793,7 @@ static bool startInstallInternal(const InstallSpec& spec,
     bool sourceOk = !sourcePath ||
         validInboxSource(sourcePath, inboxKind, spec.filename);
     if (!validFilename(spec.filename) || !validName(spec.name) || !sourceOk ||
+        expectedKind < -1 || expectedKind > 2 ||
         spec.expectedBytes < HEADER_BYTES || spec.expectedBytes > PEPPY_MAX_PACKAGE_BYTES) {
         __atomic_store_n(&g_installError, INSTALL_ERROR_SPEC, __ATOMIC_RELEASE);
         __atomic_store_n(&g_installState, INSTALL_FAILED, __ATOMIC_RELEASE);
@@ -762,6 +804,7 @@ static bool startInstallInternal(const InstallSpec& spec,
     strcpy(g_installName, spec.name);
     g_installSourcePath[0] = 0;
     g_installInboxKind = -1;
+    g_installExpectedKind = expectedKind;
     if (sourcePath) {
         snprintf(g_installSourcePath, sizeof(g_installSourcePath), "%s", sourcePath);
         g_installInboxKind = inboxKind;
@@ -786,7 +829,13 @@ static bool startInstallInternal(const InstallSpec& spec,
     return true;
 }
 bool startInstall(const InstallSpec& spec) {
-    return startInstallInternal(spec, 0, -1);
+    return startInstallInternal(spec, 0, -1, -1);
+}
+
+bool startTypedInstall(const InstallSpec& spec, int kind) {
+    // -1 is reserved for the legacy unpinned API and cannot bypass a caller's
+    // requested import classification.
+    return startInstallInternal(spec, 0, -1, kind >= 0 ? kind : 3);
 }
 
 bool startInboxInstall(const char* path, const char* displayName,
@@ -795,7 +844,7 @@ bool startInboxInstall(const char* path, const char* displayName,
     const char* leaf = strrchr(path, '/');
     if (!leaf || !leaf[1]) return false;
     InstallSpec spec = {leaf + 1, displayName, expectedBytes};
-    return startInstallInternal(spec, path, kind);
+    return startInstallInternal(spec, path, kind, kind);
 }
 
 void cancelInstall() {

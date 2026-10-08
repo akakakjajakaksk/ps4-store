@@ -1,0 +1,10 @@
+{
+  "name": "peppy-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/worker.test.mjs",
+    "build": "node scripts/build.mjs"
+  },
+  "engines": { "node": ">=24" }
+}

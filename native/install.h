@@ -73,6 +73,11 @@ struct InstallSnapshot {
 // keeps the PKG and never removes or overwrites an existing base application.
 bool startInstall(const InstallSpec& spec);
 
+// Installs a completed package from the download cache with its imported kind
+// pinned: 0 base, 1 update, 2 DLC. The held header must match that kind before
+// any native installation service is entered.
+bool startTypedInstall(const InstallSpec& spec, int kind);
+
 // Installs a completed PKG received through Peppy's FTP inbox without copying it
 // into the download cache first. kind is FtpReceiveKind (base/update/dlc).
 // The installer still validates the PKG header and chooses the native BGFT mode.

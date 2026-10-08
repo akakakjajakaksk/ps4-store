@@ -1,0 +1,20 @@
+name = "peppy-hub"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+
+# Replace with the deployed website's exact origin; never use '*'.
+[vars]
+ALLOWED_ORIGINS = "https://YOUR-SITE.example"
+DISCORD_CONTACT_URL = ""
+DISCORD_USERNAME = "djdarknes.com_66953"
+# Official means an administrator-reviewed author source, not a legal verdict.
+OFFICIAL_REPOSITORIES = ""
+
+[[d1_databases]]
+binding = "DB"
+database_name = "peppy-hub"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+# Set OWNER_USERNAME and OWNER_PASSWORD with the deployment platform's secret facility.
+# Do not add passwords or tokens to this file.

@@ -18,13 +18,17 @@ namespace mock {
 uint64_t BYTES = 32ULL * 1024 * 1024;
 const char CID[] = "UP0000-CUSA99998_00-PEPPYTEST0000000";
 const char URL[] = "https://archive.org/download/ps4-fpkg-collection-english-h/Parallel%20Fixture.pkg";
+const char* activeUrl = URL;
+const size_t LARGE_BUFFER_BYTES = 1024 * 1024;
+const size_t SMALL_BUFFER_BYTES = 256 * 1024;
 const int32_t READ_ERROR = static_cast<int32_t>(0x80431068U);
 const int32_t JOIN_ERROR = static_cast<int32_t>(0x80020016U);
 const int32_t WRITE_ERROR = static_cast<int32_t>(0x8002001cU);
 enum Mode {
-    GOOD, NO_ETAG, WEAK_ETAG, IGNORE_RANGE, RANGE_503, WRONG_ETAG,
+    GOOD, NO_ETAG, WEAK_ETAG, IGNORE_RANGE, RANGE_503, RANGE_REDIRECT, WRONG_ETAG,
     WRONG_RANGE, WRONG_RANGE_TOTAL, WRONG_LENGTH, DUPLICATE_ETAG,
-    POOL_FAILURE, ALLOCATION_FAILURE, THREAD_FAILURE, BODY_FAILURE,
+    POOL_FAILURE, ALLOCATION_FAILURE, PREFERRED_FIRST_FAILURE, PREFERRED_SECOND_FAILURE,
+    HASH_PREFERRED_FAILURE, HASH_ALLOCATION_FAILURE, THREAD_FAILURE, BODY_FAILURE,
     CANCEL_BODY, SHORT_WRITES, WRITE_FAILURE, FSYNC_FAILURE, CLOSE_FAILURE,
     JOIN_FAILURE, HASH_MISMATCH, HEADER_MISMATCH, FRAGMENTED_BODY,
     INTERRUPTED_WRITES, INTERRUPTED_PREAD, PWRITE_EINTR_EXHAUSTED,
@@ -71,7 +75,8 @@ int activeRangeReads = 0, peakRangeReads = 0, enteredRangeRequests = 0;
 int blockedRangeRequests = 0;
 int pwriteCalls = 0, fsyncCalls = 0, partCloses = 0, partDeletes = 0;
 uint64_t pwriteBytes = 0, highestPublished = 0;
-std::atomic<int> rangedSent(0), allocatorFailures(0);
+std::atomic<int> rangedSent(0), allocatorFailures(0), preferredAllocations(0);
+size_t hashReadMax = 0;
 std::atomic<int> pwriteInterrupts(0), preadInterrupts(0);
 bool joinErrorPublished = false;
 bool secondaryCloseError = false;
@@ -117,7 +122,8 @@ void reset(Mode next) {
     mode = next; nextId = 100; poolCreates = joins = joinErrors = 0;
     rangeReadCalls = singleReadCalls = activeRangeReads = peakRangeReads = enteredRangeRequests = blockedRangeRequests = 0;
     pwriteCalls = fsyncCalls = partCloses = partDeletes = 0;
-    pwriteBytes = highestPublished = 0; rangedSent = 0; allocatorFailures = 0;
+    pwriteBytes = highestPublished = 0; rangedSent = 0; allocatorFailures = preferredAllocations = 0;
+    hashReadMax = 0; activeUrl = URL;
     joinErrorPublished = false; secondaryCloseError = false;
     pwriteInterrupts = preadInterrupts = 0; BYTES = 32ULL * 1024 * 1024;
     netError = 0; history.clear();
@@ -190,9 +196,18 @@ extern "C" int __real_fsync(int);
 extern "C" int __real_fclose(FILE*);
 extern "C" int __real_fflush(FILE*);
 extern "C" void* __wrap_malloc(size_t count) {
-    if (count == 256 * 1024 && mock::mode == mock::ALLOCATION_FAILURE &&
-        mock::rangedSent.load() == 2 && mock::allocatorFailures.fetch_add(1) == 0) {
-        errno = ENOMEM; return 0;
+    if ((count == mock::LARGE_BUFFER_BYTES || count == mock::SMALL_BUFFER_BYTES) && mock::rangedSent.load() == 2) {
+        const int stage = downloadSnapshot().stage;
+        bool fail = (stage == DOWNLOAD_STAGE_READ && mock::mode == mock::ALLOCATION_FAILURE) ||
+                    (stage == DOWNLOAD_STAGE_HASH && mock::mode == mock::HASH_ALLOCATION_FAILURE);
+        if (stage == DOWNLOAD_STAGE_READ && count == mock::LARGE_BUFFER_BYTES) {
+            int allocation = mock::preferredAllocations.fetch_add(1);
+            fail = fail || (mock::mode == mock::PREFERRED_FIRST_FAILURE && allocation == 0) ||
+                           (mock::mode == mock::PREFERRED_SECOND_FAILURE && allocation == 1);
+        }
+        if (stage == DOWNLOAD_STAGE_HASH && count == mock::LARGE_BUFFER_BYTES && mock::mode == mock::HASH_PREFERRED_FAILURE)
+            fail = true;
+        if (fail) { ++mock::allocatorFailures; errno = ENOMEM; return 0; }
     }
     return __real_malloc(count);
 }
@@ -246,6 +261,7 @@ extern "C" int64_t testPwrite(int32_t fd, const void* data, size_t bytes, int64_
 extern "C" int64_t testPread(int32_t, void*, size_t, int64_t) __asm__("sceKernelPread");
 extern "C" int64_t testPread(int32_t fd, void* data, size_t bytes, int64_t offset) {
     assert(offset >= 0 && bytes <= mock::BYTES - static_cast<uint64_t>(offset));
+    if (downloadSnapshot().stage == DOWNLOAD_STAGE_HASH && bytes > mock::hashReadMax) mock::hashReadMax = bytes;
     if (mock::mode == mock::PREAD_EINTR_EXHAUSTED ||
         (mock::mode == mock::INTERRUPTED_PREAD && mock::preadInterrupts.fetch_add(1) < 2))
         return static_cast<int32_t>(0x80020004U);
@@ -365,7 +381,7 @@ extern "C" int32_t sceHttpSetSendTimeOut(int32_t, uint32_t us) { assert(us == 15
 extern "C" int32_t testSslError(int32_t, int32_t*, uint32_t*) __asm__("sceHttpsGetSslError");
 extern "C" int32_t testSslError(int32_t, int32_t* code, uint32_t* detail) { *code = 0; *detail = 0; return 0; }
 extern "C" int32_t sceHttpCreateConnectionWithURL(int32_t tmpl, const char* url, bool keepalive) {
-    assert(!keepalive && !strcmp(url, mock::URL));
+    assert(!keepalive && !strcmp(url, mock::activeUrl));
     std::lock_guard<std::mutex> guard(mock::lock); assert(mock::templates.count(tmpl));
     const mock::Resource& t = mock::templates[tmpl];
     assert(t.headerCap == 65536 && t.tls == 0xbd && t.redirectDisabled);
@@ -395,6 +411,7 @@ extern "C" int32_t sceHttpSendRequest(int32_t id, const void* data, size_t size)
         assert(r->ifRange == "\"fixture-v1\"" && first <= last && last < mock::BYTES);
         r->ranged = true; r->first = first; r->last = last; r->length = last - first + 1;
         r->status = 206; ++mock::rangedSent;
+        if (mock::mode == mock::RANGE_REDIRECT) r->status = 302;
         if (first && mock::mode == mock::IGNORE_RANGE) r->status = 200;
         if (first && mock::mode == mock::RANGE_503) r->status = 503;
         if (first && mock::mode == mock::WRONG_LENGTH) ++r->length;
@@ -433,7 +450,7 @@ extern "C" int32_t sceHttpGetResponseContentLength(int32_t id, int32_t* kind, si
 }
 extern "C" int32_t sceHttpReadData(int32_t id, void* out, uint32_t bytes) {
     std::unique_lock<std::mutex> guard(mock::lock); std::shared_ptr<mock::Request> r = mock::request(id);
-    assert(r->sent && bytes && bytes <= 256 * 1024);
+    assert(r->sent && bytes && bytes <= mock::LARGE_BUFFER_BYTES);
     if (r->aborted) return mock::READ_ERROR;
     if (!r->ranged) {
         ++mock::singleReadCalls;
@@ -450,11 +467,11 @@ extern "C" int32_t sceHttpReadData(int32_t id, void* out, uint32_t bytes) {
         if (mock::wake.wait_until(guard, until) == std::cv_status::timeout)
             assert(!"two native range readers never overlapped");
     }
-    bool blocking = (mock::shouldBlock() && r->position >= 256 * 1024) ||
-        (mock::mode == mock::JOIN_FAILURE && r->first && r->position >= 256 * 1024 && !mock::joinErrorPublished);
+    bool blocking = (mock::shouldBlock() && r->position >= mock::LARGE_BUFFER_BYTES) ||
+        (mock::mode == mock::JOIN_FAILURE && r->first && r->position >= mock::LARGE_BUFFER_BYTES && !mock::joinErrorPublished);
     if (blocking && !r->blockReported) { r->blockReported = true; ++mock::blockedRangeRequests; mock::wake.notify_all(); }
-    while (!r->aborted && ((mock::shouldBlock() && r->position >= 256 * 1024) ||
-        (mock::mode == mock::JOIN_FAILURE && r->first && r->position >= 256 * 1024 && !mock::joinErrorPublished)))
+    while (!r->aborted && ((mock::shouldBlock() && r->position >= mock::LARGE_BUFFER_BYTES) ||
+        (mock::mode == mock::JOIN_FAILURE && r->first && r->position >= mock::LARGE_BUFFER_BYTES && !mock::joinErrorPublished)))
         mock::wake.wait(guard);
     if (r->aborted) { --mock::activeRangeReads; return mock::READ_ERROR; }
     if (mock::mode == mock::BODY_FAILURE && !r->first && r->position >= 1024 * 1024) {
@@ -499,7 +516,7 @@ extern "C" int32_t sceHttpTerm(int32_t id) {
 }
 
 static DownloadSpec spec(const char* hash = 0) {
-    DownloadSpec value = {mock::URL, "parallel.pkg", mock::BYTES, hash}; return value;
+    DownloadSpec value = {mock::activeUrl, "parallel.pkg", mock::BYTES, hash}; return value;
 }
 static void successTests() {
     for (mock::Mode mode : {mock::GOOD, mock::SHORT_WRITES, mock::FRAGMENTED_BODY,
@@ -510,7 +527,7 @@ static void successTests() {
         assert(mock::rangedSent == 2 && mock::peakRangeReads >= 2);
         assert(mock::pwriteBytes == mock::BYTES && mock::joins == 1 && mock::fsyncCalls == 1);
         assert(mock::singleReadCalls == 1); mock::clean(); mock::exactOutput();
-        if (mode == mock::FRAGMENTED_BODY) assert(mock::pwriteCalls == 128 && mock::rangeReadCalls == 2048);
+        if (mode == mock::FRAGMENTED_BODY) assert(mock::pwriteCalls == 32 && mock::rangeReadCalls == 2048);
         assert(mock::history.size() == 3);
         assert(mock::history[1]->first == 0 && mock::history[1]->last == mock::BYTES / 2 - 1);
         assert(mock::history[2]->first == mock::BYTES / 2 && mock::history[2]->last == mock::BYTES - 1);
@@ -525,7 +542,7 @@ static void successTests() {
 }
 static void fallbackTests() {
     for (mock::Mode mode : {mock::NO_ETAG, mock::WEAK_ETAG, mock::IGNORE_RANGE,
-        mock::RANGE_503, mock::WRONG_ETAG, mock::WRONG_RANGE, mock::WRONG_RANGE_TOTAL,
+        mock::RANGE_503, mock::RANGE_REDIRECT, mock::WRONG_ETAG, mock::WRONG_RANGE, mock::WRONG_RANGE_TOTAL,
         mock::WRONG_LENGTH, mock::DUPLICATE_ETAG, mock::POOL_FAILURE,
         mock::ALLOCATION_FAILURE, mock::THREAD_FAILURE}) {
         mock::reset(mode); assert(startDownload(spec(), mock::CID));
@@ -537,16 +554,77 @@ static void fallbackTests() {
         mock::clean(); mock::exactOutput();
     }
 }
+static void bufferFallbackTests() {
+    for (mock::Mode mode : {mock::PREFERRED_FIRST_FAILURE, mock::PREFERRED_SECOND_FAILURE}) {
+        mock::reset(mode); assert(startDownload(spec(), mock::CID));
+        DownloadSnapshot s = mock::finish();
+        assert(s.state == DONE && s.received == mock::BYTES && !s.errorCode);
+        assert(mock::allocatorFailures == 1 && mock::rangedSent == 2 && mock::joins == 1);
+        assert(mock::pwriteCalls == 128 && mock::rangeReadCalls == 128);
+        mock::clean(); mock::exactOutput();
+    }
+    mock::reset(mock::HASH_PREFERRED_FAILURE); std::string hash = mock::digest();
+    assert(startDownload(spec(hash.c_str()), mock::CID));
+    assert(mock::finish().state == DONE && mock::hashReadMax == mock::SMALL_BUFFER_BYTES);
+    assert(mock::allocatorFailures == 1 && mock::pwriteCalls == 32);
+    mock::clean(); mock::exactOutput();
+}
+static void approvedProviderTests() {
+    const char* urls[] = {
+        "https://release-assets.githubusercontent.com/fixture/parallel.pkg?token=abc",
+        "https://download2392.mediafire.com/token/parallel.pkg?key=a&part=b"
+    };
+    for (const char* url : urls) {
+        for (mock::Mode mode : {mock::GOOD, mock::NO_ETAG, mock::WEAK_ETAG, mock::RANGE_REDIRECT}) {
+            mock::reset(mode); mock::activeUrl = url;
+            assert(startDownload(spec(), mock::CID)); DownloadSnapshot s = mock::finish();
+            assert(s.state == DONE && s.received == mock::BYTES && !s.errorCode);
+            if (mode == mock::GOOD) {
+                assert(mock::rangedSent == 2 && mock::peakRangeReads >= 2 && mock::pwriteCalls == 32);
+            } else {
+                assert(!mock::pwriteCalls && !mock::rangeReadCalls && !mock::joins);
+                if (mode != mock::RANGE_REDIRECT) assert(!mock::rangedSent);
+                else assert(mock::history.size() == 3); // Initial body, rejected range, one single restart.
+            }
+            for (size_t i = 0; i < mock::history.size(); ++i) assert(mock::history[i]->url == url);
+            mock::clean(); mock::exactOutput();
+        }
+    }
+}
+static void packageKindRangeTests() {
+    struct Fixture { uint32_t type, flags; int kind; };
+    const Fixture fixtures[] = {
+        {0x1A, 0x62300000U, USER_PACKAGE_UPDATE},
+        {0x1C, 0x0A000000U, USER_PACKAGE_DLC}
+    };
+    for (const Fixture& fixture : fixtures) {
+        mock::reset(mock::GOOD);
+        mock::put32(0x74, fixture.type); mock::put32(0x78, fixture.flags);
+        std::string hash = mock::digest();
+        assert(startDownload(spec(hash.c_str()), mock::CID, fixture.kind));
+        assert(mock::finish().state == DONE && mock::rangedSent == 2);
+        mock::clean(); mock::exactOutput();
+
+        mock::reset(mock::GOOD); mock::seedPrevious();
+        mock::put32(0x74, fixture.type); mock::put32(0x78, fixture.flags);
+        assert(startDownload(spec(), mock::CID)); // Legacy default is still base.
+        DownloadSnapshot s = mock::finish();
+        assert(s.state == FAILED && s.errorCode == DOWNLOAD_ERROR_PACKAGE && !mock::rangedSent);
+        mock::clean(); mock::checkPrevious();
+    }
+}
 static void failureTests() {
     for (mock::Mode mode : {mock::BODY_FAILURE, mock::WRITE_FAILURE, mock::FSYNC_FAILURE,
         mock::CLOSE_FAILURE, mock::JOIN_FAILURE, mock::HASH_MISMATCH, mock::HEADER_MISMATCH,
         mock::PWRITE_EINTR_EXHAUSTED, mock::PREAD_EINTR_EXHAUSTED, mock::ZERO_WRITE,
         mock::OVERSIZED_WRITE, mock::EARLY_EOF, mock::READ_OVERSIZED, mock::RANGE_HEADER_CORRUPT,
-        mock::FSTAT_FAILURE, mock::WRONG_FILE_SIZE, mock::NOT_REGULAR_FILE}) {
+        mock::FSTAT_FAILURE, mock::WRONG_FILE_SIZE, mock::NOT_REGULAR_FILE, mock::HASH_ALLOCATION_FAILURE}) {
         mock::reset(mode); mock::seedPrevious();
         if (mode == mock::BODY_FAILURE || mode == mock::WRITE_FAILURE) mock::secondaryCloseError = true;
+        std::string goodHash = mock::digest();
         const char* hash = mode == mock::HASH_MISMATCH ?
-            "0000000000000000000000000000000000000000000000000000000000000000" : 0;
+            "0000000000000000000000000000000000000000000000000000000000000000" :
+            mode == mock::HASH_ALLOCATION_FAILURE ? goodHash.c_str() : 0;
         assert(startDownload(spec(hash), mock::CID)); DownloadSnapshot s = mock::finish();
         assert(s.state == FAILED && s.errorCode && s.received <= mock::BYTES);
         mock::clean(); mock::checkPrevious();
@@ -578,6 +656,8 @@ static void failureTests() {
                 assert(s.errorCode == DOWNLOAD_ERROR_LENGTH && s.stage == DOWNLOAD_STAGE_READ);
             else if (mode == mock::RANGE_HEADER_CORRUPT)
                 assert(s.errorCode == DOWNLOAD_ERROR_PACKAGE && s.stage == DOWNLOAD_STAGE_PACKAGE);
+            else if (mode == mock::HASH_ALLOCATION_FAILURE)
+                assert(s.errorCode == DOWNLOAD_ERROR_FILESYSTEM && s.stage == DOWNLOAD_STAGE_HASH && s.nativeCode == ENOMEM && mock::allocatorFailures == 2);
             else if (mode == mock::FSTAT_FAILURE)
                 assert(s.errorCode == DOWNLOAD_ERROR_FILESYSTEM && s.stage == DOWNLOAD_STAGE_PACKAGE &&
                     s.nativeCode == static_cast<int32_t>(0x80020005U));
@@ -594,7 +674,7 @@ static void cancellationTest() {
         assert(mock::wake.wait_for(guard, std::chrono::seconds(5), []() { return mock::blockedRangeRequests == 2; }));
         assert(mock::activeRangeReads == 2);
     }
-    assert(downloadSnapshot().received == 512 * 1024);
+    assert(downloadSnapshot().received == 2 * mock::LARGE_BUFFER_BYTES);
     cancelDownload(); DownloadSnapshot s = mock::finish();
     assert(s.state == CANCELLED && s.received <= mock::BYTES && mock::rangeAborts() == 2);
     assert(mock::joins == 1); mock::clean(); mock::checkPrevious();
@@ -649,7 +729,8 @@ static void sparseOffsetTest() {
     assert(close(fd) == 0); assert(unlink(mock::path(true).c_str()) == 0); mock::clean();
 }
 int main() {
-    successTests(); fallbackTests(); failureTests(); cancellationTest(); sparseOffsetTest();
+    successTests(); fallbackTests(); bufferFallbackTests(); approvedProviderTests(); packageKindRangeTests();
+    failureTests(); cancellationTest(); sparseOffsetTest();
     unlink(mock::path().c_str());
     unlink((std::string(parallelTestDirectory()) + "/download.log").c_str());
     assert(rmdir(parallelTestDirectory()) == 0);

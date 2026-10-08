@@ -21,6 +21,17 @@ jobs:
       - name: Checkout Peppy Store
         uses: actions/checkout@v4
 
+      - name: Prepare Node for premium service tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test premium service permissions and persistence
+        run: |
+          cd services/peppy-hub
+          npm test
+          npm run build
+
       - name: Download official OpenOrbis toolchain v0.5.4
         run: |
           curl -L --fail --retry 3 -o /tmp/openorbis.tar.gz \
@@ -102,6 +113,17 @@ jobs:
       - name: Test catalog search on host
         run: sh native/tests/catalog_search/run.sh
 
+      - name: Test user package catalog and persistence
+        run: sh native/tests/user_catalog/run.sh
+
+      - name: Test native premium and URL import worker
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror -pthread \
+            -Inative/tests/downloads/stubs \
+            native/tests/hub_client/hub_test.cpp native/user_catalog.cpp \
+            -o /tmp/peppy-hub-tests
+          /tmp/peppy-hub-tests
+
       - name: Test concurrent package downloads on host
         run: |
           cd native
@@ -147,9 +169,10 @@ jobs:
         run: |
           python3 native/scripts/generate-ui-assets.py --icon peppy-icon0-1.png --output native/ui_assets.h
           python3 native/scripts/generate-catalog.py --catalog native/catalog.json --output native/ui_catalog.h
-          g++ -std=c++11 -O2 -Wall -Wextra -Werror native/scripts/preview-ui.cpp -o /tmp/peppy-ui-controls
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror native/scripts/preview-ui.cpp native/user_catalog.cpp -o /tmp/peppy-ui-controls
           /tmp/peppy-ui-controls --check-controller
           /tmp/peppy-ui-controls --check-search
+          /tmp/peppy-ui-controls --check-services
 
       - name: Test package directory manifest
         run: python3 native/tests/gp4/normalize_test.py

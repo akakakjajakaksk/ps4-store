@@ -39140,11 +39140,12 @@
     "unknown"
   ],
   "catalog_summary": {
-    "total_entries": 845,
+    "total_entries": 860,
     "native_ps4_games": 805,
     "ps1_ps2_conversions": 14,
-    "apps_and_engines": 26,
+    "apps_and_engines": 41,
     "portuguese_conversions": 7,
-    "native_ps4_portuguese_confirmed": 0
+    "native_ps4_portuguese_confirmed": 0,
+    "homebrew_games_and_ports": 10
   }
 }

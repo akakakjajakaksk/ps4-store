@@ -44,5 +44,24 @@
     "Small public samples through the development proxy, not a sustained PS4 test.",
     "Sample hashes identify only the sampled bytes; no complete PKG was downloaded or hashed.",
     "This does not predict bandwidth on the user’s Claro Wi-Fi or guarantee a speed increase."
-  ]
+  ],
+  "buffer_revision": {
+    "preferred_buffer_bytes": 1048576,
+    "fallback_buffer_bytes": 262144,
+    "maximum_application_transfer_buffer_bytes": 2097152,
+    "allocation_policy": "Allocate both preferred transfer buffers or free them and retry both fallback buffers. Post-download hashing uses one buffer with the same bounded fallback.",
+    "normal_transfer": "Retains per-read PKG identity validation, progress and cancellation. Caller-owned stdio buffer remains alive through fflush/fclose. No manual fragment-fill loop.",
+    "parallel_eligibility": "Already approved final Archive, GitHub and MediaFire CDN HTTPS URLs only. Requires pinned Content ID/kind/size, strong identical ETags, exact 206 and range lengths, and assembled PKG verification. Missing validators or rejected range setup retain/restart the normal stream once.",
+    "eof_error_regression": "Verified Content-Length ends the body without waiting for another EOF read; unknown-length bodies still require actual EOF.",
+    "host_fixture_results": {
+      "normal_1_mib_fixture": "One data read at preferred capacity versus four at fallback/previous capacity, when the mock server fills the requested buffer.",
+      "parallel_32_mib_fragmented_fixture": "32 disk writes at preferred capacity versus 128 at previous/fallback capacity; the same 2048 native short reads for 16 KiB fragments.",
+      "validation": "Exact byte comparison, SHA-256, failed preferred/fallback allocations, safe buffer lifetime, cancellation, range redirects, wrong identities/kinds, truncation, and prior completed-file preservation."
+    },
+    "limitations": [
+      "Fixture call counts are algorithm checks, not measured network speed or PS4 hardware tests.",
+      "The 1 MiB cap is deliberate. No real-console maximum buffer or throughput guarantee has been established.",
+      "This does not change HTTP/SSL native pool sizes, disable TLS validation, bypass proxy rules, or add download hosts."
+    ]
+  }
 }

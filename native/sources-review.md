@@ -213,10 +213,17 @@ original. Funcionamento em 13.52 ainda precisa de teste no console.
 
 ## Catálogo consolidado
 
-O catálogo contém 845 entradas: 805 jogos nativos, 14 conversões PS1/PS2
-e 26 aplicativos, emuladores e motores. Por procedência, são 24 releases
+O catálogo gratuito contém 860 entradas: 805 jogos nativos, 14 conversões PS1/PS2
+e 41 aplicativos, emuladores e motores. Por procedência, são 39 releases
 oficiais, oito pacotes MediaFire, 811 pacotes Internet Archive, o cliente
 GameBaTo do site e Itemzflow de um espelho não oficial.
 
 Não é uma importação completa dos sites. Nenhum PKG enviado pelo usuário foi
 incluído nesta revisão, pois os anexos recebidos até agora são fotografias.
+
+
+## Expansão premium e pesquisa de outubro
+
+A expansão é mantida no catálogo remoto do serviço Peppy. Os itens já existentes continuam livres; duplicatas, como Friday Night Funkin, não foram cobradas nem contadas como adições. `premium-catalog-review.json` registra o novo escopo e o seed público de metadados está em `../services/peppy-hub/seed-catalog.json`. Cada pacote incluído deve ter tamanho, Content ID, tipo e flags consistentes com o cabeçalho; links de sites e arquivos RAR não são tratados como downloads diretos.
+
+A busca em Sandro Store, Infinity, GameBaTo e fontes da comunidade não autoriza acesso a catálogos fechados. Metadados recebidos por administração são validados antes de publicação e novamente pelo cliente; procedência conhecida não prova licenciamento ou funcionamento no firmware. Português continua prioritário quando documentado, sem transformar nomes de arquivos em comprovação de dublagem.

@@ -83,3 +83,21 @@ Injected native failures preserve the raw `0x8002004E` code even with stale errn
 are checked at native compile time, along with the explicit native stat ABI. Tests also
 refuse source/directory symlinks and FIFOs, preserve fstat failures, safely copy
 different or symlinked global aliases, and reject a replaced partial-copy inode.
+
+Typed cache and FTP inbox cases pin base/update/DLC against the held PKG header
+before probing the SDK, and require a canonical Content ID plus the exact
+declared package size. Tests install each kind through both storage and HTTP
+mocks, verify patch debug registration and force-update flags, require the base
+for updates/add-ons, retain sources on failure, reject invalid/mismatched kinds,
+and cross-check the storage SDK's parsed Title ID. The legacy unpinned
+`startInstall` API retains its existing behavior.
+
+Known AC themes (type `0x1B`, IRO tag `1` or `2` at `0x98`, no patch flags)
+do not require an already-installed application with the theme's own Title ID.
+Storage/HTTP tests cover both tags and preserve native completion/confirmation.
+Ordinary DLCs with zero/unknown tags, no-data `0x1C` packages, and patches still
+require their base; a caller's kind cannot bypass the header check. The pinned
+[LibOrbisPkg enums](https://github.com/maxton/LibOrbisPkg/blob/643477263b2644e0803e0f58b8726ea4e3f3b7d4/LibOrbisPkg/PKG/Enums.cs)
+identify tag `1` as SHAREfactory and tag `2` as system software; the
+[header reader](https://github.com/maxton/LibOrbisPkg/blob/643477263b2644e0803e0f58b8726ea4e3f3b7d4/LibOrbisPkg/PKG/PkgReader.cs#L139)
+confirms the offset. Theme installation/application still needs a console test.
